@@ -26,3 +26,30 @@ export function normalizeC2CMessage(
     receivedAt: event.timestamp
   };
 }
+
+export function normalizeGroupMessage(
+  event: {
+    id: string;
+    content: string;
+    timestamp: string;
+    group_openid: string;
+    author: { member_openid: string };
+  },
+  accountKey: string
+): InboundMessage {
+  const peerKey = buildPeerKey({
+    chatType: "group",
+    peerId: event.group_openid
+  });
+
+  return {
+    messageId: event.id,
+    accountKey,
+    sessionKey: buildSessionKey({ accountKey, peerKey }),
+    peerKey,
+    chatType: "group",
+    senderId: event.author.member_openid,
+    text: event.content,
+    receivedAt: event.timestamp
+  };
+}
