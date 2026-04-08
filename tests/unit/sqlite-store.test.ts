@@ -26,6 +26,18 @@ describe("sqlite store", () => {
     return path.join(dir, "data", "bridge.sqlite");
   }
 
+  function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+
+    return { promise, resolve, reject };
+  }
+
   it("persists a session that can be read back as active", async () => {
     const dbPath = createTempDbPath();
     const db = createSqliteDatabase(dbPath);
@@ -101,5 +113,38 @@ describe("sqlite store", () => {
 
     await expect(transcriptStore.hasInbound("msg-1")).resolves.toBe(true);
     await expect(transcriptStore.hasInbound("msg-2")).resolves.toBe(false);
+  });
+
+  it("serializes overlapping work for the same session key", async () => {
+    const dbPath = createTempDbPath();
+    const db = createSqliteDatabase(dbPath);
+    const sessionStore = new SqliteSessionStore(db);
+    const sessionKey = buildSessionKey({
+      accountKey: "qqbot:default",
+      peerKey: buildPeerKey({ chatType: "c2c", peerId: "abc-123" })
+    });
+
+    const firstTurn = createDeferred<void>();
+    const secondEntered: string[] = [];
+    const firstEntered = createDeferred<void>();
+
+    const firstWork = sessionStore.withSessionLock(sessionKey, async () => {
+      firstEntered.resolve();
+      await firstTurn.promise;
+    });
+
+    await firstEntered.promise;
+
+    const secondWork = sessionStore.withSessionLock(sessionKey, async () => {
+      secondEntered.push("entered");
+    });
+
+    expect(secondEntered).toEqual([]);
+
+    firstTurn.resolve();
+
+    await expect(firstWork).resolves.toBeUndefined();
+    await expect(secondWork).resolves.toBeUndefined();
+    expect(secondEntered).toEqual(["entered"]);
   });
 });

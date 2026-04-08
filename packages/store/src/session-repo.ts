@@ -6,6 +6,8 @@ import type { SqliteDatabase } from "./sqlite.js";
 type SessionRow = BridgeSession;
 
 export class SqliteSessionStore implements SessionStorePort {
+  private readonly sessionLockTails = new Map<string, Promise<void>>();
+
   constructor(private readonly db: SqliteDatabase) {}
 
   async getSession(sessionKey: string): Promise<BridgeSession | null> {
@@ -68,13 +70,28 @@ export class SqliteSessionStore implements SessionStorePort {
   }
 
   async withSessionLock<T>(sessionKey: string, work: () => Promise<T>): Promise<T> {
+    // Queue same-session work in-process so the SQLite lock row reflects a real exclusive section.
+    const previousTail = this.sessionLockTails.get(sessionKey) ?? Promise.resolve();
+    let releaseCurrent!: () => void;
+    const currentTail = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const queuedTail = previousTail.then(() => currentTail);
+
+    this.sessionLockTails.set(sessionKey, queuedTail);
+    await previousTail;
+
     const owner = randomUUID();
     const lockedAt = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
 
     this.db
+      .prepare(`DELETE FROM session_locks WHERE session_key = ? AND expires_at <= ?`)
+      .run(sessionKey, lockedAt);
+
+    this.db
       .prepare(
-        `INSERT OR REPLACE INTO session_locks (session_key, owner, locked_at, expires_at)
+        `INSERT INTO session_locks (session_key, owner, locked_at, expires_at)
          VALUES (?, ?, ?, ?)`
       )
       .run(sessionKey, owner, lockedAt, expiresAt);
@@ -83,6 +100,10 @@ export class SqliteSessionStore implements SessionStorePort {
       return await work();
     } finally {
       this.db.prepare(`DELETE FROM session_locks WHERE session_key = ? AND owner = ?`).run(sessionKey, owner);
+      releaseCurrent();
+      if (this.sessionLockTails.get(sessionKey) === queuedTail) {
+        this.sessionLockTails.delete(sessionKey);
+      }
     }
   }
 }
