@@ -4,7 +4,12 @@ import {
   type CodexThreadSummary,
   type DriverBinding
 } from "../../../domain/src/driver.js";
-import type { InboundMessage, OutboundDraft } from "../../../domain/src/message.js";
+import {
+  MediaArtifactKind,
+  type InboundMessage,
+  type MediaArtifact,
+  type OutboundDraft
+} from "../../../domain/src/message.js";
 import type { DesktopDriverPort } from "../../../ports/src/conversation.js";
 import { CdpSession } from "./cdp-session.js";
 import { isLikelyComposerSubmitButton } from "./composer-heuristics.js";
@@ -29,6 +34,7 @@ type ThreadLocator = {
 type AssistantReplySnapshot = {
   unitKey: string | null;
   reply: string | null;
+  mediaReferences: string[];
 };
 
 type CodexDesktopDriverOptions = {
@@ -283,6 +289,13 @@ export class CodexDesktopDriver implements DesktopDriverPort {
               draftId: randomUUID(),
               sessionKey: binding.sessionKey,
               text: candidateReply.reply,
+              ...(candidateReply.mediaReferences.length > 0
+                ? {
+                    mediaArtifacts: candidateReply.mediaReferences.map((reference) =>
+                      buildMediaArtifactFromReference(reference)
+                    )
+                  }
+                : {}),
               createdAt: new Date().toISOString()
             }
           ];
@@ -355,9 +368,17 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         "unitKey" in structuredReply && typeof structuredReply.unitKey === "string"
           ? structuredReply.unitKey
           : null;
+      const mediaReferences =
+        "mediaReferences" in structuredReply && Array.isArray(structuredReply.mediaReferences)
+          ? structuredReply.mediaReferences.filter(
+              (reference): reference is string =>
+                typeof reference === "string" && reference.trim().length > 0
+            )
+          : [];
       return {
         unitKey,
-        reply: normalizedReply || null
+        reply: normalizedReply || null,
+        mediaReferences
       };
     }
 
@@ -372,7 +393,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const parsedReply = parseAssistantReply(snapshotText).trim();
     return {
       unitKey: null,
-      reply: parsedReply || null
+      reply: parsedReply || null,
+      mediaReferences: []
     };
   }
 
@@ -396,10 +418,17 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     }
 
     if (current.unitKey && candidate.unitKey) {
-      return current.unitKey === candidate.unitKey && current.reply === candidate.reply;
+      return (
+        current.unitKey === candidate.unitKey &&
+        current.reply === candidate.reply &&
+        JSON.stringify(current.mediaReferences) === JSON.stringify(candidate.mediaReferences)
+      );
     }
 
-    return current.reply === candidate.reply;
+    return (
+      current.reply === candidate.reply &&
+      JSON.stringify(current.mediaReferences) === JSON.stringify(candidate.mediaReferences)
+    );
   }
 
   private async waitForFreshThreadContext(targetId: string): Promise<void> {
@@ -699,6 +728,43 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       if (!(latestAssistantUnit instanceof HTMLElement)) {
         return null;
       }
+      const normalizeReference = (value) => {
+        if (!value || typeof value !== 'string') {
+          return null;
+        }
+        if (value.startsWith('file://')) {
+          try {
+            return decodeURIComponent(new URL(value).pathname);
+          } catch {
+            return value;
+          }
+        }
+        if (
+          value.startsWith('http://') ||
+          value.startsWith('https://') ||
+          value.startsWith('/') ||
+          value.startsWith('data:')
+        ) {
+          return value;
+        }
+        return null;
+      };
+      const mediaReferences = Array.from(
+        latestAssistantUnit.querySelectorAll('img[src], audio[src], audio source[src], video[src], video source[src], a[href]')
+      )
+        .map((node) => {
+          if (!(node instanceof HTMLElement)) {
+            return null;
+          }
+          if ('src' in node && typeof node.src === 'string' && node.src) {
+            return normalizeReference(node.src);
+          }
+          if ('href' in node && typeof node.href === 'string' && node.href) {
+            return normalizeReference(node.href);
+          }
+          return null;
+        })
+        .filter((value, index, values) => typeof value === 'string' && values.indexOf(value) === index);
 
       const richContent = latestAssistantUnit.querySelector('[class*="_markdownContent_"]');
       if (richContent instanceof HTMLElement) {
@@ -706,7 +772,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         if (text) {
           return {
             unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
-            reply: text
+            reply: text,
+            mediaReferences
           };
         }
       }
@@ -727,9 +794,87 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       return text
         ? {
             unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
-            reply: text
+            reply: text,
+            mediaReferences
           }
         : null;
     })();`;
+  }
+}
+
+function buildMediaArtifactFromReference(reference: string): MediaArtifact {
+  const normalizedReference = reference.trim();
+  const strippedReference = normalizedReference.split("?")[0] ?? normalizedReference;
+  const lowerReference = strippedReference.toLowerCase();
+  const originalName = inferOriginalName(strippedReference);
+  const mimeType = inferMimeType(lowerReference);
+
+  return {
+    kind: inferMediaArtifactKind(lowerReference, mimeType),
+    sourceUrl: normalizedReference,
+    localPath: normalizedReference,
+    mimeType,
+    fileSize: 0,
+    originalName
+  };
+}
+
+function inferMediaArtifactKind(reference: string, mimeType: string): MediaArtifactKind {
+  if (mimeType.startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(reference)) {
+    return MediaArtifactKind.Image;
+  }
+
+  if (mimeType.startsWith("audio/") || /\.(mp3|wav|ogg|aac|flac|silk)$/i.test(reference)) {
+    return MediaArtifactKind.Audio;
+  }
+
+  if (mimeType.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm)$/i.test(reference)) {
+    return MediaArtifactKind.Video;
+  }
+
+  return MediaArtifactKind.File;
+}
+
+function inferMimeType(reference: string): string {
+  if (reference.startsWith("data:image/")) {
+    const match = reference.match(/^data:(image\/[^;]+);/i);
+    return match?.[1] ?? "image/png";
+  }
+
+  if (/\.png$/i.test(reference)) return "image/png";
+  if (/\.(jpg|jpeg)$/i.test(reference)) return "image/jpeg";
+  if (/\.gif$/i.test(reference)) return "image/gif";
+  if (/\.webp$/i.test(reference)) return "image/webp";
+  if (/\.bmp$/i.test(reference)) return "image/bmp";
+  if (/\.mp3$/i.test(reference)) return "audio/mpeg";
+  if (/\.wav$/i.test(reference)) return "audio/wav";
+  if (/\.ogg$/i.test(reference)) return "audio/ogg";
+  if (/\.aac$/i.test(reference)) return "audio/aac";
+  if (/\.flac$/i.test(reference)) return "audio/flac";
+  if (/\.silk$/i.test(reference)) return "audio/silk";
+  if (/\.mp4$/i.test(reference)) return "video/mp4";
+  if (/\.mov$/i.test(reference)) return "video/quicktime";
+  if (/\.avi$/i.test(reference)) return "video/x-msvideo";
+  if (/\.mkv$/i.test(reference)) return "video/x-matroska";
+  if (/\.webm$/i.test(reference)) return "video/webm";
+  if (/\.pdf$/i.test(reference)) return "application/pdf";
+  return "application/octet-stream";
+}
+
+function inferOriginalName(reference: string): string {
+  try {
+    if (reference.startsWith("data:image/")) {
+      return "codex-inline-image";
+    }
+
+    const url = reference.startsWith("http://") || reference.startsWith("https://")
+      ? new URL(reference)
+      : null;
+    const pathname = url?.pathname ?? reference;
+    const segments = pathname.split("/");
+    return segments.at(-1) || "codex-media";
+  } catch {
+    const segments = reference.split("/");
+    return segments.at(-1) || "codex-media";
   }
 }

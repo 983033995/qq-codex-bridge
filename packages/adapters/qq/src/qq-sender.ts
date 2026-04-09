@@ -93,6 +93,7 @@ export class QqSender implements QqEgressPort {
     const replyToMessageId = draft.replyToMessageId ?? draft.draftId;
     const target = parseSessionTarget(draft.sessionKey);
     let lastProviderMessageId: string | null = null;
+    const deliveredArtifactKeys = new Set<string>();
 
     for (const segment of parseQqMediaSegments(draft.text)) {
       if (segment.type === "text") {
@@ -105,6 +106,7 @@ export class QqSender implements QqEgressPort {
       }
 
       const artifact = buildMediaArtifactFromReference(segment.reference);
+      deliveredArtifactKeys.add(buildArtifactKey(artifact));
       try {
         lastProviderMessageId = await this.sendMediaArtifact(
           target,
@@ -122,6 +124,11 @@ export class QqSender implements QqEgressPort {
 
     if (draft.mediaArtifacts?.length) {
       for (const artifact of draft.mediaArtifacts) {
+        const artifactKey = buildArtifactKey(artifact);
+        if (deliveredArtifactKeys.has(artifactKey)) {
+          continue;
+        }
+        deliveredArtifactKeys.add(artifactKey);
         try {
           lastProviderMessageId = await this.sendMediaArtifact(target, artifact, replyToMessageId);
         } catch (error) {
@@ -165,4 +172,13 @@ function parseSessionTarget(sessionKey: string): { chatType: string; peerId: str
     chatType: segments[1] ?? "",
     peerId: segments.slice(2).join(":")
   };
+}
+
+function buildArtifactKey(artifact: MediaArtifact): string {
+  return [
+    artifact.kind,
+    artifact.localPath || "",
+    artifact.sourceUrl || "",
+    artifact.originalName || ""
+  ].join("::");
 }

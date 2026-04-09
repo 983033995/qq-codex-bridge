@@ -196,4 +196,34 @@ describe("qq sender", () => {
       "qq-inbound-5"
     );
   });
+
+  it("does not send duplicate media when the draft already contains the parsed artifact", async () => {
+    const apiClient = {
+      sendC2CMessage: vi.fn().mockResolvedValue("qq-msg-dedupe"),
+      sendGroupMessage: vi.fn(),
+      sendC2CMediaArtifact: vi.fn().mockResolvedValue("qq-msg-media"),
+      sendGroupMediaArtifact: vi.fn()
+    };
+    const sender = new QqSender(apiClient);
+
+    await sender.deliver({
+      draftId: "draft-6",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      text: "图片如下：\n<qqmedia>/tmp/cat.png</qqmedia>",
+      mediaArtifacts: [
+        {
+          kind: MediaArtifactKind.Image,
+          sourceUrl: "/tmp/cat.png",
+          localPath: "/tmp/cat.png",
+          mimeType: "image/png",
+          fileSize: 0,
+          originalName: "cat.png"
+        }
+      ],
+      createdAt: "2026-04-09T10:00:06.000Z",
+      replyToMessageId: "qq-inbound-6"
+    });
+
+    expect(apiClient.sendC2CMediaArtifact).toHaveBeenCalledTimes(1);
+  });
 });

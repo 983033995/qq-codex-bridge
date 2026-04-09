@@ -7,6 +7,7 @@ import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
 import { BridgeOrchestrator } from "../../../packages/orchestrator/src/bridge-orchestrator.js";
 import { buildCodexInboundText } from "../../../packages/orchestrator/src/media-context.js";
+import { enrichQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-draft.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
@@ -65,10 +66,12 @@ export function bootstrap() {
         await sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
       }
       const drafts = await adapters.codexDesktop.collectAssistantReply(binding);
-      return drafts.map((draft) => ({
-        ...draft,
-        replyToMessageId: message.messageId
-      }));
+      return drafts.map((draft) =>
+        enrichQqOutboundDraft({
+          ...draft,
+          replyToMessageId: message.messageId
+        })
+      );
     }
   };
 

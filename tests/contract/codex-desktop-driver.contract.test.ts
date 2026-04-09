@@ -633,4 +633,68 @@ describe("codex desktop driver contract", () => {
       }
     ]);
   });
+
+  it("captures media references rendered in the current codex assistant unit", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-1",
+        reply: "这是你要的素材",
+        mediaReferences: [
+          "/tmp/qq-media/test-image.png",
+          "https://example.com/test-audio.mp3"
+        ]
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-1",
+        reply: "这是你要的素材",
+        mediaReferences: [
+          "/tmp/qq-media/test-image.png",
+          "https://example.com/test-audio.mp3"
+        ]
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-1",
+        reply: "这是你要的素材",
+        mediaReferences: [
+          "/tmp/qq-media/test-image.png",
+          "https://example.com/test-audio.mp3"
+        ]
+      });
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        text: "这是你要的素材",
+        mediaArtifacts: [
+          expect.objectContaining({
+            localPath: "/tmp/qq-media/test-image.png"
+          }),
+          expect.objectContaining({
+            sourceUrl: "https://example.com/test-audio.mp3"
+          })
+        ]
+      }
+    ]);
+  });
 });

@@ -1,14 +1,22 @@
 import type { InboundMessage, MediaArtifact } from "../../domain/src/message.js";
+import {
+  buildQqbotSkillContext,
+  shouldInjectQqbotSkillContext
+} from "./qqbot-skill-context.js";
 
 export function buildCodexInboundText(message: InboundMessage): string {
   const baseText = message.text.trim();
-  if (!message.mediaArtifacts?.length) {
-    return baseText;
+  const sections = [baseText || "(用户消息未包含文本)"];
+
+  if (message.mediaArtifacts?.length) {
+    sections.push("", "【附件】");
+    for (const [index, artifact] of message.mediaArtifacts.entries()) {
+      sections.push(renderArtifact(index + 1, artifact));
+    }
   }
 
-  const sections = [baseText || "(用户消息未包含文本)", "", "【附件】"];
-  for (const [index, artifact] of message.mediaArtifacts.entries()) {
-    sections.push(renderArtifact(index + 1, artifact));
+  if (shouldInjectQqbotSkillContext(message)) {
+    sections.push("", buildQqbotSkillContext(message));
   }
 
   return sections.join("\n");
