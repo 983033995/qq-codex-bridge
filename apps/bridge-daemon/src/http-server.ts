@@ -5,6 +5,7 @@ type QqWebhookServerDeps = {
   ingress: {
     dispatchPayload(payload: unknown): Promise<void>;
   };
+  onDispatchError?: (error: Error, payload: unknown) => void;
 };
 
 export function createQqWebhookServer(deps: QqWebhookServerDeps): Server {
@@ -27,14 +28,24 @@ export function createQqWebhookServer(deps: QqWebhookServerDeps): Server {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
 
+    let payload: unknown;
     try {
-      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      await deps.ingress.dispatchPayload(payload);
-      response.statusCode = 202;
-      response.end("accepted");
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     } catch (error) {
       response.statusCode = 400;
       response.end(error instanceof Error ? error.message : "invalid request");
+      return;
     }
+
+    Promise.resolve()
+      .then(() => deps.ingress.dispatchPayload(payload))
+      .catch((error) => {
+        const normalized =
+          error instanceof Error ? error : new Error(typeof error === "string" ? error : "dispatch failed");
+        deps.onDispatchError?.(normalized, payload);
+      });
+
+    response.statusCode = 202;
+    response.end("accepted");
   });
 }

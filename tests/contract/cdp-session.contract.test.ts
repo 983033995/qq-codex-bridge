@@ -104,6 +104,7 @@ describe("cdp session", () => {
 
   it("attaches to a page target and evaluates javascript through the browser websocket", async () => {
     let port = 0;
+    let attachCount = 0;
     const httpServer = createServer((request, response) => {
       if (request.url === "/json/version") {
         response.writeHead(200, { "content-type": "application/json" });
@@ -151,6 +152,7 @@ describe("cdp session", () => {
         };
 
         if (message.method === "Target.attachToTarget") {
+          attachCount += 1;
           socket.send(
             JSON.stringify({
               id: message.id,
@@ -196,5 +198,9 @@ describe("cdp session", () => {
     await expect(session.evaluateOnPage("document.body.innerText")).resolves.toBe(
       "Assistant: live reply"
     );
+    await expect(session.evaluateOnPage("document.body.innerText")).resolves.toBe(
+      "Assistant: live reply"
+    );
+    expect(attachCount).toBe(1);
   });
 });

@@ -10,7 +10,13 @@ async function main() {
 
   const server = createQqWebhookServer({
     webhookPath: app.config.runtime.webhookPath,
-    ingress: app.adapters.qq.ingress
+    ingress: app.adapters.qq.ingress,
+    onDispatchError: (error, payload) => {
+      console.error("[qq-codex-bridge] webhook dispatch failed", {
+        error,
+        payload
+      });
+    }
   });
 
   await new Promise<void>((resolve, reject) => {

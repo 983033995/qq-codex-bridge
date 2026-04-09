@@ -36,6 +36,7 @@ export class CdpSession {
   private browserSocketPromise: Promise<WebSocket> | null = null;
   private nextCommandId = 1;
   private readonly pendingCommands = new Map<number, PendingCommand>();
+  private readonly attachedSessions = new Map<string, string>();
 
   constructor(
     readonly config: CdpSessionConfig,
@@ -148,6 +149,11 @@ export class CdpSession {
   }
 
   private async attachToTarget(targetId: string): Promise<string> {
+    const cachedSessionId = this.attachedSessions.get(targetId);
+    if (cachedSessionId) {
+      return cachedSessionId;
+    }
+
     const payload = (await this.sendCommand("Target.attachToTarget", {
       targetId,
       flatten: true
@@ -157,6 +163,7 @@ export class CdpSession {
       throw new Error(`CDP attach failed for target ${targetId}`);
     }
 
+    this.attachedSessions.set(targetId, payload.sessionId);
     return payload.sessionId;
   }
 
@@ -222,6 +229,7 @@ export class CdpSession {
         });
         socket.on("close", () => {
           this.browserSocket = null;
+          this.attachedSessions.clear();
           const pending = Array.from(this.pendingCommands.values());
           this.pendingCommands.clear();
           for (const command of pending) {

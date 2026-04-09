@@ -7,8 +7,28 @@ import { parseAssistantReply } from "./reply-parser.js";
 
 const TARGET_REF_PREFIX = "cdp-target:";
 
+type CodexDesktopDriverOptions = {
+  replyPollAttempts?: number;
+  replyPollIntervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+};
+
 export class CodexDesktopDriver implements DesktopDriverPort {
-  constructor(private readonly cdp: CdpSession) {}
+  private readonly replyPollAttempts: number;
+  private readonly replyPollIntervalMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly pendingReplyBaselines = new Map<string, string | null>();
+
+  constructor(
+    private readonly cdp: CdpSession,
+    options: CodexDesktopDriverOptions = {}
+  ) {
+    this.replyPollAttempts = options.replyPollAttempts ?? 20;
+    this.replyPollIntervalMs = options.replyPollIntervalMs ?? 500;
+    this.sleep =
+      options.sleep ??
+      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  }
 
   async ensureAppReady(): Promise<void> {
     await this.cdp.connect();
@@ -27,11 +47,15 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     sessionKey: string,
     binding: DriverBinding | null
   ): Promise<DriverBinding> {
+    const targets = await this.cdp.listTargets();
     if (binding?.codexThreadRef?.startsWith(TARGET_REF_PREFIX)) {
-      return binding;
+      const boundTargetId = binding.codexThreadRef.slice(TARGET_REF_PREFIX.length);
+      const stillExists = targets.some((target) => target.id === boundTargetId && target.type === "page");
+      if (stillExists) {
+        return binding;
+      }
     }
 
-    const targets = await this.cdp.listTargets();
     const pageTarget = targets.find((target) => target.type === "page");
 
     if (!pageTarget) {
@@ -49,6 +73,11 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   async sendUserMessage(binding: DriverBinding, message: InboundMessage): Promise<void> {
     const targetId = await this.resolveTargetId(binding);
+    const baselineSnapshot = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
+    const baselineReply =
+      typeof baselineSnapshot === "string" ? parseAssistantReply(baselineSnapshot) || null : null;
+    this.pendingReplyBaselines.set(binding.sessionKey, baselineReply);
+
     const result = (await this.cdp.evaluateOnPage(
       this.buildComposeScript(message.text),
       targetId
@@ -58,6 +87,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       return;
     }
 
+    this.pendingReplyBaselines.delete(binding.sessionKey);
     throw new DesktopDriverError(
       `Codex desktop input box not found: ${result?.reason ?? "unknown"}`,
       "input_not_found"
@@ -66,27 +96,41 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   async collectAssistantReply(binding: DriverBinding): Promise<OutboundDraft[]> {
     const targetId = await this.resolveTargetId(binding);
-    const snapshotText = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
-    if (typeof snapshotText !== "string") {
-      throw new DesktopDriverError(
-        "Codex desktop reply snapshot was not a string",
-        "reply_parse_failed"
-      );
-    }
+    const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
 
-    const reply = parseAssistantReply(snapshotText);
-    if (!reply) {
-      throw new DesktopDriverError("Codex desktop reply parser found no assistant text", "reply_parse_failed");
-    }
-
-    return [
-      {
-        draftId: randomUUID(),
-        sessionKey: binding.sessionKey,
-        text: reply,
-        createdAt: new Date().toISOString()
+    for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
+      const snapshotText = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
+      if (typeof snapshotText !== "string") {
+        this.pendingReplyBaselines.delete(binding.sessionKey);
+        throw new DesktopDriverError(
+          "Codex desktop reply snapshot was not a string",
+          "reply_parse_failed"
+        );
       }
-    ];
+
+      const reply = parseAssistantReply(snapshotText);
+      if (reply && (baselineReply === undefined || reply !== baselineReply)) {
+        this.pendingReplyBaselines.delete(binding.sessionKey);
+        return [
+          {
+            draftId: randomUUID(),
+            sessionKey: binding.sessionKey,
+            text: reply,
+            createdAt: new Date().toISOString()
+          }
+        ];
+      }
+
+      if (attempt + 1 < this.replyPollAttempts) {
+        await this.sleep(this.replyPollIntervalMs);
+      }
+    }
+
+    this.pendingReplyBaselines.delete(binding.sessionKey);
+    throw new DesktopDriverError(
+      "Codex desktop reply did not arrive before timeout",
+      "reply_timeout"
+    );
   }
 
   async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {

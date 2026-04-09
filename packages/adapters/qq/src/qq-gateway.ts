@@ -6,25 +6,33 @@ type QqGatewayConfig = {
   accountKey: string;
 };
 
+type QqC2CEvent = {
+  t: "C2C_MESSAGE_CREATE";
+  d: {
+    id: string;
+    content: string;
+    timestamp: string;
+    author: { user_openid: string };
+  };
+};
+
+type QqGroupEvent = {
+  t: "GROUP_AT_MESSAGE_CREATE";
+  d: {
+    id: string;
+    content: string;
+    timestamp: string;
+    group_openid: string;
+    author: { member_openid: string };
+  };
+};
+
 type QqRawEvent =
+  | QqC2CEvent
+  | QqGroupEvent
   | {
-      t: "C2C_MESSAGE_CREATE";
-      d: {
-        id: string;
-        content: string;
-        timestamp: string;
-        author: { user_openid: string };
-      };
-    }
-  | {
-      t: "GROUP_AT_MESSAGE_CREATE";
-      d: {
-        id: string;
-        content: string;
-        timestamp: string;
-        group_openid: string;
-        author: { member_openid: string };
-      };
+      t: string;
+      d: Record<string, unknown>;
     };
 
 export class QqGateway implements QqIngressPort {
@@ -43,11 +51,21 @@ export class QqGateway implements QqIngressPort {
   }
 
   async dispatchPayload(event: QqRawEvent): Promise<void> {
-    if (event.t === "C2C_MESSAGE_CREATE") {
+    if (this.isC2CEvent(event)) {
       await this.dispatch(normalizeC2CMessage(event.d, this.config.accountKey));
       return;
     }
 
-    await this.dispatch(normalizeGroupMessage(event.d, this.config.accountKey));
+    if (this.isGroupEvent(event)) {
+      await this.dispatch(normalizeGroupMessage(event.d, this.config.accountKey));
+    }
+  }
+
+  private isC2CEvent(event: QqRawEvent): event is QqC2CEvent {
+    return event.t === "C2C_MESSAGE_CREATE";
+  }
+
+  private isGroupEvent(event: QqRawEvent): event is QqGroupEvent {
+    return event.t === "GROUP_AT_MESSAGE_CREATE";
   }
 }

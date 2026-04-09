@@ -110,4 +110,48 @@ describe("bootstrap integration", () => {
       app.db.close();
     }
   });
+
+  it("does not persist a new binding when the first message send fails", async () => {
+    process.env.QQBOT_APP_ID = "app-id";
+    process.env.QQBOT_CLIENT_SECRET = "secret";
+    process.env.QQ_CODEX_DATABASE_PATH = ":memory:";
+    process.env.CODEX_REMOTE_DEBUGGING_PORT = "9229";
+
+    const app = bootstrap();
+    try {
+      vi.spyOn(app.adapters.codexDesktop, "ensureAppReady").mockResolvedValue(undefined);
+      vi.spyOn(app.adapters.codexDesktop, "openOrBindSession").mockResolvedValue({
+        sessionKey: "qqbot:default::qq:c2c:broken",
+        codexThreadRef: "cdp-target:page-bad"
+      });
+      vi.spyOn(app.adapters.codexDesktop, "sendUserMessage").mockRejectedValue(
+        new Error("input not found")
+      );
+
+      await expect(
+        app.orchestrator.handleInbound({
+          messageId: "msg-bad-1",
+          accountKey: "qqbot:default",
+          sessionKey: "qqbot:default::qq:c2c:broken",
+          peerKey: "qq:c2c:broken",
+          chatType: "c2c",
+          senderId: "broken",
+          text: "hello",
+          receivedAt: "2026-04-09T11:05:00.000Z"
+        })
+      ).rejects.toThrow("input not found");
+
+      const stored = app.db
+        .prepare(
+          `SELECT codex_thread_ref AS codexThreadRef
+           FROM bridge_sessions
+           WHERE session_key = ?`
+        )
+        .get("qqbot:default::qq:c2c:broken") as { codexThreadRef: string | null } | undefined;
+
+      expect(stored?.codexThreadRef).toBeNull();
+    } finally {
+      app.db.close();
+    }
+  });
 });

@@ -60,4 +60,21 @@ describe("qq gateway", () => {
       receivedAt: "2026-04-09T10:00:01.000Z"
     });
   });
+
+  it("ignores unsupported event types without dispatching a message", async () => {
+    const gateway = new QqGateway({ accountKey: "qqbot:default" });
+    const handler = vi.fn().mockResolvedValue(undefined);
+
+    await gateway.onMessage(handler);
+    await gateway.dispatchPayload({
+      t: "GUILD_MESSAGE_CREATE",
+      d: {
+        id: "msg-3",
+        content: "ignored",
+        timestamp: "2026-04-09T10:00:02.000Z"
+      }
+    } as never);
+
+    expect(handler).not.toHaveBeenCalled();
+  });
 });
