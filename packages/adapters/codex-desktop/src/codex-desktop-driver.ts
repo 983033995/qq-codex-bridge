@@ -26,6 +26,11 @@ type ThreadLocator = {
   projectName: string | null;
 };
 
+type AssistantReplySnapshot = {
+  unitKey: string | null;
+  reply: string | null;
+};
+
 type CodexDesktopDriverOptions = {
   replyPollAttempts?: number;
   replyPollIntervalMs?: number;
@@ -38,7 +43,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   private readonly replyPollIntervalMs: number;
   private readonly replyStablePolls: number;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly pendingReplyBaselines = new Map<string, string | null>();
+  private readonly pendingReplyBaselines = new Map<string, AssistantReplySnapshot>();
 
   constructor(
     private readonly cdp: CdpSession,
@@ -189,7 +194,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   async sendUserMessage(binding: DriverBinding, message: InboundMessage): Promise<void> {
     const targetId = await this.ensureThreadSelected(binding);
-    const baselineReply = await this.readLatestAssistantReply(targetId);
+    const baselineReply = await this.readLatestAssistantSnapshot(targetId);
     this.pendingReplyBaselines.set(binding.sessionKey, baselineReply);
 
     const focusResult = (await this.cdp.evaluateOnPage(
@@ -253,28 +258,31 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   async collectAssistantReply(binding: DriverBinding): Promise<OutboundDraft[]> {
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
-    let candidateReply: string | null = null;
+    let candidateReply: AssistantReplySnapshot | null = null;
     let stablePolls = 0;
 
     for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
-      const reply = await this.readLatestAssistantReply(targetId);
-      const isNewReply = reply && (baselineReply === undefined || reply !== baselineReply);
+      const reply = await this.readLatestAssistantSnapshot(targetId);
+      const hasReplyText = typeof reply.reply === "string" && reply.reply.trim() !== "";
+      const isNewReply =
+        hasReplyText &&
+        (baselineReply === undefined || this.isNewAssistantReply(reply, baselineReply));
 
       if (isNewReply) {
-        if (reply !== candidateReply) {
+        if (!this.isSameAssistantReply(reply, candidateReply)) {
           candidateReply = reply;
           stablePolls = 1;
         } else {
           stablePolls += 1;
         }
 
-        if (candidateReply && stablePolls >= this.replyStablePolls) {
+        if (candidateReply?.reply && stablePolls >= this.replyStablePolls) {
           this.pendingReplyBaselines.delete(binding.sessionKey);
           return [
             {
               draftId: randomUUID(),
               sessionKey: binding.sessionKey,
-              text: candidateReply,
+              text: candidateReply.reply,
               createdAt: new Date().toISOString()
             }
           ];
@@ -331,7 +339,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return targetId;
   }
 
-  private async readLatestAssistantReply(targetId: string): Promise<string | null> {
+  private async readLatestAssistantSnapshot(targetId: string): Promise<AssistantReplySnapshot> {
     const structuredReply = await this.cdp.evaluateOnPage(
       this.buildAssistantReplyProbeScript(),
       targetId
@@ -339,13 +347,18 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     if (
       structuredReply &&
       typeof structuredReply === "object" &&
-      "reply" in structuredReply &&
-      typeof structuredReply.reply === "string"
+      "reply" in structuredReply
     ) {
-      const normalizedReply = structuredReply.reply.trim();
-      if (normalizedReply) {
-        return normalizedReply;
-      }
+      const rawReply = structuredReply.reply;
+      const normalizedReply = typeof rawReply === "string" ? rawReply.trim() : "";
+      const unitKey =
+        "unitKey" in structuredReply && typeof structuredReply.unitKey === "string"
+          ? structuredReply.unitKey
+          : null;
+      return {
+        unitKey,
+        reply: normalizedReply || null
+      };
     }
 
     const snapshotText = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
@@ -357,7 +370,36 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     }
 
     const parsedReply = parseAssistantReply(snapshotText).trim();
-    return parsedReply || null;
+    return {
+      unitKey: null,
+      reply: parsedReply || null
+    };
+  }
+
+  private isNewAssistantReply(
+    current: AssistantReplySnapshot,
+    baseline: AssistantReplySnapshot
+  ): boolean {
+    if (current.unitKey && baseline.unitKey) {
+      return current.unitKey !== baseline.unitKey;
+    }
+
+    return current.reply !== baseline.reply;
+  }
+
+  private isSameAssistantReply(
+    current: AssistantReplySnapshot,
+    candidate: AssistantReplySnapshot | null
+  ): boolean {
+    if (!candidate) {
+      return false;
+    }
+
+    if (current.unitKey && candidate.unitKey) {
+      return current.unitKey === candidate.unitKey && current.reply === candidate.reply;
+    }
+
+    return current.reply === candidate.reply;
   }
 
   private async waitForFreshThreadContext(targetId: string): Promise<void> {
@@ -662,7 +704,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       if (richContent instanceof HTMLElement) {
         const text = richContent.innerText.trim();
         if (text) {
-          return { reply: text };
+          return {
+            unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
+            reply: text
+          };
         }
       }
 
@@ -679,7 +724,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         .filter(Boolean)
         .join('\\n')
         .trim();
-      return text ? { reply: text } : null;
+      return text
+        ? {
+            unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
+            reply: text
+          }
+        : null;
     })();`;
   }
 }

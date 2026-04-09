@@ -268,7 +268,6 @@ describe("codex desktop driver contract", () => {
       .mockResolvedValueOnce({ ok: true, reason: "clicked_new_thread" })
       .mockResolvedValueOnce({ ok: true, reason: "fresh_thread" })
       .mockResolvedValueOnce({ reply: null })
-      .mockResolvedValueOnce("")
       .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
       .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" });
 
@@ -570,6 +569,67 @@ describe("codex desktop driver contract", () => {
     await expect(driver.collectAssistantReply(binding)).resolves.toMatchObject([
       {
         text: "新的完整回复"
+      }
+    ]);
+  });
+
+  it("treats a new assistant unit as a fresh reply even when the text matches the baseline", async () => {
+    const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+    const insertText = vi.fn().mockResolvedValue(undefined);
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ unitKey: "assistant-1", reply: "相同内容" })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-2", reply: "相同内容" })
+      .mockResolvedValueOnce({ unitKey: "assistant-2", reply: "相同内容" })
+      .mockResolvedValueOnce({ unitKey: "assistant-2", reply: "相同内容" });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent,
+        insertText
+      } as unknown as CdpSession,
+      {
+        replyPollIntervalMs: 0,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-same-text-new-unit",
+      accountKey: "qqbot:default",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "请再回答一次同样的话",
+      receivedAt: "2026-04-09T17:35:00.000Z"
+    });
+
+    await expect(driver.collectAssistantReply(binding)).resolves.toMatchObject([
+      {
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        text: "相同内容"
       }
     ]);
   });
