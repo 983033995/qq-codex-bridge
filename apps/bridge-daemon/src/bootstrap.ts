@@ -1,3 +1,4 @@
+import { QqApiClient } from "../../../packages/adapters/qq/src/qq-api-client.js";
 import { createQqChannelAdapter } from "../../../packages/adapters/qq/src/qq-channel-adapter.js";
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
@@ -12,8 +13,9 @@ export function bootstrap() {
   const db = createSqliteDatabase(config.databasePath);
   const sessionStore = new SqliteSessionStore(db);
   const transcriptStore = new SqliteTranscriptStore(db);
+  const qqApiClient = new QqApiClient(config.qqBot.appId, config.qqBot.clientSecret);
   const adapters = {
-    qq: createQqChannelAdapter(),
+    qq: createQqChannelAdapter(qqApiClient),
     codexDesktop: new CodexDesktopDriver(
       new CdpSession({
         appName: config.codexDesktop.appName,
