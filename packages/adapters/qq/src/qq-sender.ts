@@ -3,6 +3,8 @@ import type { QqEgressPort } from "../../../ports/src/qq.js";
 import type { QqApiClient } from "./qq-api-client.js";
 import { buildMediaArtifactFromReference, parseQqMediaSegments } from "./qq-media-parser.js";
 
+const QQ_MARKDOWN_DEFAULT_IMAGE_SIZE = { width: 512, height: 512 };
+
 export function chunkTextForQq(text: string, limit = 5000): string[] {
   const chunks: string[] = [];
 
@@ -94,7 +96,11 @@ export class QqSender implements QqEgressPort {
 
     for (const segment of parseQqMediaSegments(draft.text)) {
       if (segment.type === "text") {
-        lastProviderMessageId = await this.sendTextSegment(target, segment.text, replyToMessageId);
+        lastProviderMessageId = await this.sendTextSegment(
+          target,
+          normalizeTextSegmentForQq(segment.text),
+          replyToMessageId
+        );
         continue;
       }
 
@@ -132,9 +138,23 @@ export class QqSender implements QqEgressPort {
       return lastProviderMessageId;
     }
 
-    return this.sendTextSegment(target, draft.text, replyToMessageId);
+    return this.sendTextSegment(target, normalizeTextSegmentForQq(draft.text), replyToMessageId);
   }
 
+}
+
+function normalizeTextSegmentForQq(text: string): string {
+  if (!text) {
+    return text;
+  }
+
+  return text.replace(/!\[(.*?)\]\((https?:\/\/[^)]+)\)/g, (_match, altText: string, url: string) => {
+    if (/^#\d+px\s+#\d+px$/i.test(altText.trim())) {
+      return `![${altText}](${url})`;
+    }
+
+    return `![#${QQ_MARKDOWN_DEFAULT_IMAGE_SIZE.width}px #${QQ_MARKDOWN_DEFAULT_IMAGE_SIZE.height}px](${url})`;
+  });
 }
 
 function parseSessionTarget(sessionKey: string): { chatType: string; peerId: string } {

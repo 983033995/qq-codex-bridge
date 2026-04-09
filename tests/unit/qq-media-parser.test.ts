@@ -12,7 +12,7 @@ describe("qq media parser", () => {
     ]);
   });
 
-  it("parses markdown image and media links", () => {
+  it("parses local markdown images as media but keeps markdown links as text", () => {
     const segments = parseQqMediaSegments([
       "封面如下：",
       "![封面](/tmp/cover.png)",
@@ -22,8 +22,21 @@ describe("qq media parser", () => {
     expect(segments).toEqual([
       { type: "text", text: "封面如下：\n" },
       { type: "media", reference: "/tmp/cover.png" },
-      { type: "text", text: "\n" },
-      { type: "media", reference: "https://example.com/demo.mp4" }
+      { type: "text", text: "\n[视频](https://example.com/demo.mp4)" }
+    ]);
+  });
+
+  it("keeps remote markdown images in text so qq markdown formatting can render them", () => {
+    const segments = parseQqMediaSegments([
+      "看图：",
+      "![封面](https://example.com/cover.png)"
+    ].join("\n"));
+
+    expect(segments).toEqual([
+      {
+        type: "text",
+        text: "看图：\n![封面](https://example.com/cover.png)"
+      }
     ]);
   });
 });

@@ -7,7 +7,7 @@ export type QqMediaSegment =
   | { type: "media"; reference: string };
 
 const MEDIA_SEGMENT_PATTERN =
-  /<qqmedia>([\s\S]*?)<\/qqmedia>|!\[[^\]]*\]\(([^)]+)\)|\[[^\]]+\]\(([^)]+)\)/g;
+  /<qqmedia>([\s\S]*?)<\/qqmedia>|!\[[^\]]*\]\(([^)]+)\)/g;
 
 export function parseQqMediaSegments(text: string): QqMediaSegment[] {
   if (!text) {
@@ -24,9 +24,13 @@ export function parseQqMediaSegments(text: string): QqMediaSegment[] {
       segments.push({ type: "text", text: text.slice(lastIndex, matchIndex) });
     }
 
-    const reference = (match[1] ?? match[2] ?? match[3] ?? "").trim();
-    if (reference && isSupportedMediaReference(reference)) {
-      segments.push({ type: "media", reference });
+    const qqMediaReference = match[1]?.trim();
+    const markdownImageReference = match[2]?.trim();
+
+    if (qqMediaReference && isSupportedMediaReference(qqMediaReference)) {
+      segments.push({ type: "media", reference: qqMediaReference });
+    } else if (markdownImageReference && shouldRouteMarkdownImageAsMedia(markdownImageReference)) {
+      segments.push({ type: "media", reference: markdownImageReference });
     } else {
       segments.push({ type: "text", text: fullMatch });
     }
@@ -75,6 +79,14 @@ function mergeAdjacentTextSegments(segments: QqMediaSegment[]): QqMediaSegment[]
 
 function isSupportedMediaReference(reference: string): boolean {
   return hasRecognizedExtension(reference) || reference.startsWith("/") || reference.startsWith("http://") || reference.startsWith("https://");
+}
+
+function shouldRouteMarkdownImageAsMedia(reference: string): boolean {
+  return isLocalLikeReference(reference) || reference.startsWith("data:image/");
+}
+
+function isLocalLikeReference(reference: string): boolean {
+  return reference.startsWith("/") || reference.startsWith("./") || reference.startsWith("../") || /^[A-Za-z]:[\\/]/.test(reference);
 }
 
 function hasRecognizedExtension(reference: string): boolean {

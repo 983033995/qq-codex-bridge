@@ -163,4 +163,37 @@ describe("qq sender", () => {
       "qq-inbound-4"
     );
   });
+
+  it("preserves markdown links and normalizes remote markdown images for qq markdown mode", async () => {
+    const apiClient = {
+      sendC2CMessage: vi.fn().mockResolvedValue("qq-msg-markdown"),
+      sendGroupMessage: vi.fn(),
+      sendC2CMediaArtifact: vi.fn(),
+      sendGroupMediaArtifact: vi.fn()
+    };
+    const sender = new QqSender(apiClient);
+
+    await sender.deliver({
+      draftId: "draft-5",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      text: [
+        "测试图片",
+        "![封面](https://example.com/cover.png)",
+        "[点击打开测试音频 MP3](https://example.com/demo.mp3)"
+      ].join("\n"),
+      createdAt: "2026-04-09T10:00:05.000Z",
+      replyToMessageId: "qq-inbound-5"
+    });
+
+    expect(apiClient.sendC2CMediaArtifact).not.toHaveBeenCalled();
+    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith(
+      "OPENID123",
+      [
+        "测试图片",
+        "![#512px #512px](https://example.com/cover.png)",
+        "[点击打开测试音频 MP3](https://example.com/demo.mp3)"
+      ].join("\n"),
+      "qq-inbound-5"
+    );
+  });
 });
