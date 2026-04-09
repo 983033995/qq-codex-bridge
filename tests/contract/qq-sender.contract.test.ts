@@ -76,4 +76,91 @@ describe("qq sender", () => {
       "qq-inbound-2"
     );
   });
+
+  it("chunks long text replies instead of sending them as one oversized qq message", async () => {
+    const apiClient = {
+      sendC2CMessage: vi.fn().mockResolvedValue("qq-msg-text"),
+      sendGroupMessage: vi.fn(),
+      sendC2CMediaArtifact: vi.fn(),
+      sendGroupMediaArtifact: vi.fn()
+    };
+    const sender = new QqSender(apiClient);
+
+    await sender.deliver({
+      draftId: "draft-3",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      text: "a".repeat(10020),
+      createdAt: "2026-04-09T10:00:03.000Z",
+      replyToMessageId: "qq-inbound-3"
+    });
+
+    expect(apiClient.sendC2CMessage).toHaveBeenCalledTimes(3);
+    expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
+      1,
+      "OPENID123",
+      "a".repeat(5000),
+      "qq-inbound-3"
+    );
+    expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
+      2,
+      "OPENID123",
+      "a".repeat(5000),
+      "qq-inbound-3"
+    );
+    expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
+      3,
+      "OPENID123",
+      "a".repeat(20),
+      "qq-inbound-3"
+    );
+  });
+
+  it("continues sending trailing text when a media artifact fails to send", async () => {
+    const apiClient = {
+      sendC2CMessage: vi.fn().mockResolvedValue("qq-msg-text"),
+      sendGroupMessage: vi.fn(),
+      sendC2CMediaArtifact: vi.fn().mockRejectedValue(new Error("QQ media upload failed: 400")),
+      sendGroupMediaArtifact: vi.fn()
+    };
+    const sender = new QqSender(apiClient);
+
+    await expect(
+      sender.deliver({
+        draftId: "draft-4",
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        text: [
+          "开头文本",
+          "<qqmedia>/tmp/cat.png</qqmedia>",
+          "结尾文本"
+        ].join("\n"),
+        createdAt: "2026-04-09T10:00:04.000Z",
+        replyToMessageId: "qq-inbound-4"
+      })
+    ).resolves.toEqual({
+      jobId: "draft-4",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      providerMessageId: "qq-msg-text",
+      deliveredAt: "2026-04-09T10:00:04.000Z"
+    });
+
+    expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
+      1,
+      "OPENID123",
+      "开头文本\n",
+      "qq-inbound-4"
+    );
+    expect(apiClient.sendC2CMediaArtifact).toHaveBeenCalledTimes(1);
+    expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
+      2,
+      "OPENID123",
+      expect.stringContaining("媒体发送失败"),
+      "qq-inbound-4"
+    );
+    expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
+      3,
+      "OPENID123",
+      "\n结尾文本",
+      "qq-inbound-4"
+    );
+  });
 });

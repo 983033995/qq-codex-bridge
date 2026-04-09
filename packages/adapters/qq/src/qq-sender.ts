@@ -32,41 +32,6 @@ export class QqSender implements QqEgressPort {
     };
   }
 
-  private async deliverThroughApiClient(draft: OutboundDraft): Promise<string | null> {
-    if (!this.apiClient) {
-      return null;
-    }
-
-    const replyToMessageId = draft.replyToMessageId ?? draft.draftId;
-    const target = parseSessionTarget(draft.sessionKey);
-    let lastProviderMessageId: string | null = null;
-
-    for (const segment of parseQqMediaSegments(draft.text)) {
-      if (segment.type === "text") {
-        lastProviderMessageId = await this.sendTextSegment(target, segment.text, replyToMessageId);
-        continue;
-      }
-
-      lastProviderMessageId = await this.sendMediaArtifact(
-        target,
-        buildMediaArtifactFromReference(segment.reference),
-        replyToMessageId
-      );
-    }
-
-    if (draft.mediaArtifacts?.length) {
-      for (const artifact of draft.mediaArtifacts) {
-        lastProviderMessageId = await this.sendMediaArtifact(target, artifact, replyToMessageId);
-      }
-    }
-
-    if (lastProviderMessageId !== null) {
-      return lastProviderMessageId;
-    }
-
-    return this.sendTextSegment(target, draft.text, replyToMessageId);
-  }
-
   private async sendTextSegment(
     target: { chatType: string; peerId: string },
     text: string,
@@ -76,15 +41,24 @@ export class QqSender implements QqEgressPort {
       return null;
     }
 
-    if (target.chatType === "c2c") {
-      return this.apiClient!.sendC2CMessage(target.peerId, text, replyToMessageId);
+    let lastProviderMessageId: string | null = null;
+    for (const chunk of chunkTextForQq(text)) {
+      if (!chunk) {
+        continue;
+      }
+
+      if (target.chatType === "c2c") {
+        lastProviderMessageId = await this.apiClient!.sendC2CMessage(target.peerId, chunk, replyToMessageId);
+        continue;
+      }
+
+      if (target.chatType === "group") {
+        lastProviderMessageId = await this.apiClient!.sendGroupMessage(target.peerId, chunk, replyToMessageId);
+        continue;
+      }
     }
 
-    if (target.chatType === "group") {
-      return this.apiClient!.sendGroupMessage(target.peerId, text, replyToMessageId);
-    }
-
-    return null;
+    return lastProviderMessageId;
   }
 
   private async sendMediaArtifact(
@@ -102,6 +76,65 @@ export class QqSender implements QqEgressPort {
 
     return null;
   }
+
+  private buildMediaFailureText(artifact: MediaArtifact, error: unknown): string {
+    const filename = artifact.originalName || artifact.localPath || artifact.sourceUrl || "未知附件";
+    const reason = error instanceof Error ? error.message : String(error);
+    return `媒体发送失败：${filename}\n${reason}`;
+  }
+
+  private async deliverThroughApiClient(draft: OutboundDraft): Promise<string | null> {
+    if (!this.apiClient) {
+      return null;
+    }
+
+    const replyToMessageId = draft.replyToMessageId ?? draft.draftId;
+    const target = parseSessionTarget(draft.sessionKey);
+    let lastProviderMessageId: string | null = null;
+
+    for (const segment of parseQqMediaSegments(draft.text)) {
+      if (segment.type === "text") {
+        lastProviderMessageId = await this.sendTextSegment(target, segment.text, replyToMessageId);
+        continue;
+      }
+
+      const artifact = buildMediaArtifactFromReference(segment.reference);
+      try {
+        lastProviderMessageId = await this.sendMediaArtifact(
+          target,
+          artifact,
+          replyToMessageId
+        );
+      } catch (error) {
+        lastProviderMessageId = await this.sendTextSegment(
+          target,
+          this.buildMediaFailureText(artifact, error),
+          replyToMessageId
+        );
+      }
+    }
+
+    if (draft.mediaArtifacts?.length) {
+      for (const artifact of draft.mediaArtifacts) {
+        try {
+          lastProviderMessageId = await this.sendMediaArtifact(target, artifact, replyToMessageId);
+        } catch (error) {
+          lastProviderMessageId = await this.sendTextSegment(
+            target,
+            this.buildMediaFailureText(artifact, error),
+            replyToMessageId
+          );
+        }
+      }
+    }
+
+    if (lastProviderMessageId !== null) {
+      return lastProviderMessageId;
+    }
+
+    return this.sendTextSegment(target, draft.text, replyToMessageId);
+  }
+
 }
 
 function parseSessionTarget(sessionKey: string): { chatType: string; peerId: string } {
