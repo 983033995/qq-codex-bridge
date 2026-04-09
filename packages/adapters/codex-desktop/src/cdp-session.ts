@@ -24,6 +24,23 @@ export type CdpTarget = {
   url: string;
 };
 
+export type CdpKeyEvent = {
+  type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+  modifiers?: number;
+  text?: string;
+  unmodifiedText?: string;
+  keyIdentifier?: string;
+  code?: string;
+  key?: string;
+  windowsVirtualKeyCode?: number;
+  nativeVirtualKeyCode?: number;
+  autoRepeat?: boolean;
+  isKeypad?: boolean;
+  isSystemKey?: boolean;
+  location?: number;
+  commands?: string[];
+};
+
 type PendingCommand = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -127,6 +144,24 @@ export class CdpSession {
     }
 
     return payload.result?.value;
+  }
+
+  async insertText(text: string, targetId?: string): Promise<void> {
+    const target = await this.resolvePageTarget(targetId);
+    const sessionId = await this.attachToTarget(target.id);
+    await this.sendCommand(
+      "Input.insertText",
+      {
+        text
+      },
+      sessionId
+    );
+  }
+
+  async dispatchKeyEvent(event: CdpKeyEvent, targetId?: string): Promise<void> {
+    const target = await this.resolvePageTarget(targetId);
+    const sessionId = await this.attachToTarget(target.id);
+    await this.sendCommand("Input.dispatchKeyEvent", event, sessionId);
   }
 
   private async resolvePageTarget(targetId?: string): Promise<CdpTarget> {

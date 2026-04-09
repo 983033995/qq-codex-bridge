@@ -52,16 +52,23 @@ export class QqApiClient {
 
     const payload = (await response.json()) as {
       access_token?: string;
-      expires_in?: number;
+      expires_in?: number | string;
     };
 
-    if (!payload.access_token || typeof payload.expires_in !== "number") {
+    const expiresIn =
+      typeof payload.expires_in === "number"
+        ? payload.expires_in
+        : typeof payload.expires_in === "string"
+          ? Number(payload.expires_in)
+          : Number.NaN;
+
+    if (!payload.access_token || !Number.isFinite(expiresIn) || expiresIn <= 0) {
       throw new Error("QQ auth response missing access token");
     }
 
     this.cachedToken = {
       value: payload.access_token,
-      expiresAt: this.now() + Math.max(payload.expires_in - 60, 1) * 1000
+      expiresAt: this.now() + Math.max(expiresIn - 60, 1) * 1000
     };
 
     return payload.access_token;

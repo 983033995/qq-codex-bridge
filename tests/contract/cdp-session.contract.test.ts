@@ -203,4 +203,105 @@ describe("cdp session", () => {
     );
     expect(attachCount).toBe(1);
   });
+
+  it("reuses the attached target session for keyboard input and text insertion", async () => {
+    let port = 0;
+    let attachCount = 0;
+    const seenMethods: string[] = [];
+    const httpServer = createServer((request, response) => {
+      if (request.url === "/json/version") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            Browser: "Codex/1.0",
+            webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/abc`
+          })
+        );
+        return;
+      }
+
+      if (request.url === "/json/list") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify([
+            {
+              id: "page-1",
+              title: "Codex",
+              type: "page",
+              url: "app://codex"
+            }
+          ])
+        );
+        return;
+      }
+
+      response.writeHead(404);
+      response.end();
+    });
+    const browserSocketServer = new WebSocketServer({
+      server: httpServer,
+      path: "/devtools/browser/abc"
+    });
+    servers.push(browserSocketServer);
+    servers.push(httpServer);
+
+    browserSocketServer.on("connection", (socket) => {
+      socket.on("message", (payload) => {
+        const message = JSON.parse(payload.toString()) as {
+          id: number;
+          method: string;
+          params?: Record<string, unknown>;
+          sessionId?: string;
+        };
+
+        if (message.method === "Target.attachToTarget") {
+          attachCount += 1;
+          socket.send(
+            JSON.stringify({
+              id: message.id,
+              result: {
+                sessionId: "session-1"
+              }
+            })
+          );
+          return;
+        }
+
+        seenMethods.push(message.method);
+        expect(message.sessionId).toBe("session-1");
+
+        socket.send(
+          JSON.stringify({
+            id: message.id,
+            result: {}
+          })
+        );
+      });
+    });
+
+    httpServer.listen(0, "127.0.0.1");
+    await once(httpServer, "listening");
+    const address = httpServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("expected an address info object");
+    }
+    port = address.port;
+
+    const session = new CdpSession({
+      appName: "Codex",
+      remoteDebuggingPort: port
+    });
+
+    await session.dispatchKeyEvent(
+      {
+        type: "keyDown",
+        commands: ["selectAll"]
+      },
+      "page-1"
+    );
+    await session.insertText("你好，Codex", "page-1");
+
+    expect(attachCount).toBe(1);
+    expect(seenMethods).toEqual(["Input.dispatchKeyEvent", "Input.insertText"]);
+  });
 });

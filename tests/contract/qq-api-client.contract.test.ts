@@ -4,7 +4,7 @@ import { QqApiClient } from "../../packages/adapters/qq/src/qq-api-client.js";
 describe("qq api client", () => {
   it("fetches and caches the app access token", async () => {
     const fetchFn = vi.fn(async () =>
-      new Response(JSON.stringify({ access_token: "token-1", expires_in: 3600 }), {
+      new Response(JSON.stringify({ access_token: "token-1", expires_in: "3600" }), {
         status: 200,
         headers: { "content-type": "application/json" }
       })

@@ -86,13 +86,56 @@ describe("codex desktop driver contract", () => {
     expect(evaluateOnPage).toHaveBeenCalledWith("document.body.innerText", "page-1");
   });
 
-  it("polls until a new assistant reply appears after sending the user message", async () => {
+  it("prefers assistant reply units rendered by the current Codex desktop ui", async () => {
     const evaluateOnPage = vi
       .fn()
-      .mockResolvedValueOnce("User: previous\nAssistant: old reply")
-      .mockResolvedValueOnce({ ok: true, reason: "pressed_enter" })
-      .mockResolvedValueOnce("User: previous\nAssistant: old reply")
-      .mockResolvedValueOnce("User: new message\nAssistant: fresh reply");
+      .mockResolvedValueOnce({ reply: "current desktop reply" });
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        text: "current desktop reply"
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("data-content-search-unit-key"),
+      "page-1"
+    );
+    expect(evaluateOnPage).not.toHaveBeenCalledWith("document.body.innerText", "page-1");
+  });
+
+  it("polls until a new assistant reply appears after sending the user message", async () => {
+    const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+    const insertText = vi.fn().mockResolvedValue(undefined);
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply" })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ reply: "old reply" })
+      .mockResolvedValueOnce({ reply: "fresh reply" });
     const driver = new CodexDesktopDriver(
       {
         connect: vi.fn().mockResolvedValue({
@@ -108,7 +151,9 @@ describe("codex desktop driver contract", () => {
             url: "app://codex"
           }
         ]),
-        evaluateOnPage
+        evaluateOnPage,
+        dispatchKeyEvent,
+        insertText
       } as unknown as CdpSession,
       {
         replyPollIntervalMs: 0,
@@ -138,13 +183,66 @@ describe("codex desktop driver contract", () => {
         text: "fresh reply"
       }
     ]);
-    expect(evaluateOnPage).toHaveBeenNthCalledWith(1, "document.body.innerText", "page-1");
     expect(evaluateOnPage).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining("new message"),
+      1,
+      expect.stringContaining("data-content-search-unit-key"),
       "page-1"
     );
-    expect(evaluateOnPage).toHaveBeenNthCalledWith(3, "document.body.innerText", "page-1");
-    expect(evaluateOnPage).toHaveBeenNthCalledWith(4, "document.body.innerText", "page-1");
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("[data-codex-composer"),
+      "page-1"
+    );
+    expect(dispatchKeyEvent).toHaveBeenNthCalledWith(
+      1,
+      {
+        type: "keyDown",
+        commands: ["selectAll"]
+      },
+      "page-1"
+    );
+    expect(dispatchKeyEvent).toHaveBeenNthCalledWith(
+      2,
+      {
+        type: "keyDown",
+        key: "Backspace",
+        code: "Backspace",
+        windowsVirtualKeyCode: 8,
+        nativeVirtualKeyCode: 8
+      },
+      "page-1"
+    );
+    expect(dispatchKeyEvent).toHaveBeenNthCalledWith(
+      3,
+      {
+        type: "keyUp",
+        key: "Backspace",
+        code: "Backspace",
+        windowsVirtualKeyCode: 8,
+        nativeVirtualKeyCode: 8
+      },
+      "page-1"
+    );
+    expect(insertText).toHaveBeenCalledWith("new message", "page-1");
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("pointerdown"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("clicked_send_button"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      4,
+      expect.stringContaining("data-content-search-unit-key"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      5,
+      expect.stringContaining("data-content-search-unit-key"),
+      "page-1"
+    );
   });
 });

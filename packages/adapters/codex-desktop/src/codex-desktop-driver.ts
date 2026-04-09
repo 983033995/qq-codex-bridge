@@ -3,6 +3,7 @@ import { DesktopDriverError, type DriverBinding } from "../../../domain/src/driv
 import type { InboundMessage, OutboundDraft } from "../../../domain/src/message.js";
 import type { DesktopDriverPort } from "../../../ports/src/conversation.js";
 import { CdpSession } from "./cdp-session.js";
+import { isLikelyComposerSubmitButton } from "./composer-heuristics.js";
 import { parseAssistantReply } from "./reply-parser.js";
 
 const TARGET_REF_PREFIX = "cdp-target:";
@@ -23,7 +24,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     private readonly cdp: CdpSession,
     options: CodexDesktopDriverOptions = {}
   ) {
-    this.replyPollAttempts = options.replyPollAttempts ?? 20;
+    this.replyPollAttempts = options.replyPollAttempts ?? 60;
     this.replyPollIntervalMs = options.replyPollIntervalMs ?? 500;
     this.sleep =
       options.sleep ??
@@ -73,13 +74,53 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   async sendUserMessage(binding: DriverBinding, message: InboundMessage): Promise<void> {
     const targetId = await this.resolveTargetId(binding);
-    const baselineSnapshot = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
-    const baselineReply =
-      typeof baselineSnapshot === "string" ? parseAssistantReply(baselineSnapshot) || null : null;
+    const baselineReply = await this.readLatestAssistantReply(targetId);
     this.pendingReplyBaselines.set(binding.sessionKey, baselineReply);
 
+    const focusResult = (await this.cdp.evaluateOnPage(
+      this.buildFocusComposerScript(),
+      targetId
+    )) as { ok?: boolean; reason?: string } | undefined;
+
+    if (!focusResult?.ok) {
+      this.pendingReplyBaselines.delete(binding.sessionKey);
+      throw new DesktopDriverError(
+        `Codex desktop input box not found: ${focusResult?.reason ?? "unknown"}`,
+        "input_not_found"
+      );
+    }
+
+    await this.cdp.dispatchKeyEvent(
+      {
+        type: "keyDown",
+        commands: ["selectAll"]
+      },
+      targetId
+    );
+    await this.cdp.dispatchKeyEvent(
+      {
+        type: "keyDown",
+        key: "Backspace",
+        code: "Backspace",
+        windowsVirtualKeyCode: 8,
+        nativeVirtualKeyCode: 8
+      },
+      targetId
+    );
+    await this.cdp.dispatchKeyEvent(
+      {
+        type: "keyUp",
+        key: "Backspace",
+        code: "Backspace",
+        windowsVirtualKeyCode: 8,
+        nativeVirtualKeyCode: 8
+      },
+      targetId
+    );
+    await this.cdp.insertText(message.text, targetId);
+
     const result = (await this.cdp.evaluateOnPage(
-      this.buildComposeScript(message.text),
+      this.buildSubmitComposerScript(),
       targetId
     )) as { ok?: boolean; reason?: string } | undefined;
 
@@ -99,16 +140,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
 
     for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
-      const snapshotText = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
-      if (typeof snapshotText !== "string") {
-        this.pendingReplyBaselines.delete(binding.sessionKey);
-        throw new DesktopDriverError(
-          "Codex desktop reply snapshot was not a string",
-          "reply_parse_failed"
-        );
-      }
-
-      const reply = parseAssistantReply(snapshotText);
+      const reply = await this.readLatestAssistantReply(targetId);
       if (reply && (baselineReply === undefined || reply !== baselineReply)) {
         this.pendingReplyBaselines.delete(binding.sessionKey);
         return [
@@ -133,6 +165,35 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     );
   }
 
+  private async readLatestAssistantReply(targetId: string): Promise<string | null> {
+    const structuredReply = await this.cdp.evaluateOnPage(
+      this.buildAssistantReplyProbeScript(),
+      targetId
+    );
+    if (
+      structuredReply &&
+      typeof structuredReply === "object" &&
+      "reply" in structuredReply &&
+      typeof structuredReply.reply === "string"
+    ) {
+      const normalizedReply = structuredReply.reply.trim();
+      if (normalizedReply) {
+        return normalizedReply;
+      }
+    }
+
+    const snapshotText = await this.cdp.evaluateOnPage("document.body.innerText", targetId);
+    if (typeof snapshotText !== "string") {
+      throw new DesktopDriverError(
+        "Codex desktop reply snapshot was not a string",
+        "reply_parse_failed"
+      );
+    }
+
+    const parsedReply = parseAssistantReply(snapshotText).trim();
+    return parsedReply || null;
+  }
+
   async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {
     return;
   }
@@ -150,10 +211,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return rebound.codexThreadRef.slice(TARGET_REF_PREFIX.length);
   }
 
-  private buildComposeScript(text: string): string {
+  private buildFocusComposerScript(): string {
     return `(() => {
-      const value = ${JSON.stringify(text)};
       const selectors = [
+        '[data-codex-composer="true"]',
         'textarea',
         'input[type="text"]',
         '[contenteditable="true"]',
@@ -171,13 +232,21 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         return { ok: false, reason: 'input_not_found' };
       }
       input.focus();
-      if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
-        input.value = value;
-      } else {
-        input.textContent = value;
+      return { ok: true, reason: 'focused_input' };
+    })();`;
+  }
+
+  private buildSubmitComposerScript(): string {
+    const submitButtonMatcher = isLikelyComposerSubmitButton
+      .toString()
+      .replace(/^function\s+isLikelyComposerSubmitButton/, "function isLikelyComposerSubmitButton");
+
+    return `(() => {
+      ${submitButtonMatcher}
+      const input = document.querySelector('[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"], [role="textbox"]');
+      if (!(input instanceof HTMLElement)) {
+        return { ok: false, reason: 'input_not_found' };
       }
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
       const form = input.closest('form');
       if (form && typeof form.requestSubmit === 'function') {
         form.requestSubmit();
@@ -187,11 +256,23 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         if (!(candidate instanceof HTMLElement)) {
           return false;
         }
-        const label = candidate.getAttribute('aria-label') ?? candidate.getAttribute('title') ?? candidate.textContent ?? '';
-        return /send|发送|submit/i.test(label);
+        return isLikelyComposerSubmitButton({
+          text: candidate.textContent ?? '',
+          aria: candidate.getAttribute('aria-label'),
+          title: candidate.getAttribute('title'),
+          className: candidate.className ?? ''
+        });
       });
       if (sendButton instanceof HTMLElement) {
-        sendButton.click();
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+          sendButton.dispatchEvent(
+            new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            })
+          );
+        }
         return { ok: true, reason: 'clicked_send_button' };
       }
       const keyboardEventInit = {
@@ -206,6 +287,41 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       input.dispatchEvent(new KeyboardEvent('keypress', keyboardEventInit));
       input.dispatchEvent(new KeyboardEvent('keyup', keyboardEventInit));
       return { ok: true, reason: 'pressed_enter' };
+    })();`;
+  }
+
+  private buildAssistantReplyProbeScript(): string {
+    return `(() => {
+      const assistantUnits = Array.from(
+        document.querySelectorAll('[data-content-search-unit-key$=":assistant"]')
+      );
+      const latestAssistantUnit = assistantUnits.at(-1);
+      if (!(latestAssistantUnit instanceof HTMLElement)) {
+        return null;
+      }
+
+      const richContent = latestAssistantUnit.querySelector('[class*="_markdownContent_"]');
+      if (richContent instanceof HTMLElement) {
+        const text = richContent.innerText.trim();
+        if (text) {
+          return { reply: text };
+        }
+      }
+
+      const sanitizedUnit = latestAssistantUnit.cloneNode(true);
+      if (!(sanitizedUnit instanceof HTMLElement)) {
+        return null;
+      }
+      sanitizedUnit
+        .querySelectorAll('button, [role="button"], [aria-label], .text-xs')
+        .forEach((node) => node.remove());
+      const text = sanitizedUnit.innerText
+        .split('\\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join('\\n')
+        .trim();
+      return text ? { reply: text } : null;
     })();`;
   }
 }
