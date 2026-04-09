@@ -14,8 +14,12 @@ export function bootstrap() {
   const sessionStore = new SqliteSessionStore(db);
   const transcriptStore = new SqliteTranscriptStore(db);
   const qqApiClient = new QqApiClient(config.qqBot.appId, config.qqBot.clientSecret);
+  const accountKey = "qqbot:default";
   const adapters = {
-    qq: createQqChannelAdapter(qqApiClient),
+    qq: createQqChannelAdapter({
+      accountKey,
+      apiClient: qqApiClient
+    }),
     codexDesktop: new CodexDesktopDriver(
       new CdpSession({
         appName: config.codexDesktop.appName,
