@@ -342,6 +342,8 @@ describe("codex desktop driver contract", () => {
   it("prefers assistant reply units rendered by the current Codex desktop ui", async () => {
     const evaluateOnPage = vi
       .fn()
+      .mockResolvedValueOnce({ reply: "current desktop reply" })
+      .mockResolvedValueOnce({ reply: "current desktop reply" })
       .mockResolvedValueOnce({ reply: "current desktop reply" });
     const driver = new CodexDesktopDriver({
       connect: vi.fn().mockResolvedValue({
@@ -388,6 +390,8 @@ describe("codex desktop driver contract", () => {
       .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
       .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
       .mockResolvedValueOnce({ reply: "old reply" })
+      .mockResolvedValueOnce({ reply: "fresh reply" })
+      .mockResolvedValueOnce({ reply: "fresh reply" })
       .mockResolvedValueOnce({ reply: "fresh reply" });
     const driver = new CodexDesktopDriver(
       {
@@ -497,5 +501,76 @@ describe("codex desktop driver contract", () => {
       expect.stringContaining("data-content-search-unit-key"),
       "page-1"
     );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      6,
+      expect.stringContaining("data-content-search-unit-key"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      7,
+      expect.stringContaining("data-content-search-unit-key"),
+      "page-1"
+    );
+  });
+
+  it("waits for the streamed assistant reply to stabilize before returning it", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply" })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ reply: "old reply" })
+      .mockResolvedValueOnce({ reply: "新" })
+      .mockResolvedValueOnce({ reply: "新的" })
+      .mockResolvedValueOnce({ reply: "新的完整回复" })
+      .mockResolvedValueOnce({ reply: "新的完整回复" })
+      .mockResolvedValueOnce({ reply: "新的完整回复" });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollIntervalMs: 0,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-stream",
+      accountKey: "qqbot:default",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "请流式输出",
+      receivedAt: "2026-04-09T12:30:00.000Z"
+    });
+
+    await expect(driver.collectAssistantReply(binding)).resolves.toMatchObject([
+      {
+        text: "新的完整回复"
+      }
+    ]);
   });
 });

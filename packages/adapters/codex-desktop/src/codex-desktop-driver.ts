@@ -29,12 +29,14 @@ type ThreadLocator = {
 type CodexDesktopDriverOptions = {
   replyPollAttempts?: number;
   replyPollIntervalMs?: number;
+  replyStablePolls?: number;
   sleep?: (ms: number) => Promise<void>;
 };
 
 export class CodexDesktopDriver implements DesktopDriverPort {
   private readonly replyPollAttempts: number;
   private readonly replyPollIntervalMs: number;
+  private readonly replyStablePolls: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly pendingReplyBaselines = new Map<string, string | null>();
 
@@ -44,6 +46,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   ) {
     this.replyPollAttempts = options.replyPollAttempts ?? 60;
     this.replyPollIntervalMs = options.replyPollIntervalMs ?? 500;
+    this.replyStablePolls = Math.max(1, options.replyStablePolls ?? 3);
     this.sleep =
       options.sleep ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -250,19 +253,34 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   async collectAssistantReply(binding: DriverBinding): Promise<OutboundDraft[]> {
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
+    let candidateReply: string | null = null;
+    let stablePolls = 0;
 
     for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
       const reply = await this.readLatestAssistantReply(targetId);
-      if (reply && (baselineReply === undefined || reply !== baselineReply)) {
-        this.pendingReplyBaselines.delete(binding.sessionKey);
-        return [
-          {
-            draftId: randomUUID(),
-            sessionKey: binding.sessionKey,
-            text: reply,
-            createdAt: new Date().toISOString()
-          }
-        ];
+      const isNewReply = reply && (baselineReply === undefined || reply !== baselineReply);
+
+      if (isNewReply) {
+        if (reply !== candidateReply) {
+          candidateReply = reply;
+          stablePolls = 1;
+        } else {
+          stablePolls += 1;
+        }
+
+        if (candidateReply && stablePolls >= this.replyStablePolls) {
+          this.pendingReplyBaselines.delete(binding.sessionKey);
+          return [
+            {
+              draftId: randomUUID(),
+              sessionKey: binding.sessionKey,
+              text: candidateReply,
+              createdAt: new Date().toISOString()
+            }
+          ];
+        }
+      } else if (candidateReply) {
+        stablePolls = 0;
       }
 
       if (attempt + 1 < this.replyPollAttempts) {
