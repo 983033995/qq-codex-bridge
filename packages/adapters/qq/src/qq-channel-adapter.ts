@@ -1,13 +1,30 @@
-import { QqGateway } from "./qq-gateway.js";
 import { QqApiClient } from "./qq-api-client.js";
+import type { QqGatewaySessionStore } from "./qq-gateway-session-store.js";
+import { QqGatewayClient } from "./qq-gateway-client.js";
+import { QqMediaDownloader } from "./qq-media-downloader.js";
 import { QqSender } from "./qq-sender.js";
 
 export function createQqChannelAdapter(config: {
   accountKey: string;
-  apiClient?: QqApiClient;
+  appId: string;
+  apiClient: QqApiClient;
+  sessionStore: QqGatewaySessionStore;
+  mediaDownloadDir?: string;
 }) {
   return {
-    ingress: new QqGateway({ accountKey: config.accountKey }),
+    ingress: new QqGatewayClient({
+      accountKey: config.accountKey,
+      appId: config.appId,
+      apiClient: config.apiClient,
+      sessionStore: config.sessionStore,
+      ...(config.mediaDownloadDir
+        ? {
+            mediaDownloader: new QqMediaDownloader({
+              baseDir: config.mediaDownloadDir
+            })
+          }
+        : {})
+    }),
     egress: new QqSender(config.apiClient)
   };
 }

@@ -78,7 +78,8 @@ describe("BridgeOrchestrator", () => {
     const transcriptStore: TranscriptStorePort = {
       hasInbound: vi.fn().mockResolvedValue(true),
       recordInbound: vi.fn(),
-      recordOutbound: vi.fn()
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
     };
     const sessionStore: SessionStorePort = {
       getSession: vi.fn(),
@@ -135,7 +136,8 @@ describe("BridgeOrchestrator", () => {
       }),
       recordOutbound: vi.fn(async (draft: OutboundDraft) => {
         events.push(`recordOutbound:${draft.draftId}`);
-      })
+      }),
+      listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
     const sessionStore: SessionStorePort = {
@@ -224,7 +226,8 @@ describe("BridgeOrchestrator", () => {
     const transcriptStore: TranscriptStorePort = {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
-      recordOutbound: vi.fn()
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
     const sessionStore: SessionStorePort = {
@@ -274,7 +277,8 @@ describe("BridgeOrchestrator", () => {
     const transcriptStore: TranscriptStorePort = {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
-      recordOutbound: vi.fn()
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
     const sessionStore: SessionStorePort = {

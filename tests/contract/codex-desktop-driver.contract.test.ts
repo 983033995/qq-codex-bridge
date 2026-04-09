@@ -44,13 +44,142 @@ describe("codex desktop driver contract", () => {
           type: "page",
           url: "app://codex"
         }
+      ]),
+      evaluateOnPage: vi.fn().mockResolvedValue([
+        {
+          title: "线程 A",
+          projectName: "skills",
+          relativeTime: "2 小时",
+          isCurrent: true
+        }
       ])
     } as unknown as CdpSession);
 
     await expect(driver.openOrBindSession("qqbot:default::qq:c2c:OPENID123", null)).resolves.toEqual({
       sessionKey: "qqbot:default::qq:c2c:OPENID123",
-      codexThreadRef: "cdp-target:page-1"
+      codexThreadRef: expect.stringContaining("codex-thread:page-1:")
     });
+  });
+
+  it("lists recent real codex sidebar threads from the current desktop ui", async () => {
+    const evaluateOnPage = vi.fn().mockResolvedValue([
+      {
+        title: "线程 A",
+        projectName: "skills",
+        relativeTime: "2 小时",
+        isCurrent: true
+      },
+      {
+        title: "线程 B",
+        projectName: "Desktop",
+        relativeTime: "1 天",
+        isCurrent: false
+      }
+    ]);
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(driver.listRecentThreads(20)).resolves.toEqual([
+      {
+        index: 1,
+        title: "线程 A",
+        projectName: "skills",
+        relativeTime: "2 小时",
+        isCurrent: true,
+        threadRef: expect.stringContaining("codex-thread:page-1:")
+      },
+      {
+        index: 2,
+        title: "线程 B",
+        projectName: "Desktop",
+        relativeTime: "1 天",
+        isCurrent: false,
+        threadRef: expect.stringContaining("codex-thread:page-1:")
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenCalledWith(
+      expect.stringContaining("data-thread-title"),
+      "page-1"
+    );
+  });
+
+  it("switches a qq session binding to a selected codex sidebar thread", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          title: "线程 A",
+          projectName: "skills",
+          relativeTime: "2 小时",
+          isCurrent: false
+        },
+        {
+          title: "线程 B",
+          projectName: "skills",
+          relativeTime: "1 天",
+          isCurrent: true
+        }
+      ])
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce([
+        {
+          title: "线程 A",
+          projectName: "skills",
+          relativeTime: "刚刚",
+          isCurrent: true
+        },
+        {
+          title: "线程 B",
+          projectName: "skills",
+          relativeTime: "1 天",
+          isCurrent: false
+        }
+      ]);
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    const threads = await driver.listRecentThreads(20);
+    await expect(
+      driver.switchToThread("qqbot:default::qq:c2c:OPENID123", threads[0].threadRef)
+    ).resolves.toEqual({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: threads[0].threadRef
+    });
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("clicked_thread"),
+      "page-1"
+    );
   });
 
   it("collects the latest assistant reply from page text via cdp evaluation", async () => {

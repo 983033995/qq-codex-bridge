@@ -1,5 +1,5 @@
 import type { BridgeSession, BridgeSessionStatus } from "../../domain/src/session.js";
-import type { InboundMessage, OutboundDraft } from "../../domain/src/message.js";
+import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../domain/src/message.js";
 
 export interface SessionStorePort {
   getSession(sessionKey: string): Promise<BridgeSession | null>;
@@ -17,4 +17,5 @@ export interface TranscriptStorePort {
   recordInbound(message: InboundMessage): Promise<void>;
   recordOutbound(draft: OutboundDraft): Promise<void>;
   hasInbound(messageId: string): Promise<boolean>;
+  listRecentConversation(sessionKey: string, limit: number): Promise<ConversationEntry[]>;
 }

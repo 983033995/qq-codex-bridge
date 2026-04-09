@@ -32,7 +32,8 @@ describe("rebind recovery", () => {
     const transcriptStore = {
       recordInbound: vi.fn().mockResolvedValue(undefined),
       recordOutbound: vi.fn().mockResolvedValue(undefined),
-      hasInbound: vi.fn().mockResolvedValue(false)
+      hasInbound: vi.fn().mockResolvedValue(false),
+      listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
     const orchestrator = new BridgeOrchestrator({

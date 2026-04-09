@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { InboundMessage, OutboundDraft } from "../../domain/src/message.js";
+import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../domain/src/message.js";
 import type { TranscriptStorePort } from "../../ports/src/store.js";
 import type { SqliteDatabase } from "./sqlite.js";
 
@@ -41,5 +41,33 @@ export class SqliteTranscriptStore implements TranscriptStorePort {
   async hasInbound(messageId: string): Promise<boolean> {
     const row = this.db.prepare(`SELECT 1 FROM message_ledger WHERE message_id = ? AND direction = 'inbound'`).get(messageId);
     return row !== undefined && row !== null;
+  }
+
+  async listRecentConversation(sessionKey: string, limit: number): Promise<ConversationEntry[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT direction, text, created_at AS createdAt
+         FROM (
+           SELECT direction,
+                  json_extract(payload_json, '$.text') AS text,
+                  created_at
+           FROM message_ledger
+           WHERE session_key = ?
+
+           UNION ALL
+
+           SELECT 'outbound' AS direction,
+                  json_extract(payload_json, '$.text') AS text,
+                  created_at
+           FROM delivery_jobs
+           WHERE session_key = ?
+         )
+         WHERE text IS NOT NULL AND text != ''
+         ORDER BY createdAt DESC
+         LIMIT ?`
+      )
+      .all(sessionKey, sessionKey, limit) as Array<ConversationEntry>;
+
+    return rows.reverse();
   }
 }

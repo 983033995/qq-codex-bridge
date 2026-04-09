@@ -9,7 +9,8 @@ export const appConfigSchema = z.object({
   }),
   qqBot: z.object({
     appId: z.string().min(1),
-    clientSecret: z.string().min(1)
+    clientSecret: z.string().min(1),
+    markdownSupport: z.boolean()
   }),
   codexDesktop: z.object({
     appName: z.string().min(1),
@@ -29,7 +30,8 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
     },
     qqBot: {
       appId: env.QQBOT_APP_ID,
-      clientSecret: env.QQBOT_CLIENT_SECRET
+      clientSecret: env.QQBOT_CLIENT_SECRET,
+      markdownSupport: env.QQBOT_MARKDOWN_SUPPORT !== "false"
     },
     codexDesktop: {
       appName: env.CODEX_APP_NAME ?? "Codex",

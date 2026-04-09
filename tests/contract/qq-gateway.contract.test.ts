@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { MediaArtifactKind } from "../../packages/domain/src/message.js";
 import { QqGateway } from "../../packages/adapters/qq/src/qq-gateway.js";
 
 describe("qq gateway", () => {
@@ -76,5 +77,64 @@ describe("qq gateway", () => {
     } as never);
 
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("downloads attachments and forwards them as media artifacts", async () => {
+    const gateway = new QqGateway({
+      accountKey: "qqbot:default",
+      mediaDownloader: {
+        downloadMediaArtifact: vi.fn().mockResolvedValue({
+          kind: MediaArtifactKind.Image,
+          sourceUrl: "https://example.com/cat.png",
+          localPath: "/tmp/qq-media/cat.png",
+          mimeType: "image/png",
+          fileSize: 2048,
+          originalName: "cat.png"
+        })
+      }
+    });
+    const handler = vi.fn().mockResolvedValue(undefined);
+
+    await gateway.onMessage(handler);
+    await gateway.dispatchPayload({
+      t: "C2C_MESSAGE_CREATE",
+      d: {
+        id: "msg-4",
+        content: "看图",
+        timestamp: "2026-04-09T10:00:03.000Z",
+        author: {
+          user_openid: "OPENID999"
+        },
+        attachments: [
+          {
+            content_type: "image/png",
+            filename: "cat.png",
+            size: 2048,
+            url: "https://example.com/cat.png"
+          }
+        ]
+      }
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      messageId: "msg-4",
+      accountKey: "qqbot:default",
+      sessionKey: "qqbot:default::qq:c2c:OPENID999",
+      peerKey: "qq:c2c:OPENID999",
+      chatType: "c2c",
+      senderId: "OPENID999",
+      text: "看图",
+      mediaArtifacts: [
+        {
+          kind: MediaArtifactKind.Image,
+          sourceUrl: "https://example.com/cat.png",
+          localPath: "/tmp/qq-media/cat.png",
+          mimeType: "image/png",
+          fileSize: 2048,
+          originalName: "cat.png"
+        }
+      ],
+      receivedAt: "2026-04-09T10:00:03.000Z"
+    });
   });
 });

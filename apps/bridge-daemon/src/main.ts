@@ -1,37 +1,29 @@
 import { pathToFileURL } from "node:url";
 import { bootstrap } from "./bootstrap.js";
-import { createQqWebhookServer } from "./http-server.js";
+import { ThreadCommandHandler } from "./thread-command-handler.js";
 
 export async function runBridgeDaemon() {
   const app = bootstrap();
+  const threadCommandHandler = new ThreadCommandHandler({
+    sessionStore: app.sessionStore,
+    transcriptStore: app.transcriptStore,
+    desktopDriver: app.adapters.codexDesktop,
+    qqEgress: app.adapters.qq.egress
+  });
 
   await app.adapters.qq.ingress.onMessage(async (message) => {
+    const handled = await threadCommandHandler.handleIfCommand(message);
+    if (handled) {
+      return;
+    }
     await app.orchestrator.handleInbound(message);
   });
 
-  const server = createQqWebhookServer({
-    webhookPath: app.config.runtime.webhookPath,
-    ingress: app.adapters.qq.ingress,
-    onDispatchError: (error, payload) => {
-      console.error("[qq-codex-bridge] webhook dispatch failed", {
-        error,
-        payload
-      });
-    }
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(app.config.runtime.listenPort, app.config.runtime.listenHost, () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
+  await app.adapters.qq.ingress.start();
 
   console.log("[qq-codex-bridge] ready", {
-    listenHost: app.config.runtime.listenHost,
-    listenPort: app.config.runtime.listenPort,
-    webhookPath: app.config.runtime.webhookPath
+    transport: "qq-gateway-websocket",
+    accountKey: "qqbot:default"
   });
 }
 

@@ -3,6 +3,15 @@ export type DriverBinding = {
   codexThreadRef: string | null;
 };
 
+export type CodexThreadSummary = {
+  index: number;
+  title: string;
+  projectName: string | null;
+  relativeTime: string | null;
+  isCurrent: boolean;
+  threadRef: string;
+};
+
 export class DesktopDriverError extends Error {
   constructor(
     message: string,

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { DesktopDriverError, type DriverBinding } from "../../../domain/src/driver.js";
+import {
+  DesktopDriverError,
+  type CodexThreadSummary,
+  type DriverBinding
+} from "../../../domain/src/driver.js";
 import type { InboundMessage, OutboundDraft } from "../../../domain/src/message.js";
 import type { DesktopDriverPort } from "../../../ports/src/conversation.js";
 import { CdpSession } from "./cdp-session.js";
@@ -7,6 +11,20 @@ import { isLikelyComposerSubmitButton } from "./composer-heuristics.js";
 import { parseAssistantReply } from "./reply-parser.js";
 
 const TARGET_REF_PREFIX = "cdp-target:";
+const THREAD_REF_PREFIX = "codex-thread:";
+
+type RawSidebarThread = {
+  title: string;
+  projectName: string | null;
+  relativeTime: string | null;
+  isCurrent: boolean;
+};
+
+type ThreadLocator = {
+  pageId: string;
+  title: string;
+  projectName: string | null;
+};
 
 type CodexDesktopDriverOptions = {
   replyPollAttempts?: number;
@@ -48,32 +66,133 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     sessionKey: string,
     binding: DriverBinding | null
   ): Promise<DriverBinding> {
-    const targets = await this.cdp.listTargets();
-    if (binding?.codexThreadRef?.startsWith(TARGET_REF_PREFIX)) {
-      const boundTargetId = binding.codexThreadRef.slice(TARGET_REF_PREFIX.length);
-      const stillExists = targets.some((target) => target.id === boundTargetId && target.type === "page");
-      if (stillExists) {
-        return binding;
+    const pageTarget = await this.resolvePageTarget();
+    const pageId = pageTarget.id;
+
+    if (binding?.codexThreadRef?.startsWith(THREAD_REF_PREFIX)) {
+      const locator = this.decodeThreadRef(binding.codexThreadRef);
+      if (locator && locator.pageId === pageId) {
+        const threads = await this.listRecentThreads(200);
+        const matched = threads.find((thread) => thread.threadRef === binding.codexThreadRef);
+        if (matched) {
+          return binding;
+        }
       }
     }
 
-    const pageTarget = targets.find((target) => target.type === "page");
+    const currentThread = (await this.listRecentThreads(200)).find((thread) => thread.isCurrent);
+    if (currentThread) {
+      return {
+        sessionKey,
+        codexThreadRef: currentThread.threadRef
+      };
+    }
 
-    if (!pageTarget) {
+    return {
+      sessionKey,
+      codexThreadRef: `${TARGET_REF_PREFIX}${pageId}`
+    };
+  }
+
+  async listRecentThreads(limit: number): Promise<CodexThreadSummary[]> {
+    const pageTarget = await this.resolvePageTarget();
+    const rawThreads = (await this.cdp.evaluateOnPage(
+      this.buildThreadListScript(limit),
+      pageTarget.id
+    )) as RawSidebarThread[] | null;
+
+    if (!Array.isArray(rawThreads)) {
+      return [];
+    }
+
+    return rawThreads.map((thread, index) => ({
+      index: index + 1,
+      title: thread.title,
+      projectName: thread.projectName,
+      relativeTime: thread.relativeTime,
+      isCurrent: thread.isCurrent,
+      threadRef: this.encodeThreadRef({
+        pageId: pageTarget.id,
+        title: thread.title,
+        projectName: thread.projectName
+      })
+    }));
+  }
+
+  async switchToThread(sessionKey: string, threadRef: string): Promise<DriverBinding> {
+    const locator = this.decodeThreadRef(threadRef);
+    if (!locator) {
+      throw new DesktopDriverError("Codex thread binding is invalid", "session_not_found");
+    }
+
+    const result = (await this.cdp.evaluateOnPage(
+      this.buildSelectThreadScript(locator),
+      locator.pageId
+    )) as { ok?: boolean; reason?: string } | undefined;
+
+    if (!result?.ok) {
       throw new DesktopDriverError(
-        "Codex desktop app is not exposing any inspectable page target",
+        `Codex desktop thread switch failed: ${result?.reason ?? "unknown"}`,
         "session_not_found"
       );
     }
 
     return {
       sessionKey,
-      codexThreadRef: `${TARGET_REF_PREFIX}${pageTarget.id}`
+      codexThreadRef: threadRef
+    };
+  }
+
+  async createThread(sessionKey: string, seedPrompt: string): Promise<DriverBinding> {
+    const pageTarget = await this.resolvePageTarget();
+    const clickResult = (await this.cdp.evaluateOnPage(
+      this.buildNewThreadScript(),
+      pageTarget.id
+    )) as { ok?: boolean; reason?: string } | undefined;
+
+    if (!clickResult?.ok) {
+      throw new DesktopDriverError(
+        `Codex desktop new thread failed: ${clickResult?.reason ?? "unknown"}`,
+        "session_not_found"
+      );
+    }
+
+    await this.sleep(150);
+
+    if (seedPrompt.trim()) {
+      const temporaryBinding: DriverBinding = {
+        sessionKey,
+        codexThreadRef: `${TARGET_REF_PREFIX}${pageTarget.id}`
+      };
+      await this.sendUserMessage(temporaryBinding, {
+        messageId: `thread-seed:${randomUUID()}`,
+        accountKey: "qqbot:default",
+        sessionKey,
+        peerKey: "qq:c2c:thread-control",
+        chatType: "c2c",
+        senderId: "thread-control",
+        text: seedPrompt,
+        receivedAt: new Date().toISOString()
+      });
+      await this.collectAssistantReply(temporaryBinding);
+    }
+
+    const currentThread = (await this.listRecentThreads(200)).find((thread) => thread.isCurrent);
+    if (!currentThread) {
+      throw new DesktopDriverError(
+        "Codex desktop current thread could not be resolved after creation",
+        "session_not_found"
+      );
+    }
+
+    return {
+      sessionKey,
+      codexThreadRef: currentThread.threadRef
     };
   }
 
   async sendUserMessage(binding: DriverBinding, message: InboundMessage): Promise<void> {
-    const targetId = await this.resolveTargetId(binding);
+    const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = await this.readLatestAssistantReply(targetId);
     this.pendingReplyBaselines.set(binding.sessionKey, baselineReply);
 
@@ -136,7 +255,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   }
 
   async collectAssistantReply(binding: DriverBinding): Promise<OutboundDraft[]> {
-    const targetId = await this.resolveTargetId(binding);
+    const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
 
     for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
@@ -163,6 +282,42 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       "Codex desktop reply did not arrive before timeout",
       "reply_timeout"
     );
+  }
+
+  async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {
+    return;
+  }
+
+  private async ensureThreadSelected(binding: DriverBinding): Promise<string> {
+    const targetId = await this.resolveTargetId(binding);
+    const locator = binding.codexThreadRef
+      ? this.decodeThreadRef(binding.codexThreadRef)
+      : null;
+
+    if (!locator) {
+      return targetId;
+    }
+
+    const threads = await this.listRecentThreads(200);
+    const currentThread = threads.find((thread) => thread.isCurrent);
+    if (currentThread?.threadRef === binding.codexThreadRef) {
+      return targetId;
+    }
+
+    const switchResult = (await this.cdp.evaluateOnPage(
+      this.buildSelectThreadScript(locator),
+      targetId
+    )) as { ok?: boolean; reason?: string } | undefined;
+
+    if (!switchResult?.ok) {
+      throw new DesktopDriverError(
+        `Codex desktop thread switch failed: ${switchResult?.reason ?? "unknown"}`,
+        "session_not_found"
+      );
+    }
+
+    await this.sleep(100);
+    return targetId;
   }
 
   private async readLatestAssistantReply(targetId: string): Promise<string | null> {
@@ -194,21 +349,167 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return parsedReply || null;
   }
 
-  async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {
-    return;
+  private async resolvePageTarget() {
+    const targets = await this.cdp.listTargets();
+    const pageTarget = targets.find((target) => target.type === "page");
+
+    if (!pageTarget) {
+      throw new DesktopDriverError(
+        "Codex desktop app is not exposing any inspectable page target",
+        "session_not_found"
+      );
+    }
+
+    return pageTarget;
   }
 
   private async resolveTargetId(binding: DriverBinding): Promise<string> {
+    if (binding.codexThreadRef?.startsWith(THREAD_REF_PREFIX)) {
+      const locator = this.decodeThreadRef(binding.codexThreadRef);
+      if (locator) {
+        return locator.pageId;
+      }
+    }
+
     if (binding.codexThreadRef?.startsWith(TARGET_REF_PREFIX)) {
       return binding.codexThreadRef.slice(TARGET_REF_PREFIX.length);
     }
 
     const rebound = await this.openOrBindSession(binding.sessionKey, binding);
-    if (!rebound.codexThreadRef?.startsWith(TARGET_REF_PREFIX)) {
-      throw new DesktopDriverError("Codex desktop session binding is missing a target ref", "session_not_found");
+    return this.resolveTargetId(rebound);
+  }
+
+  private encodeThreadRef(locator: ThreadLocator): string {
+    const encoded = Buffer.from(
+      JSON.stringify({
+        title: locator.title,
+        projectName: locator.projectName
+      }),
+      "utf8"
+    ).toString("base64url");
+    return `${THREAD_REF_PREFIX}${locator.pageId}:${encoded}`;
+  }
+
+  private decodeThreadRef(threadRef: string): ThreadLocator | null {
+    if (!threadRef.startsWith(THREAD_REF_PREFIX)) {
+      return null;
     }
 
-    return rebound.codexThreadRef.slice(TARGET_REF_PREFIX.length);
+    const payload = threadRef.slice(THREAD_REF_PREFIX.length);
+    const separatorIndex = payload.indexOf(":");
+    if (separatorIndex <= 0) {
+      return null;
+    }
+
+    const pageId = payload.slice(0, separatorIndex);
+    const encodedLocator = payload.slice(separatorIndex + 1);
+
+    try {
+      const locator = JSON.parse(
+        Buffer.from(encodedLocator, "base64url").toString("utf8")
+      ) as { title?: string; projectName?: string | null };
+
+      if (typeof locator.title !== "string" || locator.title.trim() === "") {
+        return null;
+      }
+
+      return {
+        pageId,
+        title: locator.title,
+        projectName:
+          typeof locator.projectName === "string" && locator.projectName.trim() !== ""
+            ? locator.projectName
+            : null
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private buildThreadListScript(limit: number): string {
+    return `(() => {
+      const toText = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const rows = Array.from(document.querySelectorAll('[data-thread-title="true"]'))
+        .map((titleNode) => {
+          if (!(titleNode instanceof HTMLElement)) {
+            return null;
+          }
+          const row = titleNode.closest('[role="button"]');
+          if (!(row instanceof HTMLElement)) {
+            return null;
+          }
+          const projectContainer = row.closest('[role="listitem"]');
+          const timeNode = row.querySelector('.text-token-description-foreground');
+          return {
+            title: toText(titleNode.innerText),
+            projectName: projectContainer?.getAttribute('aria-label') ?? null,
+            relativeTime: timeNode instanceof HTMLElement ? toText(timeNode.innerText) || null : null,
+            isCurrent: row.getAttribute('aria-current') === 'page'
+          };
+        })
+        .filter((thread) => thread && thread.title)
+        .slice(0, ${limit});
+      return rows;
+    })();`;
+  }
+
+  private buildSelectThreadScript(locator: ThreadLocator): string {
+    const expectedTitle = JSON.stringify(locator.title);
+    const expectedProject = JSON.stringify(locator.projectName);
+    return `(() => {
+      const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const target = Array.from(document.querySelectorAll('[data-thread-title="true"]'))
+        .find((titleNode) => {
+          if (!(titleNode instanceof HTMLElement)) {
+            return false;
+          }
+          const row = titleNode.closest('[role="button"]');
+          if (!(row instanceof HTMLElement)) {
+            return false;
+          }
+          const projectContainer = row.closest('[role="listitem"]');
+          const projectName = projectContainer?.getAttribute('aria-label') ?? null;
+          return normalize(titleNode.innerText) === normalize(${expectedTitle})
+            && projectName === ${expectedProject};
+        });
+      if (!(target instanceof HTMLElement)) {
+        return { ok: false, reason: 'thread_not_found' };
+      }
+      const row = target.closest('[role="button"]');
+      if (!(row instanceof HTMLElement)) {
+        return { ok: false, reason: 'row_not_found' };
+      }
+      if (row.getAttribute('aria-current') === 'page') {
+        return { ok: true, reason: 'already_current' };
+      }
+      row.focus();
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        row.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+      return { ok: true, reason: 'clicked_thread' };
+    })();`;
+  }
+
+  private buildNewThreadScript(): string {
+    return `(() => {
+      const controls = Array.from(document.querySelectorAll('button, [role="button"]'));
+      const button = controls.find((candidate) => {
+        if (!(candidate instanceof HTMLElement)) {
+          return false;
+        }
+        const text = (candidate.textContent || '').replace(/\\s+/g, ' ').trim();
+        const aria = candidate.getAttribute('aria-label') || '';
+        return text === '新线程' || aria.includes('开始新线程');
+      });
+      if (!(button instanceof HTMLElement)) {
+        return { ok: false, reason: 'new_thread_button_not_found' };
+      }
+      button.focus();
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        button.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+      return { ok: true, reason: 'clicked_new_thread' };
+    })();`;
   }
 
   private buildFocusComposerScript(): string {

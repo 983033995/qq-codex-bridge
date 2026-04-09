@@ -1,9 +1,12 @@
+import path from "node:path";
 import { QqApiClient } from "../../../packages/adapters/qq/src/qq-api-client.js";
 import { createQqChannelAdapter } from "../../../packages/adapters/qq/src/qq-channel-adapter.js";
+import { FileQqGatewaySessionStore } from "../../../packages/adapters/qq/src/qq-gateway-session-store.js";
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
 import { BridgeOrchestrator } from "../../../packages/orchestrator/src/bridge-orchestrator.js";
+import { buildCodexInboundText } from "../../../packages/orchestrator/src/media-context.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
@@ -14,12 +17,22 @@ export function bootstrap() {
   const db = createSqliteDatabase(config.databasePath);
   const sessionStore = new SqliteSessionStore(db);
   const transcriptStore = new SqliteTranscriptStore(db);
-  const qqApiClient = new QqApiClient(config.qqBot.appId, config.qqBot.clientSecret);
+  const qqApiClient = new QqApiClient(config.qqBot.appId, config.qqBot.clientSecret, {
+    markdownSupport: config.qqBot.markdownSupport
+  });
   const accountKey = "qqbot:default";
+  const qqGatewaySessionStore = new FileQqGatewaySessionStore(
+    path.join(path.dirname(config.databasePath), "qq-gateway-session.json"),
+    accountKey,
+    config.qqBot.appId
+  );
   const adapters = {
     qq: createQqChannelAdapter({
       accountKey,
-      apiClient: qqApiClient
+      appId: config.qqBot.appId,
+      apiClient: qqApiClient,
+      sessionStore: qqGatewaySessionStore,
+      mediaDownloadDir: path.join(path.dirname(config.databasePath), "media")
     }),
     codexDesktop: new CodexDesktopDriver(
       new CdpSession({
@@ -44,11 +57,18 @@ export function bootstrap() {
         message.sessionKey,
         currentBinding
       );
-      await adapters.codexDesktop.sendUserMessage(binding, message);
+      await adapters.codexDesktop.sendUserMessage(binding, {
+        ...message,
+        text: buildCodexInboundText(message)
+      });
       if (session?.codexThreadRef !== binding.codexThreadRef) {
         await sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
       }
-      return adapters.codexDesktop.collectAssistantReply(binding);
+      const drafts = await adapters.codexDesktop.collectAssistantReply(binding);
+      return drafts.map((draft) => ({
+        ...draft,
+        replyToMessageId: message.messageId
+      }));
     }
   };
 
@@ -62,7 +82,10 @@ export function bootstrap() {
   return {
     config,
     db,
+    sessionStore,
+    transcriptStore,
     adapters,
-    orchestrator
+    orchestrator,
+    qqGatewaySessionStore
   };
 }

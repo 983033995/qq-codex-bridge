@@ -1,4 +1,4 @@
-import type { InboundMessage } from "../../../domain/src/message.js";
+import type { InboundMessage, MediaArtifact } from "../../../domain/src/message.js";
 import { buildPeerKey, buildSessionKey } from "../../../orchestrator/src/session-key.js";
 
 export function normalizeC2CMessage(
@@ -8,7 +8,8 @@ export function normalizeC2CMessage(
     timestamp: string;
     author: { user_openid: string };
   },
-  accountKey: string
+  accountKey: string,
+  mediaArtifacts: MediaArtifact[] = []
 ): InboundMessage {
   const peerKey = buildPeerKey({
     chatType: "c2c",
@@ -23,6 +24,7 @@ export function normalizeC2CMessage(
     chatType: "c2c",
     senderId: event.author.user_openid,
     text: event.content,
+    ...(mediaArtifacts.length > 0 ? { mediaArtifacts } : {}),
     receivedAt: event.timestamp
   };
 }
@@ -35,7 +37,8 @@ export function normalizeGroupMessage(
     group_openid: string;
     author: { member_openid: string };
   },
-  accountKey: string
+  accountKey: string,
+  mediaArtifacts: MediaArtifact[] = []
 ): InboundMessage {
   const peerKey = buildPeerKey({
     chatType: "group",
@@ -50,6 +53,7 @@ export function normalizeGroupMessage(
     chatType: "group",
     senderId: event.author.member_openid,
     text: event.content,
+    ...(mediaArtifacts.length > 0 ? { mediaArtifacts } : {}),
     receivedAt: event.timestamp
   };
 }
