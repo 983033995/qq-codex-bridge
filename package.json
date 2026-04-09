@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx apps/bridge-daemon/src/main.ts",
+    "dev": "tsx --env-file=.env apps/bridge-daemon/src/main.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc -p tsconfig.json --noEmit"

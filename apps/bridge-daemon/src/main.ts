@@ -35,6 +35,14 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("[qq-codex-bridge] fatal", error);
+  // Safe error serialization to avoid Node.js 24 console.error crash
+  const cause = error instanceof Error ? error.cause : undefined;
+  console.error("[qq-codex-bridge] fatal:", error.message ?? String(error));
+  if (cause !== undefined) {
+    console.error("  caused by:", cause);
+  }
+  if (error instanceof Error && error.stack) {
+    console.error("  stack:", error.stack);
+  }
   process.exitCode = 1;
 });
