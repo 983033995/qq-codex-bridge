@@ -1,4 +1,5 @@
 import { bootstrap } from "./bootstrap.js";
+import { createQqWebhookServer } from "./http-server.js";
 
 async function main() {
   const app = bootstrap();
@@ -7,7 +8,24 @@ async function main() {
     await app.orchestrator.handleInbound(message);
   });
 
-  console.log("[qq-codex-bridge] ready");
+  const server = createQqWebhookServer({
+    webhookPath: app.config.runtime.webhookPath,
+    ingress: app.adapters.qq.ingress
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(app.config.runtime.listenPort, app.config.runtime.listenHost, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  console.log("[qq-codex-bridge] ready", {
+    listenHost: app.config.runtime.listenHost,
+    listenPort: app.config.runtime.listenPort,
+    webhookPath: app.config.runtime.webhookPath
+  });
 }
 
 main().catch((error) => {
