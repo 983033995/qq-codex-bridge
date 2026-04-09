@@ -35,6 +35,7 @@ export class BridgeOrchestrator {
           chatType: message.chatType,
           peerId: message.senderId,
           codexThreadRef: null,
+          skillContextKey: null,
           status: BridgeSessionStatus.Active,
           lastInboundAt: message.receivedAt,
           lastOutboundAt: null,

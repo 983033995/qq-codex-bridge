@@ -10,6 +10,7 @@ export interface SessionStorePort {
     lastError?: string | null
   ): Promise<void>;
   updateBinding(sessionKey: string, codexThreadRef: string | null): Promise<void>;
+  updateSkillContextKey(sessionKey: string, skillContextKey: string | null): Promise<void>;
   withSessionLock<T>(sessionKey: string, work: () => Promise<T>): Promise<T>;
 }
 

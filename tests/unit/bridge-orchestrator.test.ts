@@ -30,6 +30,7 @@ function createSession(message: InboundMessage): BridgeSession {
     chatType: message.chatType,
     peerId: message.senderId,
     codexThreadRef: "thread-1",
+    skillContextKey: null,
     status: BridgeSessionStatus.NeedsRebind,
     lastInboundAt: null,
     lastOutboundAt: null,
@@ -86,6 +87,7 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
       withSessionLock: vi.fn()
     };
     const conversationProvider: ConversationProviderPort = {
@@ -149,6 +151,7 @@ describe("BridgeOrchestrator", () => {
         events.push(`updateSessionStatus:${status}:${lastError ?? "null"}`);
       }),
       updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => {
         events.push("withSessionLock");
         return work();
@@ -190,6 +193,7 @@ describe("BridgeOrchestrator", () => {
       chatType: message.chatType,
       peerId: message.senderId,
       codexThreadRef: null,
+      skillContextKey: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: message.receivedAt,
       lastOutboundAt: null,
@@ -235,6 +239,7 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -286,6 +291,7 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 

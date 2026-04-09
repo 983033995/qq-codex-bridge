@@ -53,11 +53,12 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
   }
 
   private writeLocalFile(originalName: string, buffer: Buffer): string {
-    mkdirSync(this.options.baseDir, { recursive: true });
+    const resolvedBaseDir = path.resolve(this.options.baseDir);
+    mkdirSync(resolvedBaseDir, { recursive: true });
     const parsed = path.parse(originalName);
     const safeBaseName = sanitizeFileSegment(parsed.name || "qq-media");
     const ext = parsed.ext || "";
-    const localPath = path.join(this.options.baseDir, `${safeBaseName}-${randomUUID()}${ext}`);
+    const localPath = path.join(resolvedBaseDir, `${safeBaseName}-${randomUUID()}${ext}`);
     writeFileSync(localPath, buffer);
     return localPath;
   }

@@ -29,9 +29,10 @@ describe("media context", () => {
     const text = buildCodexInboundText(message);
 
     expect(text).toContain("帮我看看附件");
-    expect(text).toContain("/tmp/qq-media/report.txt");
+    expect(text).toContain("[QQ附件]");
+    expect(text).toContain("[report.txt](/tmp/qq-media/report.txt)");
     expect(text).toContain("这是报告正文");
-    expect(text).toContain("附件 1");
+    expect(text).toContain("1. 文件：report.txt");
   });
 
   it("injects qqbot media skill guidance for qqbot inbound messages", () => {
@@ -46,10 +47,10 @@ describe("media context", () => {
       receivedAt: "2026-04-09T18:00:00.000Z"
     });
 
-    expect(text).toContain("【QQBot桥接技能】");
+    expect(text).toContain("[QQBot运行说明]");
     expect(text).toContain("<qqmedia>绝对路径或URL</qqmedia>");
-    expect(text).toContain("不要只说“已发送图片”");
-    expect(text).toContain("图片最大 30MB");
+    expect(text).toContain("不要解释 bridge、runtime/media、相对路径");
+    expect(text).toContain("图片 30MB");
   });
 
   it("does not inject qqbot guidance for non-qqbot accounts", () => {
@@ -65,5 +66,23 @@ describe("media context", () => {
     });
 
     expect(text).toBe("普通消息");
+  });
+
+  it("supports turning off qqbot skill guidance after the thread is seeded", () => {
+    const text = buildCodexInboundText(
+      {
+        messageId: "msg-seeded",
+        accountKey: "qqbot:default",
+        sessionKey: "qqbot:default::qq:c2c:abc",
+        peerKey: "qq:c2c:abc",
+        chatType: "c2c",
+        senderId: "abc",
+        text: "第二轮普通提问",
+        receivedAt: "2026-04-09T18:02:00.000Z"
+      },
+      { includeSkillContext: false }
+    );
+
+    expect(text).toBe("第二轮普通提问");
   });
 });

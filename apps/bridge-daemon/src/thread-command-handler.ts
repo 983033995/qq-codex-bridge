@@ -134,6 +134,7 @@ export class ThreadCommandHandler {
       chatType: message.chatType,
       peerId: message.senderId,
       codexThreadRef: null,
+      skillContextKey: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: message.receivedAt,
       lastOutboundAt: null,

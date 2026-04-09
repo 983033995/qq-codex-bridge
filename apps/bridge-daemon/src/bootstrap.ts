@@ -7,7 +7,9 @@ import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
 import { BridgeOrchestrator } from "../../../packages/orchestrator/src/bridge-orchestrator.js";
 import { buildCodexInboundText } from "../../../packages/orchestrator/src/media-context.js";
+import { formatQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-format.js";
 import { enrichQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-draft.js";
+import { shouldInjectQqbotSkillContext } from "../../../packages/orchestrator/src/qqbot-skill-context.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
@@ -58,19 +60,31 @@ export function bootstrap() {
         message.sessionKey,
         currentBinding
       );
+      const skillContextKey = shouldInjectQqbotSkillContext(message)
+        ? `${binding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
+        : null;
+      const shouldIncludeSkillContext =
+        skillContextKey !== null && session?.skillContextKey !== skillContextKey;
       await adapters.codexDesktop.sendUserMessage(binding, {
         ...message,
-        text: buildCodexInboundText(message)
+        text: buildCodexInboundText(message, {
+          includeSkillContext: shouldIncludeSkillContext
+        })
       });
       if (session?.codexThreadRef !== binding.codexThreadRef) {
         await sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
       }
+      if (shouldIncludeSkillContext) {
+        await sessionStore.updateSkillContextKey(message.sessionKey, skillContextKey);
+      }
       const drafts = await adapters.codexDesktop.collectAssistantReply(binding);
       return drafts.map((draft) =>
-        enrichQqOutboundDraft({
-          ...draft,
-          replyToMessageId: message.messageId
-        })
+        formatQqOutboundDraft(
+          enrichQqOutboundDraft({
+            ...draft,
+            replyToMessageId: message.messageId
+          })
+        )
       );
     }
   };

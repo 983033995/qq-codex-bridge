@@ -28,6 +28,7 @@ function createSessionStore(): SessionStorePort {
       chatType: "c2c",
       peerId: "OPENID123",
       codexThreadRef: null,
+      skillContextKey: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: null,
       lastOutboundAt: null,
@@ -36,6 +37,7 @@ function createSessionStore(): SessionStorePort {
     createSession: vi.fn().mockResolvedValue(undefined),
     updateSessionStatus: vi.fn().mockResolvedValue(undefined),
     updateBinding: vi.fn().mockResolvedValue(undefined),
+    updateSkillContextKey: vi.fn().mockResolvedValue(undefined),
     withSessionLock: vi.fn(async (_sessionKey, work) => work())
   };
 }

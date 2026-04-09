@@ -30,6 +30,7 @@ export function createSqliteDatabase(filePath: string): SqliteDatabase {
       chat_type TEXT NOT NULL,
       peer_id TEXT NOT NULL,
       codex_thread_ref TEXT,
+      skill_context_key TEXT,
       status TEXT NOT NULL,
       last_inbound_at TEXT,
       last_outbound_at TEXT,
@@ -66,5 +67,20 @@ export function createSqliteDatabase(filePath: string): SqliteDatabase {
     );
   `);
 
+  ensureColumn(db, "bridge_sessions", "skill_context_key", "TEXT");
+
   return db;
+}
+
+function ensureColumn(
+  db: SqliteDatabase,
+  tableName: string,
+  columnName: string,
+  columnDefinition: string
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
+  const hasColumn = columns.some((column) => column.name === columnName);
+  if (!hasColumn) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
+  }
 }
