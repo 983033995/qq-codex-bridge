@@ -179,7 +179,6 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         text: seedPrompt,
         receivedAt: new Date().toISOString()
       });
-      await this.collectAssistantReply(temporaryBinding);
     }
 
     return temporaryBinding;

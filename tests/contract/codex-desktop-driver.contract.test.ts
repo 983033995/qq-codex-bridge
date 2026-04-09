@@ -260,6 +260,52 @@ describe("codex desktop driver contract", () => {
     );
   });
 
+  it("does not fail thread creation when the seed prompt does not produce an assistant reply", async () => {
+    const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+    const insertText = vi.fn().mockResolvedValue(undefined);
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_new_thread" })
+      .mockResolvedValueOnce({ ok: true, reason: "fresh_thread" })
+      .mockResolvedValueOnce({ reply: null })
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent,
+        insertText
+      } as unknown as CdpSession,
+      {
+        replyPollIntervalMs: 0,
+        sleep: async () => undefined
+      }
+    );
+
+    await expect(
+      driver.createThread("qqbot:default::qq:c2c:OPENID123", "线程标题：测试新线程")
+    ).resolves.toEqual({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    });
+    expect(insertText).toHaveBeenCalledWith("线程标题：测试新线程", "page-1");
+  });
+
   it("collects the latest assistant reply from page text via cdp evaluation", async () => {
     const evaluateOnPage = vi.fn().mockResolvedValue("User: hi\nAssistant: first\nAssistant: latest");
     const driver = new CodexDesktopDriver({
