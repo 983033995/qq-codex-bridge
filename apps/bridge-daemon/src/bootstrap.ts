@@ -31,7 +31,20 @@ export function bootstrap() {
   const conversationProvider = {
     runTurn: async (message: Parameters<BridgeOrchestrator["handleInbound"]>[0]) => {
       await adapters.codexDesktop.ensureAppReady();
-      const binding = await adapters.codexDesktop.openOrBindSession(message.sessionKey, null);
+      const session = await sessionStore.getSession(message.sessionKey);
+      const currentBinding = session
+        ? {
+            sessionKey: session.sessionKey,
+            codexThreadRef: session.codexThreadRef
+          }
+        : null;
+      const binding = await adapters.codexDesktop.openOrBindSession(
+        message.sessionKey,
+        currentBinding
+      );
+      if (session?.codexThreadRef !== binding.codexThreadRef) {
+        await sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
+      }
       await adapters.codexDesktop.sendUserMessage(binding, message);
       return adapters.codexDesktop.collectAssistantReply(binding);
     }

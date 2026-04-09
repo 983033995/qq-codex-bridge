@@ -29,4 +29,60 @@ describe("codex desktop driver contract", () => {
       new DesktopDriverError("Codex desktop app is not exposing any inspectable page target", "app_not_ready")
     );
   });
+
+  it("binds a session to the first inspectable page target", async () => {
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ])
+    } as unknown as CdpSession);
+
+    await expect(driver.openOrBindSession("qqbot:default::qq:c2c:OPENID123", null)).resolves.toEqual({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    });
+  });
+
+  it("collects the latest assistant reply from page text via cdp evaluation", async () => {
+    const evaluateOnPage = vi.fn().mockResolvedValue("User: hi\nAssistant: first\nAssistant: latest");
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        text: "latest"
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenCalledWith("document.body.innerText", "page-1");
+  });
 });
