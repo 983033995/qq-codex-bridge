@@ -110,7 +110,7 @@ export class QqGateway implements QqIngressPort {
       return [];
     }
 
-    const artifacts = await Promise.all(
+    const settledArtifacts = await Promise.allSettled(
       attachments.map((attachment) =>
         this.config.mediaDownloader!.downloadMediaArtifact({
           sourceUrl: attachment.voice_wav_url || attachment.url,
@@ -120,6 +120,17 @@ export class QqGateway implements QqIngressPort {
         })
       )
     );
+
+    const artifacts = settledArtifacts.flatMap((result) => {
+      if (result.status === "fulfilled") {
+        return [result.value];
+      }
+
+      console.error("[qq-codex-bridge] qq attachment download failed", {
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason)
+      });
+      return [];
+    });
 
     return artifacts;
   }

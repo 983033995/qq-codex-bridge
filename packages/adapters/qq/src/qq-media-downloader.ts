@@ -24,7 +24,8 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
     mimeType?: string | null;
     fileSize?: number | null;
   }): Promise<MediaArtifact> {
-    const response = await this.fetchFn(source.sourceUrl);
+    const normalizedSourceUrl = normalizeQqMediaUrl(source.sourceUrl);
+    const response = await this.fetchFn(normalizedSourceUrl);
     if (!response.ok) {
       throw new Error(`QQ media download failed: ${response.status}`);
     }
@@ -32,10 +33,10 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = this.resolveMimeType(source.mimeType, response.headers.get("content-type"));
-    const originalName = this.resolveOriginalName(source.originalName, source.sourceUrl, mimeType);
+    const originalName = this.resolveOriginalName(source.originalName, normalizedSourceUrl, mimeType);
     const artifact: MediaArtifact = {
       kind: inferMediaArtifactKind(originalName, mimeType),
-      sourceUrl: source.sourceUrl,
+      sourceUrl: normalizedSourceUrl,
       localPath: this.writeLocalFile(originalName, buffer),
       mimeType,
       fileSize: this.resolveFileSize(source.fileSize, response.headers.get("content-length"), buffer.length),
@@ -104,6 +105,14 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
 
     return fallbackSize;
   }
+}
+
+function normalizeQqMediaUrl(sourceUrl: string): string {
+  if (sourceUrl.startsWith("//")) {
+    return `https:${sourceUrl}`;
+  }
+
+  return sourceUrl;
 }
 
 function sanitizeFileSegment(segment: string): string {

@@ -69,6 +69,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const pageTarget = await this.resolvePageTarget();
     const pageId = pageTarget.id;
 
+    if (binding?.codexThreadRef === `${TARGET_REF_PREFIX}${pageId}`) {
+      return binding;
+    }
+
     if (binding?.codexThreadRef?.startsWith(THREAD_REF_PREFIX)) {
       const locator = this.decodeThreadRef(binding.codexThreadRef);
       if (locator && locator.pageId === pageId) {
@@ -157,13 +161,14 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       );
     }
 
-    await this.sleep(150);
+    await this.waitForFreshThreadContext(pageTarget.id);
+
+    const temporaryBinding: DriverBinding = {
+      sessionKey,
+      codexThreadRef: `${TARGET_REF_PREFIX}${pageTarget.id}`
+    };
 
     if (seedPrompt.trim()) {
-      const temporaryBinding: DriverBinding = {
-        sessionKey,
-        codexThreadRef: `${TARGET_REF_PREFIX}${pageTarget.id}`
-      };
       await this.sendUserMessage(temporaryBinding, {
         messageId: `thread-seed:${randomUUID()}`,
         accountKey: "qqbot:default",
@@ -177,18 +182,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       await this.collectAssistantReply(temporaryBinding);
     }
 
-    const currentThread = (await this.listRecentThreads(200)).find((thread) => thread.isCurrent);
-    if (!currentThread) {
-      throw new DesktopDriverError(
-        "Codex desktop current thread could not be resolved after creation",
-        "session_not_found"
-      );
-    }
-
-    return {
-      sessionKey,
-      codexThreadRef: currentThread.threadRef
-    };
+    return temporaryBinding;
   }
 
   async sendUserMessage(binding: DriverBinding, message: InboundMessage): Promise<void> {
@@ -349,6 +343,28 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return parsedReply || null;
   }
 
+  private async waitForFreshThreadContext(targetId: string): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const probe = (await this.cdp.evaluateOnPage(
+        this.buildFreshThreadProbeScript(),
+        targetId
+      )) as { ok?: boolean } | undefined;
+
+      if (probe?.ok) {
+        return;
+      }
+
+      if (attempt + 1 < 20) {
+        await this.sleep(100);
+      }
+    }
+
+    throw new DesktopDriverError(
+      "Codex desktop new thread did not become active",
+      "session_not_found"
+    );
+  }
+
   private async resolvePageTarget() {
     const targets = await this.cdp.listTargets();
     const pageTarget = targets.find((target) => target.type === "page");
@@ -505,10 +521,34 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         return { ok: false, reason: 'new_thread_button_not_found' };
       }
       button.focus();
+      if (typeof button.click === 'function') {
+        button.click();
+      }
       for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
         button.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
       }
       return { ok: true, reason: 'clicked_new_thread' };
+    })();`;
+  }
+
+  private buildFreshThreadProbeScript(): string {
+    return `(() => {
+      const composer = document.querySelector(
+        '[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"]'
+      );
+      const readComposerText = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return '';
+        }
+        if ('value' in node && typeof node.value === 'string') {
+          return node.value;
+        }
+        return node.textContent || '';
+      };
+      const assistantUnits = document.querySelectorAll('[data-content-search-unit-key]').length;
+      const composerText = readComposerText(composer).trim();
+      const fresh = assistantUnits === 0 && composerText.length === 0;
+      return { ok: fresh, reason: fresh ? 'fresh_thread' : 'thread_not_ready' };
     })();`;
   }
 

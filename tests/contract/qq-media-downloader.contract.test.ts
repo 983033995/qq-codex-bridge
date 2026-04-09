@@ -77,4 +77,33 @@ describe("qq media downloader", () => {
     expect(artifact.extractedText).toContain("第一行");
     expect(artifact.extractedText).toContain("第二行");
   });
+
+  it("normalizes protocol-relative qq attachment urls before downloading", async () => {
+    const baseDir = mkdtempSync(path.join(os.tmpdir(), "qq-media-downloader-"));
+    tempDirs.push(baseDir);
+
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(Buffer.from("png-bytes"), {
+        status: 200,
+        headers: {
+          "content-type": "image/png",
+          "content-length": "9"
+        }
+      })
+    );
+
+    const downloader = new QqMediaDownloader({
+      baseDir,
+      fetchFn
+    });
+
+    const artifact = await downloader.downloadMediaArtifact({
+      sourceUrl: "//gchat.qpic.cn/qqbot/cat.png",
+      originalName: "cat.png",
+      mimeType: "image/png"
+    });
+
+    expect(fetchFn).toHaveBeenCalledWith("https://gchat.qpic.cn/qqbot/cat.png");
+    expect(artifact.sourceUrl).toBe("https://gchat.qpic.cn/qqbot/cat.png");
+  });
 });

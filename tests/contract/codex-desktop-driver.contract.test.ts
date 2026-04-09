@@ -61,6 +61,42 @@ describe("codex desktop driver contract", () => {
     });
   });
 
+  it("preserves an existing target binding instead of rebinding to a stale sidebar thread", async () => {
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage: vi.fn().mockResolvedValue([
+        {
+          title: "旧线程",
+          projectName: "skills",
+          relativeTime: "刚刚",
+          isCurrent: true
+        }
+      ])
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.openOrBindSession("qqbot:default::qq:c2c:OPENID123", {
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toEqual({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    });
+  });
+
   it("lists recent real codex sidebar threads from the current desktop ui", async () => {
     const evaluateOnPage = vi.fn().mockResolvedValue([
       {
@@ -178,6 +214,48 @@ describe("codex desktop driver contract", () => {
     expect(evaluateOnPage).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining("clicked_thread"),
+      "page-1"
+    );
+  });
+
+  it("creates a new thread only after a fresh thread context becomes active and keeps a target binding", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_new_thread" })
+      .mockResolvedValueOnce({ ok: true, reason: "fresh_thread" });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage
+      } as unknown as CdpSession,
+      {
+        replyPollIntervalMs: 0,
+        sleep: async () => undefined
+      }
+    );
+
+    await expect(
+      driver.createThread("qqbot:default::qq:c2c:OPENID123", "")
+    ).resolves.toEqual({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    });
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("fresh_thread"),
       "page-1"
     );
   });

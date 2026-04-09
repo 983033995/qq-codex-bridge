@@ -137,4 +137,46 @@ describe("qq gateway", () => {
       receivedAt: "2026-04-09T10:00:03.000Z"
     });
   });
+
+  it("keeps dispatching the text payload when attachment download fails", async () => {
+    const gateway = new QqGateway({
+      accountKey: "qqbot:default",
+      mediaDownloader: {
+        downloadMediaArtifact: vi.fn().mockRejectedValue(new Error("download failed"))
+      }
+    });
+    const handler = vi.fn().mockResolvedValue(undefined);
+
+    await gateway.onMessage(handler);
+    await gateway.dispatchPayload({
+      t: "C2C_MESSAGE_CREATE",
+      d: {
+        id: "msg-5",
+        content: "图片和文字一起发",
+        timestamp: "2026-04-09T10:00:04.000Z",
+        author: {
+          user_openid: "OPENID777"
+        },
+        attachments: [
+          {
+            content_type: "image/png",
+            filename: "cat.png",
+            size: 2048,
+            url: "//gchat.qpic.cn/qqbot/cat.png"
+          }
+        ]
+      }
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      messageId: "msg-5",
+      accountKey: "qqbot:default",
+      sessionKey: "qqbot:default::qq:c2c:OPENID777",
+      peerKey: "qq:c2c:OPENID777",
+      chatType: "c2c",
+      senderId: "OPENID777",
+      text: "图片和文字一起发",
+      receivedAt: "2026-04-09T10:00:04.000Z"
+    });
+  });
 });
