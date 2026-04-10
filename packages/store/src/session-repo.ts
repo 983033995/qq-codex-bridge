@@ -94,12 +94,12 @@ export class SqliteSessionStore implements SessionStorePort {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
 
     this.db
-      .prepare(`DELETE FROM session_locks WHERE session_key = ? AND expires_at <= ?`)
-      .run(sessionKey, lockedAt);
+      .prepare(`DELETE FROM session_locks WHERE session_key = ?`)
+      .run(sessionKey);
 
     this.db
       .prepare(
-        `INSERT INTO session_locks (session_key, owner, locked_at, expires_at)
+        `INSERT OR REPLACE INTO session_locks (session_key, owner, locked_at, expires_at)
          VALUES (?, ?, ?, ?)`
       )
       .run(sessionKey, owner, lockedAt, expiresAt);

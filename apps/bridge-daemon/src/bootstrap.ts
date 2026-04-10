@@ -35,7 +35,8 @@ export function bootstrap() {
       appId: config.qqBot.appId,
       apiClient: qqApiClient,
       sessionStore: qqGatewaySessionStore,
-      mediaDownloadDir: path.join(path.dirname(config.databasePath), "media")
+      mediaDownloadDir: path.join(path.dirname(config.databasePath), "media"),
+      stt: config.qqBot.stt
     }),
     codexDesktop: new CodexDesktopDriver(
       new CdpSession({

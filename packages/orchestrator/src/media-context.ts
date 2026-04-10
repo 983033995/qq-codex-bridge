@@ -9,37 +9,87 @@ export function buildCodexInboundText(
   options: { includeSkillContext?: boolean } = {}
 ): string {
   const baseText = message.text.trim();
-  const sections = [baseText || "(用户消息未包含文本)"];
+  const mediaArtifacts = message.mediaArtifacts ?? [];
+  const voiceTranscriptSection = buildVoiceTranscriptSection(mediaArtifacts);
+  const visibleSections = [baseText, voiceTranscriptSection].filter(Boolean);
+  const sections = [
+    visibleSections.length > 0 ? visibleSections.join("\n\n") : inferAttachmentOnlyPlaceholder(message)
+  ];
+  const hiddenContexts: string[] = [];
+  const attachmentContextArtifacts = mediaArtifacts.filter(shouldKeepAttachmentContext);
 
-  if (message.mediaArtifacts?.length) {
-    sections.push("", "[QQ附件]");
-    for (const [index, artifact] of message.mediaArtifacts.entries()) {
-      sections.push(renderArtifact(index + 1, artifact));
-    }
+  if (attachmentContextArtifacts.length > 0) {
+    hiddenContexts.push(buildHiddenAttachmentContext(attachmentContextArtifacts));
   }
 
   if ((options.includeSkillContext ?? true) && shouldInjectQqbotSkillContext(message)) {
-    sections.push("", buildQqbotSkillContext(message));
+    hiddenContexts.push(wrapHiddenContext("QQBOT_RUNTIME_CONTEXT", buildQqbotSkillContext(message)));
+  }
+
+  if (hiddenContexts.length > 0) {
+    sections.push("", ...hiddenContexts);
   }
 
   return sections.join("\n");
 }
 
-function renderArtifact(index: number, artifact: MediaArtifact): string {
-  const lines = [`${index}. ${renderArtifactLabel(artifact)}：${artifact.originalName}`];
+function buildHiddenAttachmentContext(artifacts: MediaArtifact[]): string {
+  const lines = ["QQBOT_ATTACHMENTS"];
 
-  if (artifact.kind === "image") {
-    lines.push(`![${artifact.originalName}](${artifact.localPath})`);
-  } else {
-    lines.push(`[${artifact.originalName}](${artifact.localPath})`);
+  for (const [index, artifact] of artifacts.entries()) {
+    lines.push(`${index + 1}. ${renderArtifactLabel(artifact)}：${artifact.originalName}`);
+    lines.push(`path=${artifact.localPath}`);
+    lines.push(`mime=${artifact.mimeType}`);
+    lines.push(`size=${artifact.fileSize}`);
+
+    const extractedText = artifact.extractedText?.trim();
+    if (extractedText && !isGenericAttachmentText(extractedText, artifact)) {
+      lines.push(`extracted=${extractedText}`);
+    }
+
+    const transcript = artifact.transcript?.trim();
+    if (transcript) {
+      lines.push(`transcript=${transcript}`);
+    }
+
+    const transcriptSource = artifact.transcriptSource?.trim();
+    if (transcriptSource) {
+      lines.push(`transcriptSource=${transcriptSource}`);
+    }
   }
 
-  const extractedText = artifact.extractedText?.trim();
-  if (extractedText && !isGenericAttachmentText(extractedText, artifact)) {
-    lines.push(`说明：${extractedText}`);
+  return wrapHiddenContext("QQBOT_ATTACHMENTS", lines.join("\n"));
+}
+
+function wrapHiddenContext(label: string, content: string): string {
+  return [`<!-- ${label}`, content, "-->"].join("\n");
+}
+
+function inferAttachmentOnlyPlaceholder(message: InboundMessage): string {
+  if (message.mediaArtifacts?.length) {
+    const count = message.mediaArtifacts.length;
+    return `（用户发送了 ${count} 个 QQ 附件）`;
   }
 
-  return lines.join("\n");
+  return "(用户消息未包含文本)";
+}
+
+function buildVoiceTranscriptSection(artifacts: MediaArtifact[]): string {
+  const voiceArtifacts = artifacts.filter(
+    (artifact) => artifact.kind === "audio" && artifact.transcript?.trim()
+  );
+
+  if (voiceArtifacts.length === 0) {
+    return "";
+  }
+
+  if (voiceArtifacts.length === 1) {
+    return `[语音消息] ${voiceArtifacts[0].transcript!.trim()}`;
+  }
+
+  return voiceArtifacts
+    .map((artifact, index) => `[语音${index + 1}] ${artifact.transcript!.trim()}`)
+    .join("\n");
 }
 
 function renderArtifactLabel(artifact: MediaArtifact): string {
@@ -60,4 +110,12 @@ function renderArtifactLabel(artifact: MediaArtifact): string {
 function isGenericAttachmentText(text: string, artifact: MediaArtifact): boolean {
   const genericPrefixes = ["图片附件：", "语音附件：", "视频附件：", "文件附件："];
   return genericPrefixes.some((prefix) => text === `${prefix}${artifact.originalName}`);
+}
+
+function shouldKeepAttachmentContext(artifact: MediaArtifact): boolean {
+  if (artifact.kind === "audio" && artifact.transcript?.trim()) {
+    return false;
+  }
+
+  return true;
 }

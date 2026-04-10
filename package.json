@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx --env-file=.env apps/bridge-daemon/src/dev.ts",
+    "debug:codex-workers": "tsx apps/bridge-daemon/src/debug-codex-workers.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc -p tsconfig.json --noEmit"

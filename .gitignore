@@ -8,3 +8,7 @@ artifacts
 *.sqlite-shm
 *.sqlite-wal
 .env
+.gitnexus
+.claude
+CLAUDE.md
+AGENTS.md

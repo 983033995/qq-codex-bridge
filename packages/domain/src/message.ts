@@ -12,6 +12,8 @@ export type MediaArtifact = {
   mimeType: string;
   fileSize: number;
   originalName: string;
+  transcript?: string | null;
+  transcriptSource?: "stt" | "asr" | "fallback" | null;
   extractedText?: string | null;
 };
 

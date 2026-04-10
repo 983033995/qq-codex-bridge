@@ -35,6 +35,7 @@ type AssistantReplySnapshot = {
   unitKey: string | null;
   reply: string | null;
   mediaReferences: string[];
+  isStreaming: boolean;
 };
 
 type CodexDesktopDriverOptions = {
@@ -265,6 +266,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
     let candidateReply: AssistantReplySnapshot | null = null;
+    let latestNewReply: AssistantReplySnapshot | null = null;
     let stablePolls = 0;
 
     for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
@@ -275,30 +277,21 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         (baselineReply === undefined || this.isNewAssistantReply(reply, baselineReply));
 
       if (isNewReply) {
+        latestNewReply = reply;
         if (!this.isSameAssistantReply(reply, candidateReply)) {
           candidateReply = reply;
-          stablePolls = 1;
+          stablePolls = reply.isStreaming ? 0 : 1;
         } else {
-          stablePolls += 1;
+          stablePolls = reply.isStreaming ? 0 : stablePolls + 1;
         }
 
-        if (candidateReply?.reply && stablePolls >= this.replyStablePolls) {
+        if (
+          candidateReply?.reply &&
+          !reply.isStreaming &&
+          stablePolls >= this.replyStablePolls
+        ) {
           this.pendingReplyBaselines.delete(binding.sessionKey);
-          return [
-            {
-              draftId: randomUUID(),
-              sessionKey: binding.sessionKey,
-              text: candidateReply.reply,
-              ...(candidateReply.mediaReferences.length > 0
-                ? {
-                    mediaArtifacts: candidateReply.mediaReferences.map((reference) =>
-                      buildMediaArtifactFromReference(reference)
-                    )
-                  }
-                : {}),
-              createdAt: new Date().toISOString()
-            }
-          ];
+          return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply)];
         }
       } else if (candidateReply) {
         stablePolls = 0;
@@ -310,10 +303,33 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     }
 
     this.pendingReplyBaselines.delete(binding.sessionKey);
+    if (latestNewReply?.reply) {
+      return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply)];
+    }
+
     throw new DesktopDriverError(
       "Codex desktop reply did not arrive before timeout",
       "reply_timeout"
     );
+  }
+
+  private buildOutboundDraftFromSnapshot(
+    sessionKey: string,
+    snapshot: AssistantReplySnapshot
+  ): OutboundDraft {
+    return {
+      draftId: randomUUID(),
+      sessionKey,
+      text: snapshot.reply ?? "",
+      ...(snapshot.mediaReferences.length > 0
+        ? {
+            mediaArtifacts: snapshot.mediaReferences.map((reference) =>
+              buildMediaArtifactFromReference(reference)
+            )
+          }
+        : {}),
+      createdAt: new Date().toISOString()
+    };
   }
 
   async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {
@@ -375,10 +391,15 @@ export class CodexDesktopDriver implements DesktopDriverPort {
                 typeof reference === "string" && reference.trim().length > 0
             )
           : [];
+      const isStreaming =
+        "isStreaming" in structuredReply && typeof structuredReply.isStreaming === "boolean"
+          ? structuredReply.isStreaming
+          : false;
       return {
         unitKey,
         reply: normalizedReply || null,
-        mediaReferences
+        mediaReferences,
+        isStreaming
       };
     }
 
@@ -394,7 +415,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return {
       unitKey: null,
       reply: parsedReply || null,
-      mediaReferences: []
+      mediaReferences: [],
+      isStreaming: false
     };
   }
 
@@ -421,12 +443,14 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       return (
         current.unitKey === candidate.unitKey &&
         current.reply === candidate.reply &&
+        current.isStreaming === candidate.isStreaming &&
         JSON.stringify(current.mediaReferences) === JSON.stringify(candidate.mediaReferences)
       );
     }
 
     return (
       current.reply === candidate.reply &&
+      current.isStreaming === candidate.isStreaming &&
       JSON.stringify(current.mediaReferences) === JSON.stringify(candidate.mediaReferences)
     );
   }
@@ -749,6 +773,89 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         }
         return null;
       };
+      const isLocalReference = (value) =>
+        typeof value === 'string' &&
+        (
+          value.startsWith('/') ||
+          value.startsWith('./') ||
+          value.startsWith('../') ||
+          /^[A-Za-z]:[\\\\/]/.test(value)
+        );
+      const serializeRichContent = (root) => {
+        const clone = root.cloneNode(true);
+        if (!(clone instanceof HTMLElement)) {
+          return root.innerText.trim();
+        }
+        clone.querySelectorAll('a[href]').forEach((link) => {
+          if (!(link instanceof HTMLAnchorElement)) {
+            return;
+          }
+          const href = normalizeReference(link.href) || link.getAttribute('href') || '';
+          const text = (link.textContent || '').trim();
+          const replacement = href && text && text !== href
+            ? text + '\\n' + href
+            : (href || text);
+          link.textContent = replacement;
+        });
+        const serializeNode = (node, listContext) => {
+          if (node instanceof HTMLBRElement) {
+            return '\\n';
+          }
+          if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent || '';
+          }
+          if (!(node instanceof HTMLElement)) {
+            return '';
+          }
+
+          const tagName = node.tagName;
+          if (tagName === 'OL') {
+            return Array.from(node.children)
+              .map((child, index) => serializeNode(child, { type: 'ol', index }))
+              .filter(Boolean)
+              .join('\\n');
+          }
+
+          if (tagName === 'UL') {
+            return Array.from(node.children)
+              .map((child) => serializeNode(child, { type: 'ul' }))
+              .filter(Boolean)
+              .join('\\n');
+          }
+
+          if (tagName === 'LI') {
+            const content = Array.from(node.childNodes)
+              .map((child) => serializeNode(child, null))
+              .join('')
+              .replace(/\\s+\\n/g, '\\n')
+              .replace(/\\n\\s+/g, '\\n')
+              .replace(/[ \\t]+/g, ' ')
+              .trim();
+            if (!content) {
+              return '';
+            }
+            if (listContext?.type === 'ol') {
+              const index = typeof listContext.index === 'number' ? listContext.index : 0;
+              return String(index + 1) + '. ' + content;
+            }
+            return '- ' + content;
+          }
+
+          const serializedChildren = Array.from(node.childNodes)
+            .map((child) => serializeNode(child, null))
+            .join('');
+          if (['P', 'DIV', 'SECTION', 'ARTICLE', 'BLOCKQUOTE', 'PRE'].includes(tagName)) {
+            return serializedChildren.trim() ? serializedChildren.trim() + '\\n' : '';
+          }
+          return serializedChildren;
+        };
+        return serializeNode(clone, null)
+          .split('\\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .join('\\n')
+          .trim();
+      };
       const mediaReferences = Array.from(
         latestAssistantUnit.querySelectorAll('img[src], audio[src], audio source[src], video[src], video source[src], a[href]')
       )
@@ -760,20 +867,68 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             return normalizeReference(node.src);
           }
           if ('href' in node && typeof node.href === 'string' && node.href) {
-            return normalizeReference(node.href);
+            const normalizedHref = normalizeReference(node.href);
+            return normalizedHref && isLocalReference(normalizedHref)
+              ? normalizedHref
+              : null;
           }
           return null;
         })
         .filter((value, index, values) => typeof value === 'string' && values.indexOf(value) === index);
+      const composer = document.querySelector(
+        '[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"], [role="textbox"]'
+      );
+      const composerRect = composer instanceof HTMLElement
+        ? composer.getBoundingClientRect()
+        : null;
+      const streamingMatcher = /(\\bstop\\b|\\bthinking\\b|\\bworking\\b|\\brunning\\b|停止|中止|取消|思考中|生成中)/i;
+      const isComposerBusyButton = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const className = String(node.className || '');
+        if (!className.includes('size-token-button-composer')) {
+          return false;
+        }
+        const html = node.innerHTML || '';
+        return html.includes('M4.5 5.75C4.5 5.05964')
+          || html.includes('M4.5 5.75C4.5 5.0596');
+      };
+      const isStreaming = Array.from(document.querySelectorAll('button, [role="button"], [aria-busy="true"]'))
+        .some((node) => {
+          if (!(node instanceof HTMLElement)) {
+            return false;
+          }
+          const rect = node.getBoundingClientRect();
+          const isNearComposer = composerRect
+            ? rect.y >= composerRect.y - 48 && rect.y <= composerRect.bottom + 48
+            : rect.y >= window.innerHeight - 160;
+          if (node.getAttribute('aria-busy') === 'true') {
+            return true;
+          }
+          if (isComposerBusyButton(node)) {
+            return true;
+          }
+          if (!isNearComposer) {
+            return false;
+          }
+          const label = [
+            node.textContent || '',
+            node.getAttribute('aria-label') || '',
+            node.getAttribute('title') || ''
+          ].join(' ').trim();
+          return streamingMatcher.test(label);
+        });
 
       const richContent = latestAssistantUnit.querySelector('[class*="_markdownContent_"]');
       if (richContent instanceof HTMLElement) {
-        const text = richContent.innerText.trim();
+        const text = serializeRichContent(richContent);
         if (text) {
           return {
             unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
             reply: text,
-            mediaReferences
+            mediaReferences,
+            isStreaming
           };
         }
       }
@@ -795,7 +950,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         ? {
             unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
             reply: text,
-            mediaReferences
+            mediaReferences,
+            isStreaming
           }
         : null;
     })();`;

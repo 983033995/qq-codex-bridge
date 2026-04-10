@@ -697,4 +697,310 @@ describe("codex desktop driver contract", () => {
       }
     ]);
   });
+
+  it("keeps ordinary reference links in reply text instead of treating them as qq media uploads", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        unitKey: "assistant-links-1",
+        reply: "参考：\n泸沽湖观景台行程资料\nhttps://example.com/yunnan.pdf\n澎湃：格姆女神山可俯瞰泸沽湖全貌\nhttps://m.thepaper.cn/baijiahao_22780218",
+        mediaReferences: []
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-links-1",
+        reply: "参考：\n泸沽湖观景台行程资料\nhttps://example.com/yunnan.pdf\n澎湃：格姆女神山可俯瞰泸沽湖全貌\nhttps://m.thepaper.cn/baijiahao_22780218",
+        mediaReferences: []
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-links-1",
+        reply: "参考：\n泸沽湖观景台行程资料\nhttps://example.com/yunnan.pdf\n澎湃：格姆女神山可俯瞰泸沽湖全貌\nhttps://m.thepaper.cn/baijiahao_22780218",
+        mediaReferences: []
+      });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        text: "参考：\n泸沽湖观景台行程资料\nhttps://example.com/yunnan.pdf\n澎湃：格姆女神山可俯瞰泸沽湖全貌\nhttps://m.thepaper.cn/baijiahao_22780218"
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("link.textContent = replacement"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("normalizedHref && isLocalReference(normalizedHref)"),
+      "page-1"
+    );
+  });
+
+  it("preserves ordered list numbering when serializing rich codex replies", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        unitKey: "assistant-list-1",
+        reply: "1. 白天阳光海滩\n2. 日落金色沙滩\n3. 热带海岛风",
+        mediaReferences: []
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-list-1",
+        reply: "1. 白天阳光海滩\n2. 日落金色沙滩\n3. 热带海岛风",
+        mediaReferences: []
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-list-1",
+        reply: "1. 白天阳光海滩\n2. 日落金色沙滩\n3. 热带海岛风",
+        mediaReferences: []
+      });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        text: "1. 白天阳光海滩\n2. 日落金色沙滩\n3. 热带海岛风"
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("if (tagName === 'OL')"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("return String(index + 1) + '. ' + content;"),
+      "page-1"
+    );
+  });
+
+  it("waits for codex to finish generating even if the first sentence is already stable", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-3", reply: "先给一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-3", reply: "先给一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-3", reply: "先给一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-3", reply: "先给一句\n完整结果", isStreaming: false })
+      .mockResolvedValueOnce({ unitKey: "assistant-3", reply: "先给一句\n完整结果", isStreaming: false })
+      .mockResolvedValueOnce({ unitKey: "assistant-3", reply: "先给一句\n完整结果", isStreaming: false });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollIntervalMs: 0,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-thinking-after-first-sentence",
+      accountKey: "qqbot:default",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "请先回答一句，再继续思考并补完整结果",
+      receivedAt: "2026-04-09T19:40:00.000Z"
+    });
+
+    await expect(driver.collectAssistantReply(binding)).resolves.toMatchObject([
+      {
+        text: "先给一句\n完整结果"
+      }
+    ]);
+  });
+
+  it("falls back to the last observed assistant reply when completion polling times out", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-timeout-1", reply: "这是已经生成出来的结果", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-timeout-1", reply: "这是已经生成出来的结果", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-timeout-1", reply: "这是已经生成出来的结果", isStreaming: true });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollAttempts: 3,
+        replyPollIntervalMs: 0,
+        replyStablePolls: 3,
+        sleep: vi.fn().mockResolvedValue(undefined)
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-timeout-fallback",
+      accountKey: "qqbot:default",
+      sessionKey: binding.sessionKey,
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "请回答",
+      receivedAt: "2026-04-09T21:40:00.000Z"
+    });
+
+    await expect(driver.collectAssistantReply(binding)).resolves.toMatchObject([
+      {
+        text: "这是已经生成出来的结果"
+      }
+    ]);
+  });
+
+  it("probes the composer button icon as a streaming fallback signal", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-4", reply: "先给一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-4", reply: "先给一句\n完整结果", isStreaming: false })
+      .mockResolvedValueOnce({ unitKey: "assistant-4", reply: "先给一句\n完整结果", isStreaming: false })
+      .mockResolvedValueOnce({ unitKey: "assistant-4", reply: "先给一句\n完整结果", isStreaming: false });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollIntervalMs: 0,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-stop-icon-streaming",
+      accountKey: "qqbot:default",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "先回答一句，再继续思考",
+      receivedAt: "2026-04-09T20:10:00.000Z"
+    });
+
+    await expect(driver.collectAssistantReply(binding)).resolves.toMatchObject([
+      {
+        text: "先给一句\n完整结果"
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("size-token-button-composer"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      4,
+      expect.stringContaining("M4.5 5.75C4.5 5.05964"),
+      "page-1"
+    );
+  });
 });

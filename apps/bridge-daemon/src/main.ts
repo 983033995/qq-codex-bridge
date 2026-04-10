@@ -1,6 +1,35 @@
 import { pathToFileURL } from "node:url";
+import type { InboundMessage } from "../../../packages/domain/src/message.js";
 import { bootstrap } from "./bootstrap.js";
 import { ThreadCommandHandler } from "./thread-command-handler.js";
+
+type IngressMessageHandlerDeps = {
+  threadCommandHandler: Pick<ThreadCommandHandler, "handleIfCommand">;
+  orchestrator: {
+    handleInbound: (message: InboundMessage) => Promise<void>;
+  };
+};
+
+export function createIngressMessageHandler(deps: IngressMessageHandlerDeps) {
+  return async (message: InboundMessage) => {
+    try {
+      const handled = await deps.threadCommandHandler.handleIfCommand(message);
+      if (handled) {
+        return;
+      }
+      await deps.orchestrator.handleInbound(message);
+    } catch (error) {
+      console.error("[qq-codex-bridge] message handling failed", {
+        messageId: message.messageId,
+        sessionKey: message.sessionKey,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      if (error instanceof Error && error.stack) {
+        console.error("  stack:", error.stack);
+      }
+    }
+  };
+}
 
 export async function runBridgeDaemon() {
   const app = bootstrap();
@@ -11,13 +40,12 @@ export async function runBridgeDaemon() {
     qqEgress: app.adapters.qq.egress
   });
 
-  await app.adapters.qq.ingress.onMessage(async (message) => {
-    const handled = await threadCommandHandler.handleIfCommand(message);
-    if (handled) {
-      return;
-    }
-    await app.orchestrator.handleInbound(message);
-  });
+  await app.adapters.qq.ingress.onMessage(
+    createIngressMessageHandler({
+      threadCommandHandler,
+      orchestrator: app.orchestrator
+    })
+  );
 
   await app.adapters.qq.ingress.start();
 

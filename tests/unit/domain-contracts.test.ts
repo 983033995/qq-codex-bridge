@@ -82,6 +82,8 @@ describe("domain contracts", () => {
         mimeType: string;
         fileSize: number;
         originalName: string;
+        transcript?: string | null;
+        transcriptSource?: string | null;
         extractedText?: string | null;
       }>;
     }>();

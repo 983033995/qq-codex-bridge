@@ -1,3 +1,4 @@
+import type { QqSttConfig } from "./qq-stt.js";
 import { QqApiClient } from "./qq-api-client.js";
 import type { QqGatewaySessionStore } from "./qq-gateway-session-store.js";
 import { QqGatewayClient } from "./qq-gateway-client.js";
@@ -10,6 +11,7 @@ export function createQqChannelAdapter(config: {
   apiClient: QqApiClient;
   sessionStore: QqGatewaySessionStore;
   mediaDownloadDir?: string;
+  stt?: QqSttConfig | null;
 }) {
   return {
     ingress: new QqGatewayClient({
@@ -20,7 +22,8 @@ export function createQqChannelAdapter(config: {
       ...(config.mediaDownloadDir
         ? {
             mediaDownloader: new QqMediaDownloader({
-              baseDir: config.mediaDownloadDir
+              baseDir: config.mediaDownloadDir,
+              stt: config.stt
             })
           }
         : {})

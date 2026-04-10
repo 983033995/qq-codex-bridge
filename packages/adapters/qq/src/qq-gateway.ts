@@ -21,6 +21,7 @@ type QqC2CEvent = {
       size?: number;
       url: string;
       voice_wav_url?: string;
+      asr_refer_text?: string;
     }>;
   };
 };
@@ -39,6 +40,7 @@ type QqGroupEvent = {
       size?: number;
       url: string;
       voice_wav_url?: string;
+      asr_refer_text?: string;
     }>;
   };
 };
@@ -103,6 +105,7 @@ export class QqGateway implements QqIngressPort {
           size?: number;
           url: string;
           voice_wav_url?: string;
+          asr_refer_text?: string;
         }>
       | undefined
   ) {
@@ -113,10 +116,12 @@ export class QqGateway implements QqIngressPort {
     const settledArtifacts = await Promise.allSettled(
       attachments.map((attachment) =>
         this.config.mediaDownloader!.downloadMediaArtifact({
-          sourceUrl: attachment.voice_wav_url || attachment.url,
+          sourceUrl: attachment.url,
           originalName: attachment.filename ?? null,
           mimeType: attachment.content_type ?? null,
-          fileSize: attachment.size ?? null
+          fileSize: attachment.size ?? null,
+          voiceWavUrl: attachment.voice_wav_url ?? null,
+          asrReferText: attachment.asr_refer_text ?? null
         })
       )
     );

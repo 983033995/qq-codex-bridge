@@ -80,17 +80,18 @@ describe("qq gateway", () => {
   });
 
   it("downloads attachments and forwards them as media artifacts", async () => {
+    const downloadMediaArtifact = vi.fn().mockResolvedValue({
+      kind: MediaArtifactKind.Image,
+      sourceUrl: "https://example.com/cat.png",
+      localPath: "/tmp/qq-media/cat.png",
+      mimeType: "image/png",
+      fileSize: 2048,
+      originalName: "cat.png"
+    });
     const gateway = new QqGateway({
       accountKey: "qqbot:default",
       mediaDownloader: {
-        downloadMediaArtifact: vi.fn().mockResolvedValue({
-          kind: MediaArtifactKind.Image,
-          sourceUrl: "https://example.com/cat.png",
-          localPath: "/tmp/qq-media/cat.png",
-          mimeType: "image/png",
-          fileSize: 2048,
-          originalName: "cat.png"
-        })
+        downloadMediaArtifact
       }
     });
     const handler = vi.fn().mockResolvedValue(undefined);
@@ -136,6 +137,78 @@ describe("qq gateway", () => {
       ],
       receivedAt: "2026-04-09T10:00:03.000Z"
     });
+    expect(downloadMediaArtifact).toHaveBeenCalledWith({
+      sourceUrl: "https://example.com/cat.png",
+      originalName: "cat.png",
+      mimeType: "image/png",
+      fileSize: 2048,
+      voiceWavUrl: null,
+      asrReferText: null
+    });
+  });
+
+  it("passes voice_wav_url and asr_refer_text to the media downloader for voice attachments", async () => {
+    const downloadMediaArtifact = vi.fn().mockResolvedValue({
+      kind: MediaArtifactKind.Audio,
+      sourceUrl: "https://example.com/voice.wav",
+      localPath: "/tmp/qq-media/voice.wav",
+      mimeType: "audio/wav",
+      fileSize: 4096,
+      originalName: "voice.amr",
+      transcript: "你好，这是一段语音。",
+      transcriptSource: "asr",
+      extractedText: "你好，这是一段语音。"
+    });
+    const gateway = new QqGateway({
+      accountKey: "qqbot:default",
+      mediaDownloader: {
+        downloadMediaArtifact
+      }
+    });
+    const handler = vi.fn().mockResolvedValue(undefined);
+
+    await gateway.onMessage(handler);
+    await gateway.dispatchPayload({
+      t: "C2C_MESSAGE_CREATE",
+      d: {
+        id: "msg-voice-1",
+        content: "",
+        timestamp: "2026-04-09T10:00:03.000Z",
+        author: {
+          user_openid: "OPENIDVOICE"
+        },
+        attachments: [
+          {
+            content_type: "voice",
+            filename: "voice.amr",
+            size: 4096,
+            url: "https://example.com/voice.amr",
+            voice_wav_url: "https://example.com/voice.wav",
+            asr_refer_text: "你好，这是一段语音。"
+          }
+        ]
+      }
+    });
+
+    expect(downloadMediaArtifact).toHaveBeenCalledWith({
+      sourceUrl: "https://example.com/voice.amr",
+      originalName: "voice.amr",
+      mimeType: "voice",
+      fileSize: 4096,
+      voiceWavUrl: "https://example.com/voice.wav",
+      asrReferText: "你好，这是一段语音。"
+    });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mediaArtifacts: [
+          expect.objectContaining({
+            kind: MediaArtifactKind.Audio,
+            transcript: "你好，这是一段语音。",
+            transcriptSource: "asr"
+          })
+        ]
+      })
+    );
   });
 
   it("keeps dispatching the text payload when attachment download fails", async () => {

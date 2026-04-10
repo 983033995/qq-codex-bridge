@@ -21,6 +21,8 @@ export interface QqMediaDownloadPort {
     originalName?: string | null;
     mimeType?: string | null;
     fileSize?: number | null;
+    voiceWavUrl?: string | null;
+    asrReferText?: string | null;
   }): Promise<MediaArtifact>;
 }
 

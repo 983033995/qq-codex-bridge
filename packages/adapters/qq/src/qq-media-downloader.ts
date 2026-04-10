@@ -3,19 +3,24 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { MediaArtifactKind, type MediaArtifact } from "../../../domain/src/message.js";
 import type { QqMediaDownloadPort } from "../../../ports/src/qq.js";
+import { type QqSttConfig, transcribeAudioFile } from "./qq-stt.js";
 
 type FetchLike = typeof fetch;
 
 type QqMediaDownloaderOptions = {
   baseDir: string;
   fetchFn?: FetchLike;
+  sttFetchFn?: FetchLike;
+  stt?: QqSttConfig | null;
 };
 
 export class QqMediaDownloader implements QqMediaDownloadPort {
   private readonly fetchFn: FetchLike;
+  private readonly sttFetchFn: FetchLike;
 
   constructor(private readonly options: QqMediaDownloaderOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
+    this.sttFetchFn = options.sttFetchFn ?? fetch;
   }
 
   async downloadMediaArtifact(source: {
@@ -23,8 +28,10 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
     originalName?: string | null;
     mimeType?: string | null;
     fileSize?: number | null;
+    voiceWavUrl?: string | null;
+    asrReferText?: string | null;
   }): Promise<MediaArtifact> {
-    const normalizedSourceUrl = normalizeQqMediaUrl(source.sourceUrl);
+    const normalizedSourceUrl = normalizeQqMediaUrl(source.voiceWavUrl || source.sourceUrl);
     const response = await this.fetchFn(normalizedSourceUrl);
     if (!response.ok) {
       throw new Error(`QQ media download failed: ${response.status}`);
@@ -33,19 +40,34 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = this.resolveMimeType(source.mimeType, response.headers.get("content-type"));
-    const originalName = this.resolveOriginalName(source.originalName, normalizedSourceUrl, mimeType);
+    const originalName = this.resolveOriginalName(
+      source.originalName,
+      normalizedSourceUrl,
+      mimeType,
+      source.voiceWavUrl ?? null
+    );
+    const kind = inferMediaArtifactKind(originalName, mimeType);
+    const localPath = this.writeLocalFile(originalName, buffer);
+    const transcript = await this.resolveTranscript({
+      kind,
+      localPath,
+      asrReferText: source.asrReferText
+    });
     const artifact: MediaArtifact = {
-      kind: inferMediaArtifactKind(originalName, mimeType),
+      kind,
       sourceUrl: normalizedSourceUrl,
-      localPath: this.writeLocalFile(originalName, buffer),
+      localPath,
       mimeType,
       fileSize: this.resolveFileSize(source.fileSize, response.headers.get("content-length"), buffer.length),
       originalName,
+      transcript: transcript?.text ?? null,
+      transcriptSource: transcript?.source ?? null,
       extractedText: extractReadableText({
-        kind: inferMediaArtifactKind(originalName, mimeType),
+        kind,
         originalName,
         mimeType,
-        buffer
+        buffer,
+        transcript: transcript?.text ?? null
       })
     };
 
@@ -71,12 +93,29 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
   private resolveOriginalName(
     originalName: string | null | undefined,
     sourceUrl: string,
-    mimeType: string
+    mimeType: string,
+    voiceWavUrl?: string | null
   ): string {
+    if (voiceWavUrl) {
+      const wavName = this.resolveNameFromUrl(voiceWavUrl);
+      if (wavName) {
+        return wavName;
+      }
+    }
+
     if (originalName?.trim()) {
       return originalName.trim();
     }
 
+    const sourceName = this.resolveNameFromUrl(sourceUrl);
+    if (sourceName) {
+      return sourceName;
+    }
+
+    return `qq-media${extensionFromMimeType(mimeType)}`;
+  }
+
+  private resolveNameFromUrl(sourceUrl: string): string | null {
     try {
       const url = new URL(sourceUrl);
       const urlName = path.basename(url.pathname);
@@ -87,7 +126,7 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
       // fall back to mime-derived extension
     }
 
-    return `qq-media${extensionFromMimeType(mimeType)}`;
+    return null;
   }
 
   private resolveFileSize(
@@ -105,6 +144,74 @@ export class QqMediaDownloader implements QqMediaDownloadPort {
     }
 
     return fallbackSize;
+  }
+
+  private async resolveTranscript(input: {
+    kind: MediaArtifactKind;
+    localPath: string;
+    asrReferText?: string | null;
+  }): Promise<{ text: string; source: "stt" | "asr" } | null> {
+    if (input.kind !== MediaArtifactKind.Audio) {
+      return null;
+    }
+
+    const asrReferText = input.asrReferText?.trim();
+    const extension = path.extname(input.localPath).toLowerCase();
+    const shouldPreferAsrFallback =
+      this.options.stt?.provider === "volcengine-flash" &&
+      [".amr", ".silk"].includes(extension) &&
+      Boolean(asrReferText);
+
+    if (this.options.stt && !shouldPreferAsrFallback) {
+      const startedAt = Date.now();
+      console.info("[qq-codex-bridge] qq stt started", {
+        provider: this.options.stt.provider,
+        file: input.localPath,
+        extension,
+        hasAsrReferText: Boolean(asrReferText)
+      });
+      try {
+        const text = await transcribeAudioFile(input.localPath, this.options.stt, this.sttFetchFn);
+        if (text) {
+          console.info("[qq-codex-bridge] qq stt completed", {
+            provider: this.options.stt.provider,
+            file: input.localPath,
+            durationMs: Date.now() - startedAt,
+            transcriptPreview: text.slice(0, 80)
+          });
+          return {
+            text,
+            source: "stt"
+          };
+        }
+        console.info("[qq-codex-bridge] qq stt produced no transcript", {
+          provider: this.options.stt.provider,
+          file: input.localPath,
+          durationMs: Date.now() - startedAt
+        });
+      } catch (error) {
+        console.error("[qq-codex-bridge] qq stt failed", {
+          provider: this.options.stt.provider,
+          error: error instanceof Error ? error.message : String(error),
+          file: input.localPath,
+          durationMs: Date.now() - startedAt
+        });
+      }
+    }
+
+    if (asrReferText) {
+      console.info("[qq-codex-bridge] qq stt fallback used", {
+        source: "asr",
+        file: input.localPath,
+        transcriptPreview: asrReferText.slice(0, 80)
+      });
+      return {
+        text: asrReferText,
+        source: "asr"
+      };
+    }
+
+    return null;
   }
 }
 
@@ -159,7 +266,7 @@ export function inferMediaArtifactKind(originalName: string, mimeType: string): 
   if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].includes(extension)) {
     return MediaArtifactKind.Image;
   }
-  if ([".mp3", ".wav", ".ogg", ".aac", ".flac", ".silk"].includes(extension)) {
+  if ([".amr", ".mp3", ".wav", ".ogg", ".aac", ".flac", ".silk", ".m4a"].includes(extension)) {
     return MediaArtifactKind.Audio;
   }
   if ([".mp4", ".mov", ".avi", ".mkv", ".webm"].includes(extension)) {
@@ -174,7 +281,12 @@ function extractReadableText(input: {
   originalName: string;
   mimeType: string;
   buffer: Buffer;
+  transcript?: string | null;
 }): string | null {
+  if (input.kind === MediaArtifactKind.Audio && input.transcript?.trim()) {
+    return input.transcript.trim();
+  }
+
   if (isTextLikeArtifact(input.originalName, input.mimeType)) {
     const text = input.buffer.toString("utf8").trim();
     return text ? text.slice(0, 4000) : null;

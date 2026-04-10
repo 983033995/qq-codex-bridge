@@ -149,4 +149,38 @@ describe("sqlite store", () => {
     await expect(secondWork).resolves.toBeUndefined();
     expect(secondEntered).toEqual(["entered"]);
   });
+
+  it("replaces a stale in-db lock left behind by a previous process", async () => {
+    const dbPath = createTempDbPath();
+    const db = createSqliteDatabase(dbPath);
+    const sessionStore = new SqliteSessionStore(db);
+    const sessionKey = buildSessionKey({
+      accountKey: "qqbot:default",
+      peerKey: buildPeerKey({ chatType: "c2c", peerId: "abc-123" })
+    });
+
+    db.prepare(
+      `INSERT INTO session_locks (session_key, owner, locked_at, expires_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(
+      sessionKey,
+      "dead-process-owner",
+      "2026-04-09T10:00:00.000Z",
+      "2099-04-09T10:01:00.000Z"
+    );
+
+    const calls: string[] = [];
+
+    await expect(
+      sessionStore.withSessionLock(sessionKey, async () => {
+        calls.push("entered");
+      })
+    ).resolves.toBeUndefined();
+
+    expect(calls).toEqual(["entered"]);
+    const remainingLocks = db
+      .prepare(`SELECT COUNT(*) AS count FROM session_locks WHERE session_key = ?`)
+      .get(sessionKey) as { count: number };
+    expect(remainingLocks.count).toBe(0);
+  });
 });
