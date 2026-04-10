@@ -1,4 +1,5 @@
 import path from "node:path";
+import { statSync, existsSync } from "node:fs";
 import { MediaArtifactKind, type MediaArtifact } from "../../../domain/src/message.js";
 import { inferMediaArtifactKind } from "./qq-media-downloader.js";
 
@@ -48,13 +49,15 @@ export function parseQqMediaSegments(text: string): QqMediaSegment[] {
 export function buildMediaArtifactFromReference(reference: string): MediaArtifact {
   const mimeType = inferMimeType(reference);
   const originalName = inferOriginalName(reference);
+  const isLocal = !reference.startsWith("http://") && !reference.startsWith("https://");
+  const fileSize = isLocal && existsSync(reference) ? statSync(reference).size : 0;
 
   return {
     kind: inferMediaArtifactKind(originalName, mimeType),
     sourceUrl: reference,
     localPath: reference,
     mimeType,
-    fileSize: 0,
+    fileSize,
     originalName
   };
 }

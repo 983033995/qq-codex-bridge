@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { MediaArtifactKind, type MediaArtifact } from "../../../domain/src/message.js";
 
 type FetchLike = typeof fetch;
@@ -164,6 +164,7 @@ export class QqApiClient {
     msgId: string,
     content?: string
   ): Promise<string | null> {
+    this.assertSupportedMediaFormat(artifact);
     const accessToken = await this.getAccessToken();
     const uploadBody = await this.buildMediaUploadBody(artifact);
     const uploadResponse = await this.fetchFn(`${this.apiBaseUrl}${pathPrefix}/files`, {
@@ -248,10 +249,52 @@ export class QqApiClient {
     }
 
     if (existsSync(artifact.localPath)) {
+      const stat = statSync(artifact.localPath);
+      const limitBytes = this.getFileSizeLimitBytes(artifact.kind);
+      if (stat.size > limitBytes) {
+        const limitMb = (limitBytes / 1024 / 1024).toFixed(0);
+        const actualMb = (stat.size / 1024 / 1024).toFixed(1);
+        throw new Error(
+          `QQ media upload size limit exceeded: file is ${actualMb}MB but QQ allows at most ${limitMb}MB for ${artifact.kind} (file: ${artifact.originalName})`
+        );
+      }
       return { file_data: readFileSync(artifact.localPath).toString("base64") };
     }
 
     throw new Error(`QQ media source not found: ${artifact.localPath}`);
+  }
+
+  private getFileSizeLimitBytes(kind: MediaArtifactKind): number {
+    switch (kind) {
+      case MediaArtifactKind.Image:
+        return 10 * 1024 * 1024;  // 10 MB
+      case MediaArtifactKind.Video:
+        return 16 * 1024 * 1024;  // 16 MB
+      case MediaArtifactKind.Audio:
+        return 16 * 1024 * 1024;  // 16 MB
+      case MediaArtifactKind.File:
+      default:
+        return 30 * 1024 * 1024;  // 30 MB
+    }
+  }
+
+  private assertSupportedMediaFormat(artifact: MediaArtifact): void {
+    const name = artifact.originalName || artifact.localPath || artifact.sourceUrl || "";
+    const ext = name.split(".").pop()?.toLowerCase() ?? "";
+
+    const SUPPORTED: Record<MediaArtifactKind, string[]> = {
+      [MediaArtifactKind.Image]: ["png", "jpg", "jpeg"],
+      [MediaArtifactKind.Video]: ["mp4"],
+      [MediaArtifactKind.Audio]: ["silk", "wav", "mp3", "flac"],
+      [MediaArtifactKind.File]:  []
+    };
+
+    const allowed = SUPPORTED[artifact.kind];
+    if (allowed.length > 0 && !allowed.includes(ext)) {
+      throw new Error(
+        `QQ media format not supported: .${ext} is not accepted for ${artifact.kind} (QQ only supports: ${allowed.join(", ")}). File: ${name}`
+      );
+    }
   }
 
   private mapMediaFileType(kind: MediaArtifactKind): number {

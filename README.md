@@ -258,6 +258,24 @@ pnpm dev
 - `CODEX_REMOTE_DEBUGGING_PORT`
 - `QQBOT_STT_PROVIDER`
 
+## 社区协作
+
+如果你准备参与贡献，建议先看：
+
+- [CONTRIBUTING.md](/Volumes/13759427003/AI/qq-codex-bridge/CONTRIBUTING.md)
+- [CODE_OF_CONDUCT.md](/Volumes/13759427003/AI/qq-codex-bridge/CODE_OF_CONDUCT.md)
+- [SECURITY.md](/Volumes/13759427003/AI/qq-codex-bridge/SECURITY.md)
+
+仓库也已经提供：
+
+- Bug issue 模板
+- Feature request 模板
+- Pull request 模板
+
+## License
+
+本项目使用 [MIT License](/Volumes/13759427003/AI/qq-codex-bridge/LICENSE)。
+
 ## 调试
 
 ### 类型检查
