@@ -12,3 +12,6 @@ artifacts
 .claude
 CLAUDE.md
 AGENTS.md
+.playwright-mcp/
+openclaw-login-page.png
+package-lock.json

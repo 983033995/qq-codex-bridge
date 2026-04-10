@@ -55,7 +55,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
     qqBot: {
       appId: env.QQBOT_APP_ID,
       clientSecret: env.QQBOT_CLIENT_SECRET,
-      markdownSupport: env.QQBOT_MARKDOWN_SUPPORT !== "false",
+      markdownSupport: env.QQBOT_MARKDOWN_SUPPORT === "true",
       stt: resolveSttConfig(env)
     },
     codexDesktop: {

@@ -1,5 +1,5 @@
 import { BridgeSessionStatus, type BridgeSession } from "../../domain/src/session.js";
-import type { InboundMessage } from "../../domain/src/message.js";
+import type { InboundMessage, OutboundDraft } from "../../domain/src/message.js";
 import type { ConversationProviderPort } from "../../ports/src/conversation.js";
 import type { QqEgressPort } from "../../ports/src/qq.js";
 import type { SessionStorePort, TranscriptStorePort } from "../../ports/src/store.js";
@@ -48,11 +48,22 @@ export class BridgeOrchestrator {
       await this.deps.transcriptStore.recordInbound(message);
 
       try {
-        const drafts = await this.deps.conversationProvider.runTurn(message);
-
-        for (const draft of drafts) {
+        const deliveredDraftIds = new Set<string>();
+        const handleDraft = async (draft: OutboundDraft) => {
+          if (deliveredDraftIds.has(draft.draftId)) {
+            return;
+          }
+          deliveredDraftIds.add(draft.draftId);
           await this.deps.transcriptStore.recordOutbound(draft);
           await this.deps.qqEgress.deliver(draft);
+        };
+
+        const drafts = await this.deps.conversationProvider.runTurn(message, {
+          onDraft: handleDraft
+        });
+
+        for (const draft of drafts) {
+          await handleDraft(draft);
         }
 
         await this.deps.sessionStore.updateSessionStatus(

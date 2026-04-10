@@ -10,6 +10,7 @@ import { buildCodexInboundText } from "../../../packages/orchestrator/src/media-
 import { formatQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-format.js";
 import { enrichQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-draft.js";
 import { shouldInjectQqbotSkillContext } from "../../../packages/orchestrator/src/qqbot-skill-context.js";
+import type { ConversationRunOptions } from "../../../packages/ports/src/conversation.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
@@ -47,7 +48,10 @@ export function bootstrap() {
   };
 
   const conversationProvider = {
-    runTurn: async (message: Parameters<BridgeOrchestrator["handleInbound"]>[0]) => {
+    runTurn: async (
+      message: Parameters<BridgeOrchestrator["handleInbound"]>[0],
+      options?: ConversationRunOptions
+    ) => {
       await adapters.codexDesktop.ensureAppReady();
       const session = await sessionStore.getSession(message.sessionKey);
       const currentBinding = session
@@ -78,7 +82,20 @@ export function bootstrap() {
       if (shouldIncludeSkillContext) {
         await sessionStore.updateSkillContextKey(message.sessionKey, skillContextKey);
       }
-      const drafts = await adapters.codexDesktop.collectAssistantReply(binding);
+      const drafts = await adapters.codexDesktop.collectAssistantReply(binding, {
+        onDraft: options?.onDraft
+          ? async (draft) => {
+              await options.onDraft!(
+                formatQqOutboundDraft(
+                  enrichQqOutboundDraft({
+                    ...draft,
+                    replyToMessageId: message.messageId
+                  })
+                )
+              );
+            }
+          : undefined
+      });
       return drafts.map((draft) =>
         formatQqOutboundDraft(
           enrichQqOutboundDraft({

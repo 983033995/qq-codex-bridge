@@ -64,7 +64,7 @@ describe("qq api client", () => {
     );
   });
 
-  it("sends c2c replies with qq passive markdown message fields by default", async () => {
+  it("sends c2c replies with qq passive plain text fields by default", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(
@@ -94,8 +94,8 @@ describe("qq api client", () => {
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          markdown: { content: "hello" },
-          msg_type: 2,
+          content: "hello",
+          msg_type: 0,
           msg_seq: 1,
           msg_id: "qq-inbound-1"
         })
@@ -103,7 +103,7 @@ describe("qq api client", () => {
     );
   });
 
-  it("can fall back to plain text payloads when markdown support is disabled", async () => {
+  it("can opt into markdown payloads when markdown support is enabled", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(
@@ -124,7 +124,7 @@ describe("qq api client", () => {
       now: () => 1_000,
       authBaseUrl: "https://bots.qq.com",
       apiBaseUrl: "https://api.sgroup.qq.com",
-      markdownSupport: false
+      markdownSupport: true
     });
 
     await expect(client.sendC2CMessage("OPENID123", "hello", "qq-inbound-2")).resolves.toBe("qq-msg-2");
@@ -134,8 +134,8 @@ describe("qq api client", () => {
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          content: "hello",
-          msg_type: 0,
+          markdown: { content: "hello" },
+          msg_type: 2,
           msg_seq: 1,
           msg_id: "qq-inbound-2"
         })

@@ -20,7 +20,7 @@ metadata: {"codex":{"emoji":"🛠️","repo":"qq-codex-bridge"}}
 ## 启动步骤
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 pnpm dev
 ```
 
@@ -47,7 +47,7 @@ curl http://127.0.0.1:9229/json/list
 ### 2. QQ gateway 会话文件
 
 ```bash
-cat /Volumes/13759427003/AI/qq-codex-bridge/runtime/qq-gateway-session.json
+cat ./runtime/qq-gateway-session.json
 ```
 
 预期：
@@ -57,14 +57,14 @@ cat /Volumes/13759427003/AI/qq-codex-bridge/runtime/qq-gateway-session.json
 ### 3. SQLite 会话绑定
 
 ```bash
-sqlite3 /Volumes/13759427003/AI/qq-codex-bridge/runtime/qq-codex-bridge.sqlite \
+sqlite3 ./runtime/qq-codex-bridge.sqlite \
   "select session_key, codex_thread_ref, status, last_error from bridge_sessions;"
 ```
 
 ### 4. 最近消息记录
 
 ```bash
-sqlite3 /Volumes/13759427003/AI/qq-codex-bridge/runtime/qq-codex-bridge.sqlite \
+sqlite3 ./runtime/qq-codex-bridge.sqlite \
   "select session_key, message_id, received_at from message_ledger order by received_at desc limit 20;"
 ```
 
@@ -104,8 +104,8 @@ sqlite3 /Volumes/13759427003/AI/qq-codex-bridge/runtime/qq-codex-bridge.sqlite \
 
 ## 相关文件
 
-- `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/main.ts`
-- `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/thread-command-handler.ts`
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-gateway-client.ts`
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-api-client.ts`
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/codex-desktop-driver.ts`
+- `apps/bridge-daemon/src/main.ts`
+- `apps/bridge-daemon/src/thread-command-handler.ts`
+- `packages/adapters/qq/src/qq-gateway-client.ts`
+- `packages/adapters/qq/src/qq-api-client.ts`
+- `packages/adapters/codex-desktop/src/codex-desktop-driver.ts`

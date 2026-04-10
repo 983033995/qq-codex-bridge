@@ -10,7 +10,10 @@ import {
   type MediaArtifact,
   type OutboundDraft
 } from "../../../domain/src/message.js";
-import type { DesktopDriverPort } from "../../../ports/src/conversation.js";
+import type {
+  ConversationRunOptions,
+  DesktopDriverPort
+} from "../../../ports/src/conversation.js";
 import { CdpSession } from "./cdp-session.js";
 import { isLikelyComposerSubmitButton } from "./composer-heuristics.js";
 import { parseAssistantReply } from "./reply-parser.js";
@@ -42,6 +45,7 @@ type CodexDesktopDriverOptions = {
   replyPollAttempts?: number;
   replyPollIntervalMs?: number;
   replyStablePolls?: number;
+  partialReplyStablePolls?: number;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -49,6 +53,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   private readonly replyPollAttempts: number;
   private readonly replyPollIntervalMs: number;
   private readonly replyStablePolls: number;
+  private readonly partialReplyStablePolls: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly pendingReplyBaselines = new Map<string, AssistantReplySnapshot>();
 
@@ -59,6 +64,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     this.replyPollAttempts = options.replyPollAttempts ?? 60;
     this.replyPollIntervalMs = options.replyPollIntervalMs ?? 500;
     this.replyStablePolls = Math.max(1, options.replyStablePolls ?? 3);
+    this.partialReplyStablePolls = Math.max(1, options.partialReplyStablePolls ?? 2);
     this.sleep =
       options.sleep ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -262,12 +268,16 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     );
   }
 
-  async collectAssistantReply(binding: DriverBinding): Promise<OutboundDraft[]> {
+  async collectAssistantReply(
+    binding: DriverBinding,
+    options: ConversationRunOptions = {}
+  ): Promise<OutboundDraft[]> {
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
     let candidateReply: AssistantReplySnapshot | null = null;
     let latestNewReply: AssistantReplySnapshot | null = null;
     let stablePolls = 0;
+    let emittedReplyText = "";
 
     for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
       const reply = await this.readLatestAssistantSnapshot(targetId);
@@ -282,7 +292,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           candidateReply = reply;
           stablePolls = reply.isStreaming ? 0 : 1;
         } else {
-          stablePolls = reply.isStreaming ? 0 : stablePolls + 1;
+          stablePolls += 1;
         }
 
         if (
@@ -291,7 +301,35 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           stablePolls >= this.replyStablePolls
         ) {
           this.pendingReplyBaselines.delete(binding.sessionKey);
+          if (options.onDraft) {
+            const finalDeltaDraft = this.buildIncrementalDraftFromSnapshot(
+              binding.sessionKey,
+              candidateReply,
+              emittedReplyText
+            );
+            if (finalDeltaDraft) {
+              await options.onDraft(finalDeltaDraft);
+            }
+            return [];
+          }
           return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply)];
+        }
+
+        if (
+          options.onDraft &&
+          candidateReply?.reply &&
+          stablePolls >= this.partialReplyStablePolls
+        ) {
+          const deltaDraft = this.buildIncrementalDraftFromSnapshot(
+            binding.sessionKey,
+            candidateReply,
+            emittedReplyText
+          );
+          if (deltaDraft) {
+            emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply);
+            await options.onDraft(deltaDraft);
+            stablePolls = 0;
+          }
         }
       } else if (candidateReply) {
         stablePolls = 0;
@@ -304,6 +342,17 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     this.pendingReplyBaselines.delete(binding.sessionKey);
     if (latestNewReply?.reply) {
+      if (options.onDraft) {
+        const timeoutDraft = this.buildIncrementalDraftFromSnapshot(
+          binding.sessionKey,
+          latestNewReply,
+          emittedReplyText
+        );
+        if (timeoutDraft) {
+          await options.onDraft(timeoutDraft);
+        }
+        return [];
+      }
       return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply)];
     }
 
@@ -330,6 +379,50 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         : {}),
       createdAt: new Date().toISOString()
     };
+  }
+
+  private buildIncrementalDraftFromSnapshot(
+    sessionKey: string,
+    snapshot: AssistantReplySnapshot,
+    emittedReplyText: string
+  ): OutboundDraft | null {
+    const fullReply = snapshot.reply ?? "";
+    const deltaText = this.extractReplyDelta(emittedReplyText, fullReply).trim();
+
+    if (!deltaText) {
+      return null;
+    }
+
+    return {
+      draftId: randomUUID(),
+      sessionKey,
+      text: deltaText,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  private extractReplyDelta(previous: string, next: string): string {
+    if (!previous) {
+      return next;
+    }
+
+    if (next.startsWith(previous)) {
+      return next.slice(previous.length);
+    }
+
+    return next;
+  }
+
+  private mergeObservedReply(previous: string, next: string): string {
+    if (!previous) {
+      return next;
+    }
+
+    if (next.startsWith(previous)) {
+      return next;
+    }
+
+    return next;
   }
 
   async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {

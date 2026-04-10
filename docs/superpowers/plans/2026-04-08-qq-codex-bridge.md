@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 `/Volumes/13759427003/AI/qq-codex-bridge/` 中实现一个可运行的 QQ 到 Codex 桌面端桥接原型，让每个 QQ 私聊/群聊稳定映射到独立持久会话，并支持基础错误恢复。
+**Goal:** 在 `./` 中实现一个可运行的 QQ 到 Codex 桌面端桥接原型，让每个 QQ 私聊/群聊稳定映射到独立持久会话，并支持基础错误恢复。
 
 **Architecture:** 采用单仓库、单主进程、模块化分层方案。QQ 接入、会话编排、Codex 桌面驱动、SQLite 持久化各自通过端口隔离，第一版通过 UI 自动化驱动 Codex 桌面端，但不让编排层直接理解 UI 控件。
 
@@ -14,106 +14,106 @@
 
 目标仓库文件结构如下。实现时严格按这个边界落文件，避免把驱动、协议和编排逻辑混进同一个文件。
 
-- `/Volumes/13759427003/AI/qq-codex-bridge/package.json`
+- `./package.json`
   仓库脚本、依赖和工作区定义。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tsconfig.json`
+- `./tsconfig.json`
   根 TypeScript 配置。
-- `/Volumes/13759427003/AI/qq-codex-bridge/vitest.config.ts`
+- `./vitest.config.ts`
   测试配置。
-- `/Volumes/13759427003/AI/qq-codex-bridge/.gitignore`
+- `./.gitignore`
   忽略日志、SQLite、截图、构建产物。
-- `/Volumes/13759427003/AI/qq-codex-bridge/README.md`
+- `./README.md`
   运行说明和系统概览。
-- `/Volumes/13759427003/AI/qq-codex-bridge/docs/architecture.md`
+- `./docs/architecture.md`
   架构说明。
-- `/Volumes/13759427003/AI/qq-codex-bridge/docs/provider-boundary.md`
+- `./docs/provider-boundary.md`
   Codex Desktop Driver 与核心领域边界说明。
-- `/Volumes/13759427003/AI/qq-codex-bridge/docs/testing.md`
+- `./docs/testing.md`
   测试策略说明。
-- `/Volumes/13759427003/AI/qq-codex-bridge/docs/decisions/0001-repo-shape.md`
+- `./docs/decisions/0001-repo-shape.md`
   为什么采用单仓单进程。
-- `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/main.ts`
+- `./apps/bridge-daemon/src/main.ts`
   进程入口。
-- `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/bootstrap.ts`
+- `./apps/bridge-daemon/src/bootstrap.ts`
   依赖装配。
-- `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/config.ts`
+- `./apps/bridge-daemon/src/config.ts`
   根配置读取与校验。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/session.ts`
+- `./packages/domain/src/session.ts`
   `BridgeSession`、`SessionPeer`、状态枚举。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/message.ts`
+- `./packages/domain/src/message.ts`
   `InboundMessage`、`OutboundDraft`、`DeliveryRecord`。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/driver.ts`
+- `./packages/domain/src/driver.ts`
   `DriverBinding`、驱动错误类型。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/qq.ts`
+- `./packages/ports/src/qq.ts`
   `QqIngressPort`、`QqEgressPort`。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/conversation.ts`
+- `./packages/ports/src/conversation.ts`
   `ConversationProviderPort`、`DesktopDriverPort`。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/store.ts`
+- `./packages/ports/src/store.ts`
   `SessionStorePort`、`TranscriptStorePort`。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/bridge-orchestrator.ts`
+- `./packages/orchestrator/src/bridge-orchestrator.ts`
   核心编排器。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/session-key.ts`
+- `./packages/orchestrator/src/session-key.ts`
   `account_key` / `peer_key` / `session_key` 生成。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/job-runner.ts`
+- `./packages/orchestrator/src/job-runner.ts`
   出站作业执行和恢复。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/sqlite.ts`
+- `./packages/store/src/sqlite.ts`
   SQLite 连接与 schema 初始化。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/session-repo.ts`
+- `./packages/store/src/session-repo.ts`
   `bridge_sessions`、`session_locks` 仓储。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/message-repo.ts`
+- `./packages/store/src/message-repo.ts`
   `message_ledger`、`delivery_jobs` 仓储。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-api-client.ts`
+- `./packages/adapters/qq/src/qq-api-client.ts`
   QQ HTTP API 包装。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-gateway.ts`
+- `./packages/adapters/qq/src/qq-gateway.ts`
   QQ WebSocket 建连、重连、事件分发。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-normalizer.ts`
+- `./packages/adapters/qq/src/qq-normalizer.ts`
   将 QQ 事件归一化为 `InboundMessage`。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-sender.ts`
+- `./packages/adapters/qq/src/qq-sender.ts`
   文本出站发送与长度拆分。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-channel-adapter.ts`
+- `./packages/adapters/qq/src/qq-channel-adapter.ts`
   组合 ingress/egress 端口实现。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/codex-desktop-driver.ts`
+- `./packages/adapters/codex-desktop/src/codex-desktop-driver.ts`
   Codex 桌面端驱动。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/cdp-session.ts`
+- `./packages/adapters/codex-desktop/src/cdp-session.ts`
   与 agent-browser / CDP 连接的底层封装。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/reply-parser.ts`
+- `./packages/adapters/codex-desktop/src/reply-parser.ts`
   从 UI 快照中提取回复。
-- `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/health.ts`
+- `./packages/adapters/codex-desktop/src/health.ts`
   应用健康探针和失败转储。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/unit/bridge-orchestrator.test.ts`
+- `./tests/unit/bridge-orchestrator.test.ts`
   编排器单测。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/unit/session-key.test.ts`
+- `./tests/unit/session-key.test.ts`
   会话 key 规则单测。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/contract/qq-normalizer.contract.test.ts`
+- `./tests/contract/qq-normalizer.contract.test.ts`
   QQ 入站契约测试。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/contract/qq-sender.contract.test.ts`
+- `./tests/contract/qq-sender.contract.test.ts`
   QQ 出站契约测试。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/contract/codex-desktop-driver.contract.test.ts`
+- `./tests/contract/codex-desktop-driver.contract.test.ts`
   驱动契约测试。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/private-chat.e2e.test.ts`
+- `./tests/e2e/private-chat.e2e.test.ts`
   私聊链路测试。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/group-chat.e2e.test.ts`
+- `./tests/e2e/group-chat.e2e.test.ts`
   群聊链路测试。
-- `/Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/rebind-recovery.e2e.test.ts`
+- `./tests/e2e/rebind-recovery.e2e.test.ts`
   重绑定恢复测试。
 
 ### Task 1: Scaffold Repository and Tooling
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/package.json`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/tsconfig.json`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/vitest.config.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/.gitignore`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/README.md`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/main.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/bootstrap.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/config.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/unit/session-key.test.ts`
+- Create: `./package.json`
+- Create: `./tsconfig.json`
+- Create: `./vitest.config.ts`
+- Create: `./.gitignore`
+- Create: `./README.md`
+- Create: `./apps/bridge-daemon/src/main.ts`
+- Create: `./apps/bridge-daemon/src/bootstrap.ts`
+- Create: `./apps/bridge-daemon/src/config.ts`
+- Test: `./tests/unit/session-key.test.ts`
 
 - [ ] **Step 1: Write the failing scaffold smoke test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/unit/session-key.test.ts
+// ./tests/unit/session-key.test.ts
 import { describe, expect, it } from "vitest";
 import { buildSessionKey, buildPeerKey } from "../../packages/orchestrator/src/session-key";
 
@@ -133,7 +133,7 @@ describe("session key helpers", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/session-key.test.ts
 ```
 
@@ -142,7 +142,7 @@ Expected: FAIL with `Cannot find module '../../packages/orchestrator/src/session
 - [ ] **Step 3: Create the repository scaffold and minimal tooling**
 
 ```json
-// /Volumes/13759427003/AI/qq-codex-bridge/package.json
+// ./package.json
 {
   "name": "qq-codex-bridge",
   "version": "0.1.0",
@@ -171,7 +171,7 @@ Expected: FAIL with `Cannot find module '../../packages/orchestrator/src/session
 ```
 
 ```json
-// /Volumes/13759427003/AI/qq-codex-bridge/tsconfig.json
+// ./tsconfig.json
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -194,7 +194,7 @@ Expected: FAIL with `Cannot find module '../../packages/orchestrator/src/session
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/vitest.config.ts
+// ./vitest.config.ts
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -209,7 +209,7 @@ export default defineConfig({
 ```
 
 ```gitignore
-# /Volumes/13759427003/AI/qq-codex-bridge/.gitignore
+# ./.gitignore
 node_modules
 dist
 .DS_Store
@@ -222,7 +222,7 @@ artifacts
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/config.ts
+// ./apps/bridge-daemon/src/config.ts
 import { z } from "zod";
 
 export const appConfigSchema = z.object({
@@ -255,7 +255,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/bootstrap.ts
+// ./apps/bridge-daemon/src/bootstrap.ts
 import { loadConfigFromEnv } from "./config";
 
 export function bootstrap() {
@@ -266,7 +266,7 @@ export function bootstrap() {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/main.ts
+// ./apps/bridge-daemon/src/main.ts
 import { bootstrap } from "./bootstrap";
 
 async function main() {
@@ -284,7 +284,7 @@ main().catch((error) => {
 ```
 
 ```md
-<!-- /Volumes/13759427003/AI/qq-codex-bridge/README.md -->
+<!-- ./README.md -->
 # qq-codex-bridge
 
 QQ 到 Codex 桌面端的会话桥接原型。
@@ -299,7 +299,7 @@ QQ 到 Codex 桌面端的会话桥接原型。
 - [ ] **Step 4: Add the minimal key helper implementation**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/session-key.ts
+// ./packages/orchestrator/src/session-key.ts
 export type ChatType = "c2c" | "group";
 
 export function buildPeerKey(input: { chatType: ChatType; peerId: string }): string {
@@ -318,7 +318,7 @@ export function buildSessionKey(input: { accountKey: string; peerKey: string }):
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm install
 npm test -- tests/unit/session-key.test.ts
 npm run check
@@ -332,7 +332,7 @@ Expected:
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add package.json tsconfig.json vitest.config.ts .gitignore README.md apps packages tests
 git commit -m "chore: scaffold qq codex bridge repo"
 ```
@@ -340,18 +340,18 @@ git commit -m "chore: scaffold qq codex bridge repo"
 ### Task 2: Define Domain and Port Contracts
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/session.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/message.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/driver.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/qq.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/conversation.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/store.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/unit/domain-contracts.test.ts`
+- Create: `./packages/domain/src/session.ts`
+- Create: `./packages/domain/src/message.ts`
+- Create: `./packages/domain/src/driver.ts`
+- Create: `./packages/ports/src/qq.ts`
+- Create: `./packages/ports/src/conversation.ts`
+- Create: `./packages/ports/src/store.ts`
+- Test: `./tests/unit/domain-contracts.test.ts`
 
 - [ ] **Step 1: Write the failing contract test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/unit/domain-contracts.test.ts
+// ./tests/unit/domain-contracts.test.ts
 import { describe, expect, it } from "vitest";
 import { BridgeSessionStatus } from "../../packages/domain/src/session";
 import type { InboundMessage } from "../../packages/domain/src/message";
@@ -380,7 +380,7 @@ describe("domain contracts", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/domain-contracts.test.ts
 ```
 
@@ -389,7 +389,7 @@ Expected: FAIL with `Cannot find module '../../packages/domain/src/session'`
 - [ ] **Step 3: Create the domain types**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/session.ts
+// ./packages/domain/src/session.ts
 export enum BridgeSessionStatus {
   Active = "active",
   NeedsRebind = "needs_rebind",
@@ -415,7 +415,7 @@ export type BridgeSession = SessionPeer & {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/message.ts
+// ./packages/domain/src/message.ts
 export type InboundMessage = {
   messageId: string;
   accountKey: string;
@@ -443,7 +443,7 @@ export type DeliveryRecord = {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/domain/src/driver.ts
+// ./packages/domain/src/driver.ts
 export type DriverBinding = {
   sessionKey: string;
   codexThreadRef: string | null;
@@ -467,7 +467,7 @@ export class DesktopDriverError extends Error {
 - [ ] **Step 4: Create the port interfaces**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/qq.ts
+// ./packages/ports/src/qq.ts
 import type { InboundMessage, OutboundDraft, DeliveryRecord } from "../../domain/src/message";
 
 export interface QqIngressPort {
@@ -480,7 +480,7 @@ export interface QqEgressPort {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/conversation.ts
+// ./packages/ports/src/conversation.ts
 import type { InboundMessage, OutboundDraft } from "../../domain/src/message";
 import type { DriverBinding } from "../../domain/src/driver";
 
@@ -498,7 +498,7 @@ export interface ConversationProviderPort {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/ports/src/store.ts
+// ./packages/ports/src/store.ts
 import type { BridgeSession, BridgeSessionStatus } from "../../domain/src/session";
 import type { InboundMessage, OutboundDraft } from "../../domain/src/message";
 
@@ -522,7 +522,7 @@ export interface TranscriptStorePort {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/domain-contracts.test.ts
 npm run check
 ```
@@ -535,7 +535,7 @@ Expected:
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add packages/domain packages/ports tests/unit/domain-contracts.test.ts
 git commit -m "feat: add bridge domain and port contracts"
 ```
@@ -543,15 +543,15 @@ git commit -m "feat: add bridge domain and port contracts"
 ### Task 3: Implement SQLite Persistence and Session Locking
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/sqlite.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/session-repo.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/message-repo.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/unit/sqlite-store.test.ts`
+- Create: `./packages/store/src/sqlite.ts`
+- Create: `./packages/store/src/session-repo.ts`
+- Create: `./packages/store/src/message-repo.ts`
+- Test: `./tests/unit/sqlite-store.test.ts`
 
 - [ ] **Step 1: Write the failing persistence test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/unit/sqlite-store.test.ts
+// ./tests/unit/sqlite-store.test.ts
 import { describe, expect, it } from "vitest";
 import { createSqliteDatabase } from "../../packages/store/src/sqlite";
 import { SqliteSessionStore } from "../../packages/store/src/session-repo";
@@ -586,7 +586,7 @@ describe("sqlite store", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/sqlite-store.test.ts
 ```
 
@@ -595,7 +595,7 @@ Expected: FAIL with missing store modules
 - [ ] **Step 3: Add SQLite bootstrap and schema**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/sqlite.ts
+// ./packages/store/src/sqlite.ts
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
@@ -658,7 +658,7 @@ export function createSqliteDatabase(filePath: string) {
 - [ ] **Step 4: Implement session and transcript stores**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/session-repo.ts
+// ./packages/store/src/session-repo.ts
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { BridgeSessionStatus, BridgeSession } from "../../domain/src/session";
@@ -726,7 +726,7 @@ export class SqliteSessionStore implements SessionStorePort {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/store/src/message-repo.ts
+// ./packages/store/src/message-repo.ts
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TranscriptStorePort } from "../../ports/src/store";
@@ -780,7 +780,7 @@ export class SqliteTranscriptStore implements TranscriptStorePort {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/sqlite-store.test.ts
 npm run check
 ```
@@ -793,7 +793,7 @@ Expected:
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add packages/store tests/unit/sqlite-store.test.ts
 git commit -m "feat: add sqlite-backed session stores"
 ```
@@ -801,14 +801,14 @@ git commit -m "feat: add sqlite-backed session stores"
 ### Task 4: Build the Orchestrator and Idempotent Turn Flow
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/bridge-orchestrator.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/job-runner.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/unit/bridge-orchestrator.test.ts`
+- Create: `./packages/orchestrator/src/bridge-orchestrator.ts`
+- Create: `./packages/orchestrator/src/job-runner.ts`
+- Test: `./tests/unit/bridge-orchestrator.test.ts`
 
 - [ ] **Step 1: Write the failing orchestrator test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/unit/bridge-orchestrator.test.ts
+// ./tests/unit/bridge-orchestrator.test.ts
 import { describe, expect, it, vi } from "vitest";
 import { BridgeOrchestrator } from "../../packages/orchestrator/src/bridge-orchestrator";
 import { BridgeSessionStatus } from "../../packages/domain/src/session";
@@ -880,7 +880,7 @@ describe("bridge orchestrator", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/bridge-orchestrator.test.ts
 ```
 
@@ -889,7 +889,7 @@ Expected: FAIL with missing orchestrator implementation
 - [ ] **Step 3: Implement the orchestrator**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/bridge-orchestrator.ts
+// ./packages/orchestrator/src/bridge-orchestrator.ts
 import { BridgeSessionStatus, type BridgeSession } from "../../domain/src/session";
 import type { InboundMessage } from "../../domain/src/message";
 import type { QqEgressPort } from "../../ports/src/qq";
@@ -950,7 +950,7 @@ export class BridgeOrchestrator {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/orchestrator/src/job-runner.ts
+// ./packages/orchestrator/src/job-runner.ts
 import type { OutboundDraft } from "../../domain/src/message";
 import type { QqEgressPort } from "../../ports/src/qq";
 
@@ -969,7 +969,7 @@ export async function deliverDrafts(
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/unit/bridge-orchestrator.test.ts
 npm test -- tests/unit/*.test.ts
 npm run check
@@ -984,7 +984,7 @@ Expected:
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add packages/orchestrator tests/unit/bridge-orchestrator.test.ts
 git commit -m "feat: add bridge orchestrator flow"
 ```
@@ -992,18 +992,18 @@ git commit -m "feat: add bridge orchestrator flow"
 ### Task 5: Add QQ Gateway and Sender Adapters
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-api-client.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-gateway.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-normalizer.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-sender.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-channel-adapter.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/contract/qq-normalizer.contract.test.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/contract/qq-sender.contract.test.ts`
+- Create: `./packages/adapters/qq/src/qq-api-client.ts`
+- Create: `./packages/adapters/qq/src/qq-gateway.ts`
+- Create: `./packages/adapters/qq/src/qq-normalizer.ts`
+- Create: `./packages/adapters/qq/src/qq-sender.ts`
+- Create: `./packages/adapters/qq/src/qq-channel-adapter.ts`
+- Test: `./tests/contract/qq-normalizer.contract.test.ts`
+- Test: `./tests/contract/qq-sender.contract.test.ts`
 
 - [ ] **Step 1: Write the failing QQ normalizer contract test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/contract/qq-normalizer.contract.test.ts
+// ./tests/contract/qq-normalizer.contract.test.ts
 import { describe, expect, it } from "vitest";
 import { normalizeC2CMessage } from "../../packages/adapters/qq/src/qq-normalizer";
 
@@ -1030,7 +1030,7 @@ describe("qq normalizer", () => {
 - [ ] **Step 2: Write the failing sender contract test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/contract/qq-sender.contract.test.ts
+// ./tests/contract/qq-sender.contract.test.ts
 import { describe, expect, it } from "vitest";
 import { chunkTextForQq } from "../../packages/adapters/qq/src/qq-sender";
 
@@ -1052,7 +1052,7 @@ describe("qq sender", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/contract/qq-normalizer.contract.test.ts
 npm test -- tests/contract/qq-sender.contract.test.ts
 ```
@@ -1062,7 +1062,7 @@ Expected: FAIL with missing QQ adapter implementations
 - [ ] **Step 4: Implement QQ normalizer and sender**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-normalizer.ts
+// ./packages/adapters/qq/src/qq-normalizer.ts
 import { buildPeerKey, buildSessionKey } from "../../../orchestrator/src/session-key";
 import type { InboundMessage } from "../../../domain/src/message";
 
@@ -1090,7 +1090,7 @@ export function normalizeC2CMessage(
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-sender.ts
+// ./packages/adapters/qq/src/qq-sender.ts
 import type { OutboundDraft, DeliveryRecord } from "../../../domain/src/message";
 
 export function chunkTextForQq(text: string, limit = 5000): string[] {
@@ -1116,7 +1116,7 @@ export class QqSender {
 - [ ] **Step 5: Add the QQ gateway and channel adapter skeleton**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-api-client.ts
+// ./packages/adapters/qq/src/qq-api-client.ts
 export class QqApiClient {
   constructor(
     readonly appId: string,
@@ -1126,7 +1126,7 @@ export class QqApiClient {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-gateway.ts
+// ./packages/adapters/qq/src/qq-gateway.ts
 import type { QqIngressPort } from "../../../ports/src/qq";
 import type { InboundMessage } from "../../../domain/src/message";
 
@@ -1146,7 +1146,7 @@ export class QqGateway implements QqIngressPort {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-channel-adapter.ts
+// ./packages/adapters/qq/src/qq-channel-adapter.ts
 import { QqGateway } from "./qq-gateway";
 import { QqSender } from "./qq-sender";
 
@@ -1163,7 +1163,7 @@ export function createQqChannelAdapter() {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/contract/qq-normalizer.contract.test.ts
 npm test -- tests/contract/qq-sender.contract.test.ts
 npm run check
@@ -1174,7 +1174,7 @@ Expected: both contract tests PASS, typecheck PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add packages/adapters/qq tests/contract/qq-normalizer.contract.test.ts tests/contract/qq-sender.contract.test.ts
 git commit -m "feat: add qq channel adapters"
 ```
@@ -1182,16 +1182,16 @@ git commit -m "feat: add qq channel adapters"
 ### Task 6: Implement Codex Desktop Driver via Electron CDP
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/cdp-session.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/reply-parser.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/health.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/codex-desktop-driver.ts`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/contract/codex-desktop-driver.contract.test.ts`
+- Create: `./packages/adapters/codex-desktop/src/cdp-session.ts`
+- Create: `./packages/adapters/codex-desktop/src/reply-parser.ts`
+- Create: `./packages/adapters/codex-desktop/src/health.ts`
+- Create: `./packages/adapters/codex-desktop/src/codex-desktop-driver.ts`
+- Test: `./tests/contract/codex-desktop-driver.contract.test.ts`
 
 - [ ] **Step 1: Write the failing driver contract test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/contract/codex-desktop-driver.contract.test.ts
+// ./tests/contract/codex-desktop-driver.contract.test.ts
 import { describe, expect, it } from "vitest";
 import { parseAssistantReply } from "../../packages/adapters/codex-desktop/src/reply-parser";
 
@@ -1213,7 +1213,7 @@ describe("codex desktop driver contract", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/contract/codex-desktop-driver.contract.test.ts
 ```
 
@@ -1222,7 +1222,7 @@ Expected: FAIL with missing driver modules
 - [ ] **Step 3: Implement reply parsing and health probes**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/reply-parser.ts
+// ./packages/adapters/codex-desktop/src/reply-parser.ts
 export function parseAssistantReply(snapshotText: string): string {
   const lines = snapshotText
     .split("\n")
@@ -1238,7 +1238,7 @@ export function parseAssistantReply(snapshotText: string): string {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/health.ts
+// ./packages/adapters/codex-desktop/src/health.ts
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1252,7 +1252,7 @@ export function ensureArtifactDir(baseDir: string): string {
 - [ ] **Step 4: Implement the driver skeleton**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/cdp-session.ts
+// ./packages/adapters/codex-desktop/src/cdp-session.ts
 export type CdpSessionConfig = {
   appName: string;
   remoteDebuggingPort: number;
@@ -1268,7 +1268,7 @@ export class CdpSession {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/codex-desktop/src/codex-desktop-driver.ts
+// ./packages/adapters/codex-desktop/src/codex-desktop-driver.ts
 import { randomUUID } from "node:crypto";
 import type { DesktopDriverPort } from "../../../ports/src/conversation";
 import type { DriverBinding } from "../../../domain/src/driver";
@@ -1315,7 +1315,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/contract/codex-desktop-driver.contract.test.ts
 npm run check
 ```
@@ -1325,7 +1325,7 @@ Expected: contract test PASS, typecheck PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add packages/adapters/codex-desktop tests/contract/codex-desktop-driver.contract.test.ts
 git commit -m "feat: add codex desktop driver skeleton"
 ```
@@ -1333,18 +1333,18 @@ git commit -m "feat: add codex desktop driver skeleton"
 ### Task 7: Wire Bootstrap, Provider, and Runtime Docs
 
 **Files:**
-- Modify: `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/bootstrap.ts`
-- Modify: `/Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/main.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/docs/architecture.md`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/docs/provider-boundary.md`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/docs/testing.md`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/docs/decisions/0001-repo-shape.md`
-- Test: `/Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/private-chat.e2e.test.ts`
+- Modify: `./apps/bridge-daemon/src/bootstrap.ts`
+- Modify: `./apps/bridge-daemon/src/main.ts`
+- Create: `./docs/architecture.md`
+- Create: `./docs/provider-boundary.md`
+- Create: `./docs/testing.md`
+- Create: `./docs/decisions/0001-repo-shape.md`
+- Test: `./tests/e2e/private-chat.e2e.test.ts`
 
 - [ ] **Step 1: Write the failing e2e smoke test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/private-chat.e2e.test.ts
+// ./tests/e2e/private-chat.e2e.test.ts
 import { describe, expect, it } from "vitest";
 import { bootstrap } from "../../apps/bridge-daemon/src/bootstrap";
 
@@ -1368,7 +1368,7 @@ describe("bootstrap integration", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/e2e/private-chat.e2e.test.ts
 ```
 
@@ -1377,7 +1377,7 @@ Expected: FAIL because `bootstrap()` still only returns config
 - [ ] **Step 3: Wire the app container**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/bootstrap.ts
+// ./apps/bridge-daemon/src/bootstrap.ts
 import { loadConfigFromEnv } from "./config";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo";
@@ -1429,7 +1429,7 @@ export function bootstrap() {
 ```
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/apps/bridge-daemon/src/main.ts
+// ./apps/bridge-daemon/src/main.ts
 import { bootstrap } from "./bootstrap";
 
 async function main() {
@@ -1451,7 +1451,7 @@ main().catch((error) => {
 - [ ] **Step 4: Add core docs**
 
 ```md
-<!-- /Volumes/13759427003/AI/qq-codex-bridge/docs/architecture.md -->
+<!-- ./docs/architecture.md -->
 # Architecture
 
 系统由 QQ 适配层、桥接编排层、Codex 桌面驱动层和 SQLite 存储层组成。
@@ -1459,7 +1459,7 @@ main().catch((error) => {
 ```
 
 ```md
-<!-- /Volumes/13759427003/AI/qq-codex-bridge/docs/provider-boundary.md -->
+<!-- ./docs/provider-boundary.md -->
 # Provider Boundary
 
 `packages/adapters/codex-desktop` 是唯一理解 Codex 桌面窗口和 CDP 自动化的模块。
@@ -1467,7 +1467,7 @@ main().catch((error) => {
 ```
 
 ```md
-<!-- /Volumes/13759427003/AI/qq-codex-bridge/docs/testing.md -->
+<!-- ./docs/testing.md -->
 # Testing
 
 - unit: 领域和编排逻辑
@@ -1476,7 +1476,7 @@ main().catch((error) => {
 ```
 
 ```md
-<!-- /Volumes/13759427003/AI/qq-codex-bridge/docs/decisions/0001-repo-shape.md -->
+<!-- ./docs/decisions/0001-repo-shape.md -->
 # ADR 0001: Single-Process Prototype
 
 原型采用单仓库、单主进程，优先验证真实链路和会话隔离，再决定是否拆分服务。
@@ -1487,7 +1487,7 @@ main().catch((error) => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/e2e/private-chat.e2e.test.ts
 npm test
 npm run check
@@ -1502,7 +1502,7 @@ Expected:
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add apps docs tests/e2e/private-chat.e2e.test.ts
 git commit -m "feat: wire bootstrap and project docs"
 ```
@@ -1510,14 +1510,14 @@ git commit -m "feat: wire bootstrap and project docs"
 ### Task 8: Add Group-Chat Flow and Rebind Recovery Tests
 
 **Files:**
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/group-chat.e2e.test.ts`
-- Create: `/Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/rebind-recovery.e2e.test.ts`
-- Modify: `/Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-normalizer.ts`
+- Create: `./tests/e2e/group-chat.e2e.test.ts`
+- Create: `./tests/e2e/rebind-recovery.e2e.test.ts`
+- Modify: `./packages/adapters/qq/src/qq-normalizer.ts`
 
 - [ ] **Step 1: Write the failing group-chat e2e test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/group-chat.e2e.test.ts
+// ./tests/e2e/group-chat.e2e.test.ts
 import { describe, expect, it } from "vitest";
 import { buildPeerKey, buildSessionKey } from "../../packages/orchestrator/src/session-key";
 
@@ -1535,7 +1535,7 @@ describe("group session isolation", () => {
 - [ ] **Step 2: Write the failing rebind recovery e2e test**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/tests/e2e/rebind-recovery.e2e.test.ts
+// ./tests/e2e/rebind-recovery.e2e.test.ts
 import { describe, expect, it, vi } from "vitest";
 import { BridgeOrchestrator } from "../../packages/orchestrator/src/bridge-orchestrator";
 
@@ -1605,7 +1605,7 @@ describe("rebind recovery", () => {
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/e2e/group-chat.e2e.test.ts
 npm test -- tests/e2e/rebind-recovery.e2e.test.ts
 ```
@@ -1619,7 +1619,7 @@ Expected:
 - [ ] **Step 4: Adjust orchestrator and QQ normalizer as needed**
 
 ```ts
-// /Volumes/13759427003/AI/qq-codex-bridge/packages/adapters/qq/src/qq-normalizer.ts
+// ./packages/adapters/qq/src/qq-normalizer.ts
 import { buildPeerKey, buildSessionKey } from "../../../orchestrator/src/session-key";
 import type { InboundMessage } from "../../../domain/src/message";
 
@@ -1652,7 +1652,7 @@ export function normalizeGroupMessage(
 Run:
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 npm test -- tests/e2e/group-chat.e2e.test.ts
 npm test -- tests/e2e/rebind-recovery.e2e.test.ts
 npm test -- tests/e2e/private-chat.e2e.test.ts
@@ -1664,7 +1664,7 @@ Expected: 三个 e2e 文件 PASS，typecheck PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 git add packages/adapters/qq/src/qq-normalizer.ts tests/e2e/group-chat.e2e.test.ts tests/e2e/rebind-recovery.e2e.test.ts
 git commit -m "feat: add group isolation and rebind recovery coverage"
 ```
@@ -1703,7 +1703,7 @@ git commit -m "feat: add group isolation and rebind recovery coverage"
 
 ## Execution Handoff
 
-Plan complete and saved to `/Volumes/13759427003/AI/qq-codex-bridge/docs/superpowers/plans/2026-04-08-qq-codex-bridge.md`. Two execution options:
+Plan complete and saved to `./docs/superpowers/plans/2026-04-08-qq-codex-bridge.md`. Two execution options:
 
 **1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration
 

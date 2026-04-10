@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DesktopDriverError } from "../../packages/domain/src/driver.js";
+import type { OutboundDraft } from "../../packages/domain/src/message.js";
 import { CodexDesktopDriver } from "../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { parseAssistantReply } from "../../packages/adapters/codex-desktop/src/reply-parser.js";
 import type { CdpSession } from "../../packages/adapters/codex-desktop/src/cdp-session.js";
@@ -933,6 +934,79 @@ describe("codex desktop driver contract", () => {
         text: "这是已经生成出来的结果"
       }
     ]);
+  });
+
+  it("emits incremental drafts while the assistant reply grows across multiple phases", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句\n继续补充", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句\n继续补充", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句\n继续补充", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句\n继续补充\n最终结论", isStreaming: false })
+      .mockResolvedValueOnce({ unitKey: "assistant-stream-1", reply: "先回一句\n继续补充\n最终结论", isStreaming: false });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollAttempts: 12,
+        replyPollIntervalMs: 0,
+        replyStablePolls: 2,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-incremental-stream",
+      accountKey: "qqbot:default",
+      sessionKey: binding.sessionKey,
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "请分阶段回答",
+      receivedAt: "2026-04-10T11:00:00.000Z"
+    });
+
+    const emitted: OutboundDraft[] = [];
+    const finalDrafts = await driver.collectAssistantReply(binding, {
+      onDraft: async (draft) => {
+        emitted.push(draft);
+      }
+    });
+
+    expect(emitted).toMatchObject([
+      { text: "先回一句" },
+      { text: "继续补充" },
+      { text: "最终结论" }
+    ]);
+    expect(finalDrafts).toEqual([]);
   });
 
   it("probes the composer button icon as a streaming fallback signal", async () => {

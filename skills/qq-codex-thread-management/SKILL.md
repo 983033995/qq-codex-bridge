@@ -21,7 +21,7 @@ metadata: {"codex":{"emoji":"🧵","repo":"qq-codex-bridge"}}
 在执行线程管理前，先确认桥接正在运行：
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd /path/to/qq-codex-bridge
 pnpm dev
 ```
 
@@ -94,7 +94,7 @@ pnpm dev
 查看会话绑定：
 
 ```bash
-sqlite3 /Volumes/13759427003/AI/qq-codex-bridge/runtime/qq-codex-bridge.sqlite \
+sqlite3 ./runtime/qq-codex-bridge.sqlite \
   "select session_key, codex_thread_ref, status from bridge_sessions;"
 ```
 

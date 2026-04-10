@@ -200,7 +200,12 @@ describe("BridgeOrchestrator", () => {
       lastError: null
     });
     expect(transcriptStore.recordInbound).toHaveBeenCalledWith(message);
-    expect(conversationProvider.runTurn).toHaveBeenCalledWith(message);
+    expect(conversationProvider.runTurn).toHaveBeenCalledWith(
+      message,
+      expect.objectContaining({
+        onDraft: expect.any(Function)
+      })
+    );
     expect(transcriptStore.recordOutbound).toHaveBeenNthCalledWith(1, drafts[0]);
     expect(transcriptStore.recordOutbound).toHaveBeenNthCalledWith(2, drafts[1]);
     expect(qqEgress.deliver).toHaveBeenNthCalledWith(1, drafts[0]);
@@ -316,6 +321,76 @@ describe("BridgeOrchestrator", () => {
       message.sessionKey,
       BridgeSessionStatus.NeedsRebind,
       "delivery failed"
+    );
+  });
+
+  it("delivers incremental drafts as they arrive and does not resend them after runTurn completes", async () => {
+    const message = createMessage();
+    const firstDraft: OutboundDraft = {
+      draftId: "draft-partial-1",
+      sessionKey: message.sessionKey,
+      text: "先回一句",
+      createdAt: "2026-04-10T10:00:01.000Z"
+    };
+    const secondDraft: OutboundDraft = {
+      draftId: "draft-partial-2",
+      sessionKey: message.sessionKey,
+      text: "补充第二段",
+      createdAt: "2026-04-10T10:00:03.000Z"
+    };
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(createSession(message)),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn(async (_message, options) => {
+        await options?.onDraft?.(firstDraft);
+        await options?.onDraft?.(secondDraft);
+        return [];
+      })
+    };
+
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn(async (draft: OutboundDraft) => ({
+        jobId: `job-${draft.draftId}`,
+        sessionKey: draft.sessionKey,
+        providerMessageId: null,
+        deliveredAt: draft.createdAt
+      }))
+    };
+
+    const orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await orchestrator.handleInbound(message);
+
+    expect(transcriptStore.recordOutbound).toHaveBeenNthCalledWith(1, firstDraft);
+    expect(transcriptStore.recordOutbound).toHaveBeenNthCalledWith(2, secondDraft);
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(1, firstDraft);
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(2, secondDraft);
+    expect(qqEgress.deliver).toHaveBeenCalledTimes(2);
+    expect(conversationProvider.runTurn).toHaveBeenCalledWith(
+      message,
+      expect.objectContaining({
+        onDraft: expect.any(Function)
+      })
     );
   });
 });

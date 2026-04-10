@@ -34,7 +34,7 @@ export class QqApiClient {
     this.apiBaseUrl = options.apiBaseUrl ?? "https://api.sgroup.qq.com";
     this.fetchFn = options.fetchFn ?? fetch;
     this.now = options.now ?? Date.now;
-    this.markdownSupport = options.markdownSupport ?? true;
+    this.markdownSupport = options.markdownSupport ?? false;
   }
 
   async getAccessToken(): Promise<string> {

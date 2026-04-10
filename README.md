@@ -102,9 +102,9 @@ QQBOT_STT_LANGUAGE=zh
 
 仓库内已补充可复用的 Codex 技能说明：
 
-- [skills/qq-codex-thread-management/SKILL.md](/Volumes/13759427003/AI/qq-codex-bridge/skills/qq-codex-thread-management/SKILL.md)
-- [skills/qq-codex-runtime/SKILL.md](/Volumes/13759427003/AI/qq-codex-bridge/skills/qq-codex-runtime/SKILL.md)
-- [skills/qq-codex-media/SKILL.md](/Volumes/13759427003/AI/qq-codex-bridge/skills/qq-codex-media/SKILL.md)
+- [skills/qq-codex-thread-management/SKILL.md](./skills/qq-codex-thread-management/SKILL.md)
+- [skills/qq-codex-runtime/SKILL.md](./skills/qq-codex-runtime/SKILL.md)
+- [skills/qq-codex-media/SKILL.md](./skills/qq-codex-media/SKILL.md)
 
 当前这些技能覆盖的是本项目已经落地的能力：
 
