@@ -1,5 +1,7 @@
 # qq-codex-bridge
 
+![CI](https://github.com/983033995/qq-codex-bridge/actions/workflows/ci.yml/badge.svg)
+
 ![qq-codex-bridge README Hero](./output/readme-hero-nanobanana-productized-v1.png)
 
 一个把 **QQ 官方机器人会话** 桥接到 **Codex Desktop** 的开源实验项目。
