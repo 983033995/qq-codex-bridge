@@ -1,6 +1,9 @@
 # qq-codex-bridge
 
 ![CI](https://github.com/983033995/qq-codex-bridge/actions/workflows/ci.yml/badge.svg)
+[![License](https://img.shields.io/github/license/983033995/qq-codex-bridge)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![pnpm](https://img.shields.io/badge/pnpm-10-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
 
 ![qq-codex-bridge README Hero](./output/readme-hero-nanobanana-productized-v1.png)
 
@@ -14,6 +17,16 @@
 - 把 Codex 的文本、图片、文件、语音转写结果继续回送到 QQ
 
 项目当前已经能跑真实链路，但仍然属于 **实验性可用** 阶段，更适合开发者联调、研究和二次改造，而不是直接当成稳定生产系统。
+
+## 文档导航
+
+- [快速开始](#快速开始)
+- [FAQ 与故障排查](./docs/faq.md)
+- [架构说明](./docs/architecture.md)
+- [测试说明](./docs/testing.md)
+- [变更记录](./CHANGELOG.md)
+- [贡献指南](./CONTRIBUTING.md)
+- [安全策略](./SECURITY.md)
 
 ---
 
