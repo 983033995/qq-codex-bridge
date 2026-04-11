@@ -19,6 +19,7 @@ export class DesktopDriverError extends Error {
       | "app_not_ready"
       | "session_not_found"
       | "input_not_found"
+      | "submit_failed"
       | "reply_timeout"
       | "reply_parse_failed"
   ) {

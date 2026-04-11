@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BridgeSessionStatus } from "../../packages/domain/src/session.js";
 import type { BridgeSession } from "../../packages/domain/src/session.js";
+import { DesktopDriverError } from "../../packages/domain/src/driver.js";
 import type { InboundMessage, OutboundDraft } from "../../packages/domain/src/message.js";
 import type { ConversationProviderPort } from "../../packages/ports/src/conversation.js";
 import type { QqEgressPort } from "../../packages/ports/src/qq.js";
@@ -111,6 +112,69 @@ describe("BridgeOrchestrator", () => {
     expect(transcriptStore.recordInbound).not.toHaveBeenCalled();
     expect(conversationProvider.runTurn).not.toHaveBeenCalled();
     expect(qqEgress.deliver).not.toHaveBeenCalled();
+  });
+
+  it("suppresses duplicate inbound messages with different ids when the content repeats shortly after", async () => {
+    const firstMessage = createMessage({
+      messageId: "msg-1",
+      text: "重复消息",
+      receivedAt: "2026-04-10T21:58:49.000Z"
+    });
+    const secondMessage = createMessage({
+      messageId: "msg-2",
+      text: "重复消息",
+      receivedAt: "2026-04-10T21:59:10.000Z"
+    });
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(null),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn().mockResolvedValue([])
+    };
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn()
+    };
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await orchestrator.handleInbound(firstMessage);
+    await orchestrator.handleInbound(secondMessage);
+
+    expect(transcriptStore.recordInbound).toHaveBeenCalledTimes(1);
+    expect(transcriptStore.recordInbound).toHaveBeenCalledWith(firstMessage);
+    expect(conversationProvider.runTurn).toHaveBeenCalledTimes(1);
+    expect(conversationProvider.runTurn).toHaveBeenCalledWith(
+      firstMessage,
+      expect.objectContaining({
+        onDraft: expect.any(Function)
+      })
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[qq-codex-bridge] duplicate inbound suppressed",
+      expect.objectContaining({
+        messageId: secondMessage.messageId,
+        sessionKey: secondMessage.sessionKey
+      })
+    );
+    warnSpy.mockRestore();
   });
 
   it("creates a missing session, processes the turn, and activates the session after success", async () => {
@@ -272,7 +336,7 @@ describe("BridgeOrchestrator", () => {
     expect(qqEgress.deliver).not.toHaveBeenCalled();
   });
 
-  it("marks the session as needing rebind when delivery fails", async () => {
+  it("continues later drafts when one delivery fails", async () => {
     const message = createMessage();
     const drafts: OutboundDraft[] = [
       {
@@ -280,6 +344,12 @@ describe("BridgeOrchestrator", () => {
         sessionKey: message.sessionKey,
         text: "reply-1",
         createdAt: "2026-04-08T10:00:01.000Z"
+      },
+      {
+        draftId: "draft-2",
+        sessionKey: message.sessionKey,
+        text: "reply-2",
+        createdAt: "2026-04-08T10:00:02.000Z"
       }
     ];
     const error = new Error("delivery failed");
@@ -305,9 +375,18 @@ describe("BridgeOrchestrator", () => {
     };
 
     const qqEgress: QqEgressPort = {
-      deliver: vi.fn().mockRejectedValue(error)
+      deliver: vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce({
+          jobId: "job-2",
+          sessionKey: message.sessionKey,
+          providerMessageId: null,
+          deliveredAt: drafts[1].createdAt
+        })
     };
 
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const orchestrator = new BridgeOrchestrator({
       transcriptStore,
       sessionStore,
@@ -315,12 +394,79 @@ describe("BridgeOrchestrator", () => {
       qqEgress
     });
 
-    await expect(orchestrator.handleInbound(message)).rejects.toThrow("delivery failed");
+    await expect(orchestrator.handleInbound(message)).resolves.toBeUndefined();
     expect(transcriptStore.recordOutbound).toHaveBeenCalledWith(drafts[0]);
+    expect(transcriptStore.recordOutbound).toHaveBeenCalledWith(drafts[1]);
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(1, drafts[0]);
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(2, drafts[1]);
     expect(sessionStore.updateSessionStatus).toHaveBeenCalledWith(
       message.sessionKey,
-      BridgeSessionStatus.NeedsRebind,
-      "delivery failed"
+      BridgeSessionStatus.Active,
+      "draft-1: delivery failed"
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[qq-codex-bridge] draft delivery failed",
+      expect.objectContaining({
+        sessionKey: message.sessionKey,
+        messageId: message.messageId,
+        draftId: "draft-1",
+        error: "delivery failed"
+      })
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("keeps the session active when codex reply polling times out", async () => {
+    const message = createMessage();
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(null),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn().mockRejectedValue(
+        new DesktopDriverError("Codex desktop reply did not arrive before timeout", "reply_timeout")
+      )
+    };
+
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn()
+    };
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await expect(orchestrator.handleInbound(message)).resolves.toBeUndefined();
+    expect(sessionStore.updateSessionStatus).toHaveBeenCalledWith(
+      message.sessionKey,
+      BridgeSessionStatus.Active,
+      "Codex desktop reply did not arrive before timeout"
+    );
+    expect(qqEgress.deliver).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[qq-codex-bridge] recoverable turn error",
+      expect.objectContaining({
+        messageId: message.messageId,
+        sessionKey: message.sessionKey,
+        error: "Codex desktop reply did not arrive before timeout"
+      })
     );
   });
 

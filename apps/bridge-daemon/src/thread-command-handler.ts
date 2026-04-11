@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BridgeSessionStatus, type BridgeSession } from "../../../packages/domain/src/session.js";
+import { DesktopDriverError } from "../../../packages/domain/src/driver.js";
 import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../../packages/domain/src/message.js";
 import type { DesktopDriverPort } from "../../../packages/ports/src/conversation.js";
 import type { QqEgressPort } from "../../../packages/ports/src/qq.js";
@@ -21,7 +22,7 @@ export class ThreadCommandHandler {
     }
 
     const text = message.text.trim();
-    if (!text.startsWith("/threads") && !text.startsWith("/thread")) {
+    if (!this.isSupportedCommand(text)) {
       return false;
     }
 
@@ -39,13 +40,13 @@ export class ThreadCommandHandler {
       await this.ensureSessionExists(message);
       await this.deps.transcriptStore.recordInbound(message);
 
-      if (text === "/threads") {
+      if (text === "/threads" || text === "/t") {
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
         await this.deliverControlReply(message, this.formatThreads(threads));
         return;
       }
 
-      if (text === "/thread current") {
+      if (text === "/thread current" || text === "/tc") {
         const session = await this.deps.sessionStore.getSession(message.sessionKey);
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
         const current = threads.find((thread) => thread.threadRef === session?.codexThreadRef)
@@ -58,7 +59,12 @@ export class ThreadCommandHandler {
         return;
       }
 
-      const useMatch = text.match(/^\/thread\s+use\s+(\d+)$/);
+      if (text === "/help") {
+        await this.deliverControlReply(message, this.buildHelpText());
+        return;
+      }
+
+      const useMatch = text.match(/^(?:\/thread\s+use|\/tu)\s+(\d+)$/);
       if (useMatch) {
         const index = Number(useMatch[1]);
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
@@ -68,7 +74,19 @@ export class ThreadCommandHandler {
           return;
         }
 
-        const binding = await this.deps.desktopDriver.switchToThread(message.sessionKey, thread.threadRef);
+        let binding;
+        try {
+          binding = await this.deps.desktopDriver.switchToThread(message.sessionKey, thread.threadRef);
+        } catch (error) {
+          if (error instanceof DesktopDriverError && error.reason === "session_not_found") {
+            await this.deliverControlReply(
+              message,
+              `切换失败：没有在当前 Codex 侧边栏里找到这个线程。\n请先发送 /t 刷新列表后重试。`
+            );
+            return;
+          }
+          throw error;
+        }
         await this.deps.sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
         await this.deliverControlReply(
           message,
@@ -77,7 +95,7 @@ export class ThreadCommandHandler {
         return;
       }
 
-      const newMatch = text.match(/^\/thread\s+new\s+(.+)$/);
+      const newMatch = text.match(/^(?:\/thread\s+new|\/tn)\s+(.+)$/);
       if (newMatch) {
         const title = newMatch[1].trim();
         const binding = await this.deps.desktopDriver.createThread(
@@ -89,7 +107,7 @@ export class ThreadCommandHandler {
         return;
       }
 
-      const forkMatch = text.match(/^\/thread\s+fork\s+(.+)$/);
+      const forkMatch = text.match(/^(?:\/thread\s+fork|\/tf)\s+(.+)$/);
       if (forkMatch) {
         const title = forkMatch[1].trim();
         const recentConversation = await this.deps.transcriptStore.listRecentConversation(
@@ -107,14 +125,7 @@ export class ThreadCommandHandler {
 
       await this.deliverControlReply(
         message,
-        [
-          "可用命令：",
-          "/threads",
-          "/thread current",
-          "/thread use <序号>",
-          "/thread new <标题>",
-          "/thread fork <标题>"
-        ].join("\n")
+        this.buildHelpText()
       );
     });
 
@@ -144,6 +155,23 @@ export class ThreadCommandHandler {
     await this.deps.sessionStore.createSession(created);
   }
 
+  private isSupportedCommand(text: string): boolean {
+    return (
+      text === "/threads" ||
+      text === "/t" ||
+      text === "/thread current" ||
+      text === "/tc" ||
+      text === "/help" ||
+      /^\/thread\s+use\s+\d+$/.test(text) ||
+      /^\/tu\s+\d+$/.test(text) ||
+      /^\/thread\s+new\s+.+$/.test(text) ||
+      /^\/tn\s+.+$/.test(text) ||
+      /^\/thread\s+fork\s+.+$/.test(text) ||
+      /^\/tf\s+.+$/.test(text) ||
+      text === "/thread"
+    );
+  }
+
   private formatThreads(
     threads: Array<{
       index: number;
@@ -157,13 +185,20 @@ export class ThreadCommandHandler {
       return "当前没有可用的 Codex 线程。";
     }
 
+    const escapeCell = (value: string | null) =>
+      (value ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+
     return [
-      "最近 20 条 Codex 线程：",
+      "最近 20 条最近有消息活动的 Codex 线程：",
+      "",
+      "| 序号 | 项目 | 线程标题 | 最近活动 |",
+      "| --- | --- | --- | --- |",
       ...threads.map((thread) => {
-        const prefix = thread.isCurrent ? `[当前] ` : "";
-        const project = thread.projectName ? `${thread.projectName} / ` : "";
-        const time = thread.relativeTime ? ` (${thread.relativeTime})` : "";
-        return `${thread.index}. ${prefix}${project}${thread.title}${time}`;
+        const index = thread.isCurrent ? `→ ${thread.index}` : `${thread.index}`;
+        const project = escapeCell(thread.projectName) || "-";
+        const title = escapeCell(thread.title) || "-";
+        const time = escapeCell(thread.relativeTime) || "-";
+        return `| ${index} | ${project} | ${title} | ${time} |`;
       })
     ].join("\n");
   }
@@ -179,6 +214,22 @@ export class ThreadCommandHandler {
 
     await this.deps.transcriptStore.recordOutbound(draft);
     await this.deps.qqEgress.deliver(draft);
+  }
+
+  private buildHelpText(): string {
+    return [
+      "线程管理命令：",
+      "",
+      "| 用途 | 完整命令 | 简写 |",
+      "| --- | --- | --- |",
+      "| 查看最近活跃线程 | `/threads` | `/t` |",
+      "| 查看当前绑定线程 | `/thread current` | `/tc` |",
+      "| 切换到指定线程 | `/thread use <序号>` | `/tu <序号>` |",
+      "| 新建线程 | `/thread new <标题>` | `/tn <标题>` |",
+      "| 基于最近对话 fork 线程 | `/thread fork <标题>` | `/tf <标题>` |",
+      "",
+      "建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。"
+    ].join("\n");
   }
 
   private buildNewThreadSeedPrompt(title: string): string {

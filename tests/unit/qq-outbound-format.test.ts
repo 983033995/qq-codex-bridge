@@ -35,7 +35,7 @@ describe("qq outbound format", () => {
     expect(formatted.text).not.toContain("临时落盘的运行目录路径");
   });
 
-  it("converts markdown tables into mobile-friendly bullets", () => {
+  it("preserves markdown tables for downstream markdown delivery", () => {
     const formatted = formatQqOutboundText(
       [
         "| 路径 | 含义 |",
@@ -46,8 +46,32 @@ describe("qq outbound format", () => {
       []
     );
 
-    expect(formatted).toContain("- 路径：runtime/media/...；含义：QQ 桥接缓存附件路径");
-    expect(formatted).toContain("- 路径：/Volumes/demo.png；含义：本地真实文件路径");
-    expect(formatted).not.toContain("| 路径 | 含义 |");
+    expect(formatted).toContain("| 路径 | 含义 |");
+    expect(formatted).toContain("| runtime/media/... | QQ 桥接缓存附件路径 |");
+    expect(formatted).toContain("| /Volumes/demo.png | 本地真实文件路径 |");
+  });
+
+  it("preserves indentation and fenced code blocks", () => {
+    const formatted = formatQqOutboundText(
+      [
+        "下面给你一段 JavaScript 闭包示例代码：",
+        "",
+        "```javascript",
+        "function createCounter() {",
+        "  let count = 0;",
+        "",
+        "  return function () {",
+        "    count++;",
+        "    return count;",
+        "  };",
+        "}",
+        "```"
+      ].join("\n"),
+      []
+    );
+
+    expect(formatted).toContain("```javascript");
+    expect(formatted).toContain("  let count = 0;");
+    expect(formatted).toContain("    count++;");
   });
 });

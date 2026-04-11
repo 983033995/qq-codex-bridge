@@ -143,6 +143,51 @@ describe("qq api client", () => {
     );
   });
 
+  it("can opt into markdown payloads per message for rich formatted content", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: "token-1", expires_in: "3600" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "qq-msg-3" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+    const client = new QqApiClient("app-id", "secret", {
+      fetchFn,
+      now: () => 1_000,
+      authBaseUrl: "https://bots.qq.com",
+      apiBaseUrl: "https://api.sgroup.qq.com",
+      markdownSupport: false
+    });
+
+    await expect(
+      client.sendC2CMessage("OPENID123", "```js\nconst x = 1;\n```", "qq-inbound-2b", {
+        preferMarkdown: true
+      })
+    ).resolves.toBe("qq-msg-3");
+
+    expect(fetchFn).toHaveBeenNthCalledWith(
+      2,
+      "https://api.sgroup.qq.com/v2/users/OPENID123/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          markdown: { content: "```js\nconst x = 1;\n```" },
+          msg_type: 2,
+          msg_seq: 1,
+          msg_id: "qq-inbound-2b"
+        })
+      })
+    );
+  });
+
   it("uploads and sends a c2c media artifact through qq media endpoints", async () => {
     const fetchFn = vi
       .fn()

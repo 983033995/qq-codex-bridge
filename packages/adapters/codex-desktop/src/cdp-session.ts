@@ -136,11 +136,21 @@ export class CdpSession {
       result?: {
         value?: unknown;
       };
-      exceptionDetails?: unknown;
+      exceptionDetails?: {
+        text?: string;
+        exception?: {
+          description?: string;
+          value?: unknown;
+        };
+      };
     };
 
     if (payload.exceptionDetails) {
-      throw new Error("CDP runtime evaluation failed");
+      const detail =
+        payload.exceptionDetails.exception?.description ||
+        payload.exceptionDetails.text ||
+        "unknown runtime exception";
+      throw new Error(`CDP runtime evaluation failed: ${detail}`);
     }
 
     return payload.result?.value;

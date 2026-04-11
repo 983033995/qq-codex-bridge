@@ -3,7 +3,7 @@ import { MediaArtifactKind } from "../../packages/domain/src/message.js";
 import { QqSender, chunkTextForQq } from "../../packages/adapters/qq/src/qq-sender.js";
 
 describe("qq sender", () => {
-  it("splits long text into 5000-char chunks", () => {
+  it("splits long plain text into 5000-char chunks", () => {
     const text = "a".repeat(10020);
     const chunks = chunkTextForQq(text, 5000);
 
@@ -11,6 +11,24 @@ describe("qq sender", () => {
     expect(chunks[0]).toHaveLength(5000);
     expect(chunks[1]).toHaveLength(5000);
     expect(chunks[2]).toHaveLength(20);
+  });
+
+  it("splits fenced markdown text without breaking code fences", () => {
+    const markdown = [
+      "```javascript",
+      "const lines = [",
+      ...Array.from({ length: 80 }, (_, index) => `  ${index + 1},`),
+      "];",
+      "```"
+    ].join("\n");
+
+    const chunks = chunkTextForQq(markdown, 160, "markdown");
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.startsWith("```javascript")).toBe(true);
+      expect(chunk.trimEnd().endsWith("```")).toBe(true);
+    }
   });
 
   it("routes c2c drafts through the qq api client", async () => {
@@ -37,7 +55,12 @@ describe("qq sender", () => {
       deliveredAt: "2026-04-09T10:00:00.000Z"
     });
 
-    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith("OPENID123", "hello", "qq-inbound-1");
+    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith(
+      "OPENID123",
+      "hello",
+      "qq-inbound-1",
+      { preferMarkdown: false }
+    );
     expect(apiClient.sendGroupMessage).not.toHaveBeenCalled();
   });
 
@@ -65,7 +88,12 @@ describe("qq sender", () => {
       deliveredAt: "2026-04-09T10:00:02.000Z"
     });
 
-    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith("OPENID123", "图片如下：\n", "qq-inbound-2");
+    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith(
+      "OPENID123",
+      "图片如下：\n",
+      "qq-inbound-2",
+      { preferMarkdown: false }
+    );
     expect(apiClient.sendC2CMediaArtifact).toHaveBeenCalledWith(
       "OPENID123",
       expect.objectContaining({
@@ -99,19 +127,22 @@ describe("qq sender", () => {
       1,
       "OPENID123",
       "a".repeat(5000),
-      "qq-inbound-3"
+      "qq-inbound-3",
+      { preferMarkdown: false }
     );
     expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
       2,
       "OPENID123",
       "a".repeat(5000),
-      "qq-inbound-3"
+      "qq-inbound-3",
+      { preferMarkdown: false }
     );
     expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
       3,
       "OPENID123",
       "a".repeat(20),
-      "qq-inbound-3"
+      "qq-inbound-3",
+      { preferMarkdown: false }
     );
   });
 
@@ -147,20 +178,23 @@ describe("qq sender", () => {
       1,
       "OPENID123",
       "开头文本\n",
-      "qq-inbound-4"
+      "qq-inbound-4",
+      { preferMarkdown: false }
     );
     expect(apiClient.sendC2CMediaArtifact).toHaveBeenCalledTimes(1);
     expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
       2,
       "OPENID123",
       expect.stringContaining("媒体发送失败"),
-      "qq-inbound-4"
+      "qq-inbound-4",
+      { preferMarkdown: false }
     );
     expect(apiClient.sendC2CMessage).toHaveBeenNthCalledWith(
       3,
       "OPENID123",
       "\n结尾文本",
-      "qq-inbound-4"
+      "qq-inbound-4",
+      { preferMarkdown: false }
     );
   });
 
@@ -193,7 +227,74 @@ describe("qq sender", () => {
         "![#512px #512px](https://example.com/cover.png)",
         "[点击打开测试音频 MP3](https://example.com/demo.mp3)"
       ].join("\n"),
-      "qq-inbound-5"
+      "qq-inbound-5",
+      { preferMarkdown: true }
+    );
+  });
+
+  it("sends fenced code blocks in qq markdown mode", async () => {
+    const apiClient = {
+      sendC2CMessage: vi.fn().mockResolvedValue("qq-msg-code"),
+      sendGroupMessage: vi.fn(),
+      sendC2CMediaArtifact: vi.fn(),
+      sendGroupMediaArtifact: vi.fn()
+    };
+    const sender = new QqSender(apiClient);
+
+    const codeReply = [
+      "下面是一段示例代码：",
+      "```javascript",
+      "function add(a, b) {",
+      "  return a + b;",
+      "}",
+      "```"
+    ].join("\n");
+
+    await sender.deliver({
+      draftId: "draft-7",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      text: codeReply,
+      createdAt: "2026-04-10T16:50:00.000Z",
+      replyToMessageId: "qq-inbound-7"
+    });
+
+    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith(
+      "OPENID123",
+      codeReply,
+      "qq-inbound-7",
+      { preferMarkdown: true }
+    );
+  });
+
+  it("sends markdown tables in qq markdown mode", async () => {
+    const apiClient = {
+      sendC2CMessage: vi.fn().mockResolvedValue("qq-msg-table"),
+      sendGroupMessage: vi.fn(),
+      sendC2CMediaArtifact: vi.fn(),
+      sendGroupMediaArtifact: vi.fn()
+    };
+    const sender = new QqSender(apiClient);
+
+    const tableReply = [
+      "| 类型 | 内容 |",
+      "| --- | --- |",
+      "| 基础版 | 最容易理解的闭包示例 |",
+      "| 实战版 | 用闭包实现缓存 |"
+    ].join("\n");
+
+    await sender.deliver({
+      draftId: "draft-7b",
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      text: tableReply,
+      createdAt: "2026-04-10T17:10:00.000Z",
+      replyToMessageId: "qq-inbound-7b"
+    });
+
+    expect(apiClient.sendC2CMessage).toHaveBeenCalledWith(
+      "OPENID123",
+      tableReply,
+      "qq-inbound-7b",
+      { preferMarkdown: true }
     );
   });
 

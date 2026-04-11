@@ -16,7 +16,7 @@
 本地启动：
 
 ```bash
-cd /Volumes/13759427003/AI/qq-codex-bridge
+cd qq-codex-bridge
 pnpm install
 cp .env.example .env
 pnpm dev

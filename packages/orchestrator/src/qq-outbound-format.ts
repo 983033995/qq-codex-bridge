@@ -44,82 +44,13 @@ export function formatQqOutboundText(text: string, mediaArtifacts: MediaArtifact
       continue;
     }
 
-    normalizedLines.push(trimmed);
+    normalizedLines.push(line);
   }
 
-  return collapseMarkdownTables(normalizedLines)
+  return normalizedLines
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function collapseMarkdownTables(lines: string[]): string[] {
-  const output: string[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    if (!looksLikeTableLine(lines[index])) {
-      output.push(lines[index]);
-      index += 1;
-      continue;
-    }
-
-    const tableLines: string[] = [];
-    while (index < lines.length && looksLikeTableLine(lines[index])) {
-      tableLines.push(lines[index]);
-      index += 1;
-    }
-
-    const collapsed = renderTableAsBullets(tableLines);
-    if (collapsed.length > 0) {
-      output.push(...collapsed);
-      continue;
-    }
-
-    output.push(...tableLines);
-  }
-
-  return output;
-}
-
-function renderTableAsBullets(lines: string[]): string[] {
-  const contentLines = lines.filter((line) => {
-    const normalized = line.replace(/\|/g, "").trim();
-    return !/^[:\-\s]+$/.test(normalized);
-  });
-  if (contentLines.length < 2) {
-    return lines;
-  }
-
-  const headers = splitTableCells(contentLines[0]);
-  if (headers.length === 0) {
-    return lines;
-  }
-
-  return contentLines.slice(1).map((line) => {
-    const cells = splitTableCells(line);
-    const parts = headers
-      .map((header, idx) => {
-        const value = cells[idx]?.trim();
-        return value ? `${header}：${value}` : null;
-      })
-      .filter((value): value is string => Boolean(value));
-    return `- ${parts.join("；")}`;
-  });
-}
-
-function splitTableCells(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim())
-    .filter(Boolean);
-}
-
-function looksLikeTableLine(line: string): boolean {
-  return line.includes("|");
 }
 
 function containsOnlyArtifactPath(line: string, paths: Set<string>): boolean {

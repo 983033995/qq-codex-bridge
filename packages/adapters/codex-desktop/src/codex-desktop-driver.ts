@@ -43,6 +43,7 @@ type AssistantReplySnapshot = {
 
 type CodexDesktopDriverOptions = {
   replyPollAttempts?: number;
+  maxReplyPollAttempts?: number;
   replyPollIntervalMs?: number;
   replyStablePolls?: number;
   partialReplyStablePolls?: number;
@@ -51,6 +52,7 @@ type CodexDesktopDriverOptions = {
 
 export class CodexDesktopDriver implements DesktopDriverPort {
   private readonly replyPollAttempts: number;
+  private readonly maxReplyPollAttempts: number;
   private readonly replyPollIntervalMs: number;
   private readonly replyStablePolls: number;
   private readonly partialReplyStablePolls: number;
@@ -61,7 +63,11 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     private readonly cdp: CdpSession,
     options: CodexDesktopDriverOptions = {}
   ) {
-    this.replyPollAttempts = options.replyPollAttempts ?? 60;
+    this.replyPollAttempts = Math.max(1, options.replyPollAttempts ?? 60);
+    this.maxReplyPollAttempts = Math.max(
+      this.replyPollAttempts,
+      options.maxReplyPollAttempts ?? this.replyPollAttempts * 10
+    );
     this.replyPollIntervalMs = options.replyPollIntervalMs ?? 500;
     this.replyStablePolls = Math.max(1, options.replyStablePolls ?? 3);
     this.partialReplyStablePolls = Math.max(1, options.partialReplyStablePolls ?? 2);
@@ -122,7 +128,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   async listRecentThreads(limit: number): Promise<CodexThreadSummary[]> {
     const pageTarget = await this.resolvePageTarget();
     const rawThreads = (await this.cdp.evaluateOnPage(
-      this.buildThreadListScript(limit),
+      this.buildThreadListScript(),
       pageTarget.id
     )) as RawSidebarThread[] | null;
 
@@ -130,7 +136,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       return [];
     }
 
-    return rawThreads.map((thread, index) => ({
+    return rawThreads
+      .sort((left, right) => this.compareThreadActivity(left, right))
+      .slice(0, limit)
+      .map((thread, index) => ({
       index: index + 1,
       title: thread.title,
       projectName: thread.projectName,
@@ -141,7 +150,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         title: thread.title,
         projectName: thread.projectName
       })
-    }));
+      }));
   }
 
   async switchToThread(sessionKey: string, threadRef: string): Promise<DriverBinding> {
@@ -261,10 +270,40 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       return;
     }
 
+    await this.cdp.dispatchKeyEvent(
+      {
+        type: "keyDown",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13
+      },
+      targetId
+    );
+    await this.cdp.dispatchKeyEvent(
+      {
+        type: "keyUp",
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13
+      },
+      targetId
+    );
+
+    const retryResult = (await this.cdp.evaluateOnPage(
+      this.buildComposerSubmissionStateScript(),
+      targetId
+    )) as { submitted?: boolean; reason?: string } | undefined;
+
+    if (retryResult?.submitted) {
+      return;
+    }
+
     this.pendingReplyBaselines.delete(binding.sessionKey);
     throw new DesktopDriverError(
-      `Codex desktop input box not found: ${result?.reason ?? "unknown"}`,
-      "input_not_found"
+      `Codex desktop composer submit failed: ${retryResult?.reason ?? result?.reason ?? "unknown"}`,
+      "submit_failed"
     );
   }
 
@@ -278,12 +317,14 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     let latestNewReply: AssistantReplySnapshot | null = null;
     let stablePolls = 0;
     let emittedReplyText = "";
+    const emittedMediaReferences = new Set<string>();
 
-    for (let attempt = 0; attempt < this.replyPollAttempts; attempt += 1) {
+    for (let attempt = 0; attempt < this.maxReplyPollAttempts; attempt += 1) {
       const reply = await this.readLatestAssistantSnapshot(targetId);
       const hasReplyText = typeof reply.reply === "string" && reply.reply.trim() !== "";
+      const hasReplyContent = hasReplyText || reply.mediaReferences.length > 0;
       const isNewReply =
-        hasReplyText &&
+        hasReplyContent &&
         (baselineReply === undefined || this.isNewAssistantReply(reply, baselineReply));
 
       if (isNewReply) {
@@ -296,7 +337,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         }
 
         if (
-          candidateReply?.reply &&
+          candidateReply &&
+          this.hasAssistantContent(candidateReply) &&
           !reply.isStreaming &&
           stablePolls >= this.replyStablePolls
         ) {
@@ -305,9 +347,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             const finalDeltaDraft = this.buildIncrementalDraftFromSnapshot(
               binding.sessionKey,
               candidateReply,
-              emittedReplyText
+              emittedReplyText,
+              emittedMediaReferences
             );
             if (finalDeltaDraft) {
+              emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply ?? "");
+              this.mergeObservedMediaReferences(emittedMediaReferences, candidateReply.mediaReferences);
               await options.onDraft(finalDeltaDraft);
             }
             return [];
@@ -317,16 +362,19 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
         if (
           options.onDraft &&
-          candidateReply?.reply &&
+          candidateReply &&
+          this.hasAssistantContent(candidateReply) &&
           stablePolls >= this.partialReplyStablePolls
         ) {
           const deltaDraft = this.buildIncrementalDraftFromSnapshot(
             binding.sessionKey,
             candidateReply,
-            emittedReplyText
+            emittedReplyText,
+            emittedMediaReferences
           );
           if (deltaDraft) {
-            emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply);
+            emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply ?? "");
+            this.mergeObservedMediaReferences(emittedMediaReferences, candidateReply.mediaReferences);
             await options.onDraft(deltaDraft);
             stablePolls = 0;
           }
@@ -335,18 +383,19 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         stablePolls = 0;
       }
 
-      if (attempt + 1 < this.replyPollAttempts) {
+      if (attempt + 1 < this.maxReplyPollAttempts) {
         await this.sleep(this.replyPollIntervalMs);
       }
     }
 
     this.pendingReplyBaselines.delete(binding.sessionKey);
-    if (latestNewReply?.reply) {
+    if (latestNewReply && this.hasAssistantContent(latestNewReply)) {
       if (options.onDraft) {
         const timeoutDraft = this.buildIncrementalDraftFromSnapshot(
           binding.sessionKey,
           latestNewReply,
-          emittedReplyText
+          emittedReplyText,
+          emittedMediaReferences
         );
         if (timeoutDraft) {
           await options.onDraft(timeoutDraft);
@@ -384,12 +433,16 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   private buildIncrementalDraftFromSnapshot(
     sessionKey: string,
     snapshot: AssistantReplySnapshot,
-    emittedReplyText: string
+    emittedReplyText: string,
+    emittedMediaReferences: Set<string>
   ): OutboundDraft | null {
     const fullReply = snapshot.reply ?? "";
     const deltaText = this.extractReplyDelta(emittedReplyText, fullReply).trim();
+    const incrementalMediaReferences = snapshot.mediaReferences.filter(
+      (reference) => !emittedMediaReferences.has(reference)
+    );
 
-    if (!deltaText) {
+    if (!deltaText && incrementalMediaReferences.length === 0) {
       return null;
     }
 
@@ -397,6 +450,13 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       draftId: randomUUID(),
       sessionKey,
       text: deltaText,
+      ...(incrementalMediaReferences.length > 0
+        ? {
+            mediaArtifacts: incrementalMediaReferences.map((reference) =>
+              buildMediaArtifactFromReference(reference)
+            )
+          }
+        : {}),
       createdAt: new Date().toISOString()
     };
   }
@@ -423,6 +483,19 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     }
 
     return next;
+  }
+
+  private mergeObservedMediaReferences(
+    emittedMediaReferences: Set<string>,
+    mediaReferences: string[]
+  ): void {
+    for (const reference of mediaReferences) {
+      emittedMediaReferences.add(reference);
+    }
+  }
+
+  private hasAssistantContent(snapshot: AssistantReplySnapshot): boolean {
+    return Boolean(snapshot.reply && snapshot.reply.trim()) || snapshot.mediaReferences.length > 0;
   }
 
   async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {
@@ -647,9 +720,39 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     }
   }
 
-  private buildThreadListScript(limit: number): string {
+  private buildThreadListScript(): string {
     return `(() => {
       const toText = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const extractProjectName = (titleNode) => {
+        const row = titleNode.closest('[role="button"]');
+        if (!(row instanceof HTMLElement)) {
+          return null;
+        }
+        const candidates = [
+          row.closest('[role="listitem"]'),
+          row.parentElement,
+          row.parentElement?.parentElement,
+          row.parentElement?.parentElement?.parentElement
+        ];
+        for (const candidate of candidates) {
+          if (!(candidate instanceof HTMLElement)) {
+            continue;
+          }
+          const aria = toText(candidate.getAttribute('aria-label'));
+          if (!aria) {
+            continue;
+          }
+          const quotedMatch = aria.match(/[“"]([^”"]+)[”"]中的自动化操作/);
+          if (quotedMatch) {
+            return quotedMatch[1];
+          }
+          const plainMatch = aria.match(/^(.+?)中的自动化操作$/);
+          if (plainMatch) {
+            return plainMatch[1];
+          }
+        }
+        return null;
+      };
       const rows = Array.from(document.querySelectorAll('[data-thread-title="true"]'))
         .map((titleNode) => {
           if (!(titleNode instanceof HTMLElement)) {
@@ -659,19 +762,80 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           if (!(row instanceof HTMLElement)) {
             return null;
           }
-          const projectContainer = row.closest('[role="listitem"]');
           const timeNode = row.querySelector('.text-token-description-foreground');
           return {
             title: toText(titleNode.innerText),
-            projectName: projectContainer?.getAttribute('aria-label') ?? null,
+            projectName: extractProjectName(titleNode),
             relativeTime: timeNode instanceof HTMLElement ? toText(timeNode.innerText) || null : null,
             isCurrent: row.getAttribute('aria-current') === 'page'
           };
         })
-        .filter((thread) => thread && thread.title)
-        .slice(0, ${limit});
+        .filter((thread) => thread && thread.title);
       return rows;
     })();`;
+  }
+
+  private compareThreadActivity(left: RawSidebarThread, right: RawSidebarThread): number {
+    const leftRank = this.parseRelativeActivityRank(left.relativeTime);
+    const rightRank = this.parseRelativeActivityRank(right.relativeTime);
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    if (left.isCurrent !== right.isCurrent) {
+      return left.isCurrent ? -1 : 1;
+    }
+
+    return left.title.localeCompare(right.title, "zh-CN");
+  }
+
+  private parseRelativeActivityRank(relativeTime: string | null): number {
+    if (!relativeTime) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    const value = relativeTime.trim().toLowerCase();
+    if (!value) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    if (
+      value === "刚刚" ||
+      value === "现在" ||
+      value === "just now" ||
+      value === "now" ||
+      value === "today"
+    ) {
+      return 0;
+    }
+
+    const minuteMatch = value.match(/(\d+)\s*(分钟|分|min|mins|minute|minutes)/i);
+    if (minuteMatch) {
+      return Number(minuteMatch[1]);
+    }
+
+    const hourMatch = value.match(/(\d+)\s*(小时|时|hr|hrs|hour|hours)/i);
+    if (hourMatch) {
+      return Number(hourMatch[1]) * 60;
+    }
+
+    const dayMatch = value.match(/(\d+)\s*(天|day|days)/i);
+    if (dayMatch) {
+      return Number(dayMatch[1]) * 24 * 60;
+    }
+
+    const weekMatch = value.match(/(\d+)\s*(周|week|weeks)/i);
+    if (weekMatch) {
+      return Number(weekMatch[1]) * 7 * 24 * 60;
+    }
+
+    const monthMatch = value.match(/(\d+)\s*(月|month|months)/i);
+    if (monthMatch) {
+      return Number(monthMatch[1]) * 30 * 24 * 60;
+    }
+
+    return Number.POSITIVE_INFINITY;
   }
 
   private buildSelectThreadScript(locator: ThreadLocator): string {
@@ -679,6 +843,36 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const expectedProject = JSON.stringify(locator.projectName);
     return `(() => {
       const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const extractProjectName = (titleNode) => {
+        const row = titleNode.closest('[role="button"]');
+        if (!(row instanceof HTMLElement)) {
+          return null;
+        }
+        const candidates = [
+          row.closest('[role="listitem"]'),
+          row.parentElement,
+          row.parentElement?.parentElement,
+          row.parentElement?.parentElement?.parentElement
+        ];
+        for (const candidate of candidates) {
+          if (!(candidate instanceof HTMLElement)) {
+            continue;
+          }
+          const aria = normalize(candidate.getAttribute('aria-label'));
+          if (!aria) {
+            continue;
+          }
+          const quotedMatch = aria.match(/[“"]([^”"]+)[”"]中的自动化操作/);
+          if (quotedMatch) {
+            return quotedMatch[1];
+          }
+          const plainMatch = aria.match(/^(.+?)中的自动化操作$/);
+          if (plainMatch) {
+            return plainMatch[1];
+          }
+        }
+        return null;
+      };
       const target = Array.from(document.querySelectorAll('[data-thread-title="true"]'))
         .find((titleNode) => {
           if (!(titleNode instanceof HTMLElement)) {
@@ -688,10 +882,9 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           if (!(row instanceof HTMLElement)) {
             return false;
           }
-          const projectContainer = row.closest('[role="listitem"]');
-          const projectName = projectContainer?.getAttribute('aria-label') ?? null;
+          const projectName = extractProjectName(titleNode);
           return normalize(titleNode.innerText) === normalize(${expectedTitle})
-            && projectName === ${expectedProject};
+            && normalize(projectName) === normalize(${expectedProject});
         });
       if (!(target instanceof HTMLElement)) {
         return { ok: false, reason: 'thread_not_found' };
@@ -759,21 +952,35 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildFocusComposerScript(): string {
     return `(() => {
-      const selectors = [
-        '[data-codex-composer="true"]',
-        'textarea',
-        'input[type="text"]',
-        '[contenteditable="true"]',
-        '[role="textbox"]'
-      ];
-      const input = selectors
-        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
-        .find((candidate) => {
-          if (!(candidate instanceof HTMLElement)) {
-            return false;
-          }
-          return !candidate.hasAttribute('disabled') && candidate.getAttribute('aria-disabled') !== 'true';
-        });
+      const resolveComposer = () => {
+        const selectors = [
+          '[data-codex-composer="true"]',
+          'textarea',
+          'input[type="text"]',
+          '[contenteditable="true"]',
+          '[role="textbox"]'
+        ];
+        const candidates = selectors
+          .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+          .filter((candidate) => {
+            if (!(candidate instanceof HTMLElement)) {
+              return false;
+            }
+            if (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true') {
+              return false;
+            }
+            const rect = candidate.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+        const activeElement = document.activeElement;
+        if (activeElement instanceof HTMLElement && candidates.includes(activeElement)) {
+          return activeElement;
+        }
+        return candidates
+          .sort((left, right) => right.getBoundingClientRect().y - left.getBoundingClientRect().y)
+          .at(0) ?? null;
+      };
+      const input = resolveComposer();
       if (!input) {
         return { ok: false, reason: 'input_not_found' };
       }
@@ -789,27 +996,105 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     return `(() => {
       ${submitButtonMatcher}
-      const input = document.querySelector('[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"], [role="textbox"]');
+      const resolveComposer = () => {
+        const selectors = [
+          '[data-codex-composer="true"]',
+          'textarea',
+          'input[type="text"]',
+          '[contenteditable="true"]',
+          '[role="textbox"]'
+        ];
+        const candidates = selectors
+          .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+          .filter((candidate) => {
+            if (!(candidate instanceof HTMLElement)) {
+              return false;
+            }
+            if (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true') {
+              return false;
+            }
+            const rect = candidate.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+        const activeElement = document.activeElement;
+        if (activeElement instanceof HTMLElement && candidates.includes(activeElement)) {
+          return activeElement;
+        }
+        return candidates
+          .sort((left, right) => right.getBoundingClientRect().y - left.getBoundingClientRect().y)
+          .at(0) ?? null;
+      };
+      const readComposerText = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return '';
+        }
+        if ('value' in node && typeof node.value === 'string') {
+          return node.value;
+        }
+        return node.textContent || '';
+      };
+      const input = resolveComposer();
       if (!(input instanceof HTMLElement)) {
         return { ok: false, reason: 'input_not_found' };
       }
+      const inputRect = input.getBoundingClientRect();
+      const currentText = readComposerText(input).trim();
+      if (!currentText) {
+        return { ok: false, reason: 'empty_input' };
+      }
+      const sendButton = Array.from(document.querySelectorAll('button, [role="button"]'))
+        .filter((candidate) => {
+          if (!(candidate instanceof HTMLElement)) {
+            return false;
+          }
+          const rect = candidate.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+          }
+          if (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true') {
+            return false;
+          }
+          return isLikelyComposerSubmitButton({
+            text: candidate.textContent ?? '',
+            aria: candidate.getAttribute('aria-label'),
+            title: candidate.getAttribute('title'),
+            className: candidate.className ?? ''
+          });
+        })
+        .sort((left, right) => {
+          const leftRect = left.getBoundingClientRect();
+          const rightRect = right.getBoundingClientRect();
+          const leftDistance = Math.abs(leftRect.y - inputRect.y) + Math.max(0, inputRect.x - leftRect.x);
+          const rightDistance = Math.abs(rightRect.y - inputRect.y) + Math.max(0, inputRect.x - rightRect.x);
+          return leftDistance - rightDistance;
+        })
+        .find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          return rect.x >= inputRect.x - 24 && Math.abs(rect.y - inputRect.y) <= 120;
+        });
+      const beforeButtonHtml = sendButton instanceof HTMLElement ? sendButton.innerHTML : '';
+      const confirmSubmission = (reason) => new Promise((resolve) => {
+        window.setTimeout(() => {
+          const afterText = readComposerText(input).trim();
+          const afterButtonHtml = sendButton instanceof HTMLElement ? sendButton.innerHTML : '';
+          const buttonChanged = beforeButtonHtml !== '' && beforeButtonHtml !== afterButtonHtml;
+          resolve({
+            ok: afterText.length === 0 || buttonChanged,
+            reason: afterText.length === 0
+              ? reason
+              : (buttonChanged ? 'entered_streaming_state' : 'submit_not_confirmed')
+          });
+        }, 300);
+      });
       const form = input.closest('form');
       if (form && typeof form.requestSubmit === 'function') {
         form.requestSubmit();
-        return { ok: true, reason: 'submitted_form' };
+        return confirmSubmission('submitted_form');
       }
-      const sendButton = Array.from(document.querySelectorAll('button, [role="button"]')).find((candidate) => {
-        if (!(candidate instanceof HTMLElement)) {
-          return false;
-        }
-        return isLikelyComposerSubmitButton({
-          text: candidate.textContent ?? '',
-          aria: candidate.getAttribute('aria-label'),
-          title: candidate.getAttribute('title'),
-          className: candidate.className ?? ''
-        });
-      });
       if (sendButton instanceof HTMLElement) {
+        if (typeof sendButton.click === 'function') {
+          sendButton.click();
+        }
         for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
           sendButton.dispatchEvent(
             new MouseEvent(type, {
@@ -819,8 +1104,9 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             })
           );
         }
-        return { ok: true, reason: 'clicked_send_button' };
+        return confirmSubmission('clicked_send_button');
       }
+      input.focus();
       const keyboardEventInit = {
         bubbles: true,
         cancelable: true,
@@ -832,7 +1118,51 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       input.dispatchEvent(new KeyboardEvent('keydown', keyboardEventInit));
       input.dispatchEvent(new KeyboardEvent('keypress', keyboardEventInit));
       input.dispatchEvent(new KeyboardEvent('keyup', keyboardEventInit));
-      return { ok: true, reason: 'pressed_enter' };
+      return confirmSubmission('pressed_enter');
+    })();`;
+  }
+
+  private buildComposerSubmissionStateScript(): string {
+    return `(() => {
+      const selectors = [
+        '[data-codex-composer="true"]',
+        'textarea',
+        'input[type="text"]',
+        '[contenteditable="true"]',
+        '[role="textbox"]'
+      ];
+      const input = selectors
+        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        .find((candidate) => {
+          if (!(candidate instanceof HTMLElement)) {
+            return false;
+          }
+          if (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true') {
+            return false;
+          }
+          const rect = candidate.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      if (!(input instanceof HTMLElement)) {
+        return { submitted: false, reason: 'input_not_found' };
+      }
+      const currentText =
+        'value' in input && typeof input.value === 'string'
+          ? input.value.trim()
+          : (input.textContent || '').trim();
+      const sendButton = Array.from(document.querySelectorAll('button, [role="button"]')).find((candidate) => {
+        if (!(candidate instanceof HTMLElement)) {
+          return false;
+        }
+        const className = typeof candidate.className === 'string' ? candidate.className : '';
+        return className.includes('size-token-button-composer') && className.includes('bg-token-foreground');
+      });
+      const buttonHtml = sendButton instanceof HTMLElement ? sendButton.innerHTML : '';
+      const isStreamingButton = buttonHtml.includes('M4.5 5.75C4.5 5.05964');
+      return {
+        submitted: currentText.length === 0 || isStreamingButton,
+        reason: currentText.length === 0 ? 'composer_cleared' : (isStreamingButton ? 'entered_streaming_state' : 'submit_not_confirmed')
+      };
     })();`;
   }
 
@@ -902,6 +1232,84 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           }
 
           const tagName = node.tagName;
+          if (
+            tagName === 'DIV' &&
+            typeof node.className === 'string' &&
+            node.className.includes('bg-token-text-code-block-background')
+          ) {
+            const codeElement = node.querySelector('code');
+            if (codeElement instanceof HTMLElement) {
+              const codeSource = codeElement.innerText || '';
+              const normalizedCode = codeSource
+                .replace(/\\r\\n/g, '\\n')
+                .replace(/\\u00a0/g, ' ')
+                .replace(/\\n+$/g, '');
+              if (normalizedCode.trim()) {
+                const languageNode = node.querySelector('.min-w-0.truncate');
+                const languageText = languageNode instanceof HTMLElement
+                  ? (languageNode.textContent || '').trim()
+                  : '';
+                const language = /^[A-Za-z0-9_+#.-]{1,24}$/.test(languageText) ? languageText : '';
+                return '\`\`\`' + language + '\\n' + normalizedCode + '\\n\`\`\`' + '\\n';
+              }
+            }
+          }
+
+          if (tagName === 'PRE') {
+            const codeElement = node.querySelector('code');
+            const codeSource = codeElement instanceof HTMLElement ? codeElement.innerText : node.innerText;
+            const normalizedCode = (codeSource || '')
+              .replace(/\\r\\n/g, '\\n')
+              .replace(/\\u00a0/g, ' ')
+              .replace(/\\n+$/g, '');
+            if (!normalizedCode.trim()) {
+              return '';
+            }
+
+            let language = '';
+            if (codeElement instanceof HTMLElement) {
+              const classNames = Array.from(codeElement.classList.values());
+              const languageClass = classNames.find((value) => /^language[-:]/i.test(value));
+              if (languageClass) {
+                language = languageClass.replace(/^language[-:]/i, '').trim();
+              }
+            }
+
+            const lines = normalizedCode.split('\\n');
+            if (!language && lines.length > 1) {
+              const firstLine = lines[0].trim();
+              if (/^[A-Za-z0-9_+#.-]{1,24}$/.test(firstLine)) {
+                language = firstLine;
+                lines.shift();
+              }
+            }
+
+            const fencedBody = lines.join('\\n').replace(/\\n+$/g, '');
+            return '\`\`\`' + language + '\\n' + fencedBody + '\\n\`\`\`' + '\\n';
+          }
+
+          if (tagName === 'TABLE') {
+            const rows = Array.from(node.querySelectorAll('tr'))
+              .map((row) =>
+                Array.from(row.querySelectorAll('th, td'))
+                  .map((cell) => (cell.textContent || '').replace(/\\s+/g, ' ').trim())
+              )
+              .filter((cells) => cells.length > 0);
+            if (!rows.length) {
+              return '';
+            }
+
+            const header = rows[0];
+            const separator = header.map(() => '---');
+            const bodyRows = rows.slice(1);
+            const markdownRows = [
+              '| ' + header.join(' | ') + ' |',
+              '| ' + separator.join(' | ') + ' |',
+              ...bodyRows.map((cells) => '| ' + cells.join(' | ') + ' |')
+            ];
+            return markdownRows.join('\\n') + '\\n';
+          }
+
           if (tagName === 'OL') {
             return Array.from(node.children)
               .map((child, index) => serializeNode(child, { type: 'ol', index }))
@@ -937,16 +1345,14 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           const serializedChildren = Array.from(node.childNodes)
             .map((child) => serializeNode(child, null))
             .join('');
-          if (['P', 'DIV', 'SECTION', 'ARTICLE', 'BLOCKQUOTE', 'PRE'].includes(tagName)) {
+          if (['P', 'DIV', 'SECTION', 'ARTICLE', 'BLOCKQUOTE'].includes(tagName)) {
             return serializedChildren.trim() ? serializedChildren.trim() + '\\n' : '';
           }
           return serializedChildren;
         };
         return serializeNode(clone, null)
-          .split('\\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .join('\\n')
+          .replace(/[ \\t]+\\n/g, '\\n')
+          .replace(/\\n{3,}/g, '\\n\\n')
           .trim();
       };
       const mediaReferences = Array.from(
@@ -975,6 +1381,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         ? composer.getBoundingClientRect()
         : null;
       const streamingMatcher = /(\\bstop\\b|\\bthinking\\b|\\bworking\\b|\\brunning\\b|停止|中止|取消|思考中|生成中)/i;
+      const assistantStatusMatcher = /(Reconnecting\\.{3}|Searching\\.{3}|Running\\.{3}|Working\\.{3}|连接中\\.{0,3}|重新连接中\\.{0,3}|搜索中\\.{0,3}|执行中\\.{0,3}|处理中\\.{0,3})/i;
       const isComposerBusyButton = (node) => {
         if (!(node instanceof HTMLElement)) {
           return false;
@@ -1012,6 +1419,13 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           ].join(' ').trim();
           return streamingMatcher.test(label);
         });
+      const assistantStatusText = Array.from(
+        latestAssistantUnit.querySelectorAll('.text-xs, [aria-live], [data-state], [class*="status"], [class*="loading"]')
+      )
+        .map((node) => (node instanceof HTMLElement ? node.innerText || '' : ''))
+        .join('\\n');
+      const hasAssistantActivity = assistantStatusMatcher.test(assistantStatusText)
+        || assistantStatusMatcher.test(latestAssistantUnit.innerText || '');
 
       const richContent = latestAssistantUnit.querySelector('[class*="_markdownContent_"]');
       if (richContent instanceof HTMLElement) {
@@ -1021,7 +1435,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
             reply: text,
             mediaReferences,
-            isStreaming
+            isStreaming: isStreaming || hasAssistantActivity
           };
         }
       }
@@ -1039,12 +1453,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         .filter(Boolean)
         .join('\\n')
         .trim();
-      return text
+      return text || mediaReferences.length > 0
         ? {
             unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
-            reply: text,
+            reply: text || null,
             mediaReferences,
-            isStreaming
+            isStreaming: isStreaming || hasAssistantActivity
           }
         : null;
     })();`;

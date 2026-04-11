@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BridgeSessionStatus } from "../../packages/domain/src/session.js";
+import { DesktopDriverError } from "../../packages/domain/src/driver.js";
 import type { InboundMessage } from "../../packages/domain/src/message.js";
 import type { DesktopDriverPort } from "../../packages/ports/src/conversation.js";
 import type { QqEgressPort } from "../../packages/ports/src/qq.js";
@@ -62,7 +63,7 @@ function createTranscriptStore(): TranscriptStorePort {
   };
 }
 
-function createDriver(): DesktopDriverPort {
+function createDriver(overrides: Partial<DesktopDriverPort> = {}): DesktopDriverPort {
   return {
     ensureAppReady: vi.fn().mockResolvedValue(undefined),
     openOrBindSession: vi.fn(),
@@ -94,7 +95,8 @@ function createDriver(): DesktopDriverPort {
     createThread: vi.fn().mockResolvedValue({
       sessionKey: "qqbot:default::qq:c2c:OPENID123",
       codexThreadRef: "codex-thread:page-1:new"
-    })
+    }),
+    ...overrides
   } as unknown as DesktopDriverPort;
 }
 
@@ -128,7 +130,12 @@ describe("thread command handler", () => {
       expect.objectContaining({
         sessionKey: "qqbot:default::qq:c2c:OPENID123",
         replyToMessageId: "msg-1",
-        text: expect.stringContaining("1. [当前] skills / 线程 A")
+        text: expect.stringContaining("| 序号 | 项目 | 线程标题 | 最近活动 |")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("| → 1 | skills | 线程 A | 2 小时 |")
       })
     );
   });
@@ -153,6 +160,90 @@ describe("thread command handler", () => {
     expect(sessionStore.updateBinding).toHaveBeenCalledWith(
       "qqbot:default::qq:c2c:OPENID123",
       "codex-thread:page-1:bbb"
+    );
+  });
+
+  it("returns a friendly reply when switching to a sidebar thread fails", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver({
+      switchToThread: vi.fn().mockRejectedValue(
+        new DesktopDriverError("Codex desktop thread switch failed: thread_not_found", "session_not_found")
+      )
+    });
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/thread use 2"))).resolves.toBe(true);
+    expect(sessionStore.updateBinding).not.toHaveBeenCalled();
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("切换失败：没有在当前 Codex 侧边栏里找到这个线程。")
+      })
+    );
+  });
+
+  it("supports shorthand thread commands", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/t"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/tc"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/tu 2"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/tn 快捷新线程"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/tf 快捷分叉"))).resolves.toBe(true);
+
+    expect(desktopDriver.listRecentThreads).toHaveBeenCalledWith(20);
+    expect(desktopDriver.switchToThread).toHaveBeenCalledWith(
+      "qqbot:default::qq:c2c:OPENID123",
+      "codex-thread:page-1:bbb"
+    );
+    expect(desktopDriver.createThread).toHaveBeenCalledWith(
+      "qqbot:default::qq:c2c:OPENID123",
+      expect.stringContaining("线程标题：快捷新线程")
+    );
+    expect(desktopDriver.createThread).toHaveBeenCalledWith(
+      "qqbot:default::qq:c2c:OPENID123",
+      expect.stringContaining("线程标题：快捷分叉")
+    );
+  });
+
+  it("shows help for /help", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/help"))).resolves.toBe(true);
+
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("| 查看最近活跃线程 | `/threads` | `/t` |")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。")
+      })
     );
   });
 

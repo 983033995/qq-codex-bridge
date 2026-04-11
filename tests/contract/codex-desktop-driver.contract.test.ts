@@ -101,15 +101,21 @@ describe("codex desktop driver contract", () => {
   it("lists recent real codex sidebar threads from the current desktop ui", async () => {
     const evaluateOnPage = vi.fn().mockResolvedValue([
       {
+        title: "线程 B",
+        projectName: "Desktop",
+        relativeTime: "1 天",
+        isCurrent: false
+      },
+      {
         title: "线程 A",
         projectName: "skills",
         relativeTime: "2 小时",
         isCurrent: true
       },
       {
-        title: "线程 B",
-        projectName: "Desktop",
-        relativeTime: "1 天",
+        title: "线程 C",
+        projectName: "skills",
+        relativeTime: "15 分钟",
         isCurrent: false
       }
     ]);
@@ -134,6 +140,14 @@ describe("codex desktop driver contract", () => {
     await expect(driver.listRecentThreads(20)).resolves.toEqual([
       {
         index: 1,
+        title: "线程 C",
+        projectName: "skills",
+        relativeTime: "15 分钟",
+        isCurrent: false,
+        threadRef: expect.stringContaining("codex-thread:page-1:")
+      },
+      {
+        index: 2,
         title: "线程 A",
         projectName: "skills",
         relativeTime: "2 小时",
@@ -141,7 +155,7 @@ describe("codex desktop driver contract", () => {
         threadRef: expect.stringContaining("codex-thread:page-1:")
       },
       {
-        index: 2,
+        index: 3,
         title: "线程 B",
         projectName: "Desktop",
         relativeTime: "1 天",
@@ -304,6 +318,118 @@ describe("codex desktop driver contract", () => {
       codexThreadRef: "cdp-target:page-1"
     });
     expect(insertText).toHaveBeenCalledWith("线程标题：测试新线程", "page-1");
+  });
+
+  it("retries composer submission with Enter when the first submit attempt is not confirmed", async () => {
+    const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+    const insertText = vi.fn().mockResolvedValue(undefined);
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ unitKey: "assistant-before", reply: "旧回复" })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: false, reason: "submit_not_confirmed" })
+      .mockResolvedValueOnce({ submitted: true, reason: "entered_streaming_state" });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage,
+      dispatchKeyEvent,
+      insertText
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.sendUserMessage(
+        {
+          sessionKey: "qqbot:default::qq:c2c:OPENID123",
+          codexThreadRef: "cdp-target:page-1"
+        },
+        {
+          messageId: "msg-retry-submit",
+          accountKey: "qqbot:default",
+          sessionKey: "qqbot:default::qq:c2c:OPENID123",
+          peerKey: "qq:c2c:OPENID123",
+          chatType: "c2c",
+          senderId: "OPENID123",
+          text: "请帮我测试发送重试",
+          receivedAt: "2026-04-10T11:00:00.000Z"
+        }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(dispatchKeyEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "Enter", type: "keyDown" }),
+      "page-1"
+    );
+    expect(dispatchKeyEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "Enter", type: "keyUp" }),
+      "page-1"
+    );
+  });
+
+  it("throws a submit_failed driver error when the composer text remains unsent", async () => {
+    const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+    const insertText = vi.fn().mockResolvedValue(undefined);
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ unitKey: "assistant-before", reply: "旧回复" })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: false, reason: "submit_not_confirmed" })
+      .mockResolvedValueOnce({ submitted: false, reason: "submit_not_confirmed" });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage,
+      dispatchKeyEvent,
+      insertText
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.sendUserMessage(
+        {
+          sessionKey: "qqbot:default::qq:c2c:OPENID123",
+          codexThreadRef: "cdp-target:page-1"
+        },
+        {
+          messageId: "msg-submit-failed",
+          accountKey: "qqbot:default",
+          sessionKey: "qqbot:default::qq:c2c:OPENID123",
+          peerKey: "qq:c2c:OPENID123",
+          chatType: "c2c",
+          senderId: "OPENID123",
+          text: "这条消息应该触发 submit_failed",
+          receivedAt: "2026-04-10T11:02:00.000Z"
+        }
+      )
+    ).rejects.toEqual(
+      new DesktopDriverError(
+        "Codex desktop composer submit failed: submit_not_confirmed",
+        "submit_failed"
+      )
+    );
   });
 
   it("collects the latest assistant reply from page text via cdp evaluation", async () => {
@@ -699,6 +825,74 @@ describe("codex desktop driver contract", () => {
     ]);
   });
 
+  it("returns a media-only assistant reply even when the reply text is empty", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-only-1",
+        reply: null,
+        mediaReferences: [
+          "/tmp/qq-media/only-image-a.png",
+          "/tmp/qq-media/only-image-b.png"
+        ],
+        isStreaming: false
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-only-1",
+        reply: null,
+        mediaReferences: [
+          "/tmp/qq-media/only-image-a.png",
+          "/tmp/qq-media/only-image-b.png"
+        ],
+        isStreaming: false
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-only-1",
+        reply: null,
+        mediaReferences: [
+          "/tmp/qq-media/only-image-a.png",
+          "/tmp/qq-media/only-image-b.png"
+        ],
+        isStreaming: false
+      });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        text: "",
+        mediaArtifacts: [
+          expect.objectContaining({
+            localPath: "/tmp/qq-media/only-image-a.png"
+          }),
+          expect.objectContaining({
+            localPath: "/tmp/qq-media/only-image-b.png"
+          })
+        ]
+      }
+    ]);
+  });
+
   it("keeps ordinary reference links in reply text instead of treating them as qq media uploads", async () => {
     const evaluateOnPage = vi
       .fn()
@@ -815,6 +1009,108 @@ describe("codex desktop driver contract", () => {
     );
   });
 
+  it("serializes codex code blocks as fenced markdown before qq delivery", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        unitKey: "assistant-code-1",
+        reply: [
+          "下面给你一段 JavaScript 闭包示例代码：",
+          "```javascript",
+          "function createCounter() {",
+          "  let count = 0;",
+          "  return function () {",
+          "    count++;",
+          "    return count;",
+          "  };",
+          "}",
+          "```"
+        ].join("\n"),
+        mediaReferences: []
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-code-1",
+        reply: [
+          "下面给你一段 JavaScript 闭包示例代码：",
+          "```javascript",
+          "function createCounter() {",
+          "  let count = 0;",
+          "  return function () {",
+          "    count++;",
+          "    return count;",
+          "  };",
+          "}",
+          "```"
+        ].join("\n"),
+        mediaReferences: []
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-code-1",
+        reply: [
+          "下面给你一段 JavaScript 闭包示例代码：",
+          "```javascript",
+          "function createCounter() {",
+          "  let count = 0;",
+          "  return function () {",
+          "    count++;",
+          "    return count;",
+          "  };",
+          "}",
+          "```"
+        ].join("\n"),
+        mediaReferences: []
+      });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(
+      driver.collectAssistantReply({
+        sessionKey: "qqbot:default::qq:c2c:OPENID123",
+        codexThreadRef: "cdp-target:page-1"
+      })
+    ).resolves.toMatchObject([
+      {
+        text: [
+          "下面给你一段 JavaScript 闭包示例代码：",
+          "```javascript",
+          "function createCounter() {",
+          "  let count = 0;",
+          "  return function () {",
+          "    count++;",
+          "    return count;",
+          "  };",
+          "}",
+          "```"
+        ].join("\n")
+      }
+    ]);
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("if (tagName === 'PRE')"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("bg-token-text-code-block-background"),
+      "page-1"
+    );
+  });
+
   it("waits for codex to finish generating even if the first sentence is already stable", async () => {
     const evaluateOnPage = vi
       .fn()
@@ -907,6 +1203,7 @@ describe("codex desktop driver contract", () => {
       } as unknown as CdpSession,
       {
         replyPollAttempts: 3,
+        maxReplyPollAttempts: 3,
         replyPollIntervalMs: 0,
         replyStablePolls: 3,
         sleep: vi.fn().mockResolvedValue(undefined)
@@ -1009,6 +1306,116 @@ describe("codex desktop driver contract", () => {
     expect(finalDrafts).toEqual([]);
   });
 
+  it("emits newly discovered media references through onDraft even when no new text arrives", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-delta-1",
+        reply: "我先去外接硬盘里定位目录。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-delta-1",
+        reply: "我先去外接硬盘里定位目录。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-delta-1",
+        reply: "我先去外接硬盘里定位目录。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-delta-1",
+        reply: "我先去外接硬盘里定位目录。",
+        mediaReferences: [
+          "/tmp/qq-media/final-a.png",
+          "/tmp/qq-media/final-b.png"
+        ],
+        isStreaming: false
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-media-delta-1",
+        reply: "我先去外接硬盘里定位目录。",
+        mediaReferences: [
+          "/tmp/qq-media/final-a.png",
+          "/tmp/qq-media/final-b.png"
+        ],
+        isStreaming: false
+      });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollAttempts: 10,
+        replyPollIntervalMs: 0,
+        replyStablePolls: 2,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-media-delta-stream",
+      accountKey: "qqbot:default",
+      sessionKey: binding.sessionKey,
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "帮我把最终图片也发出来",
+      receivedAt: "2026-04-10T11:05:00.000Z"
+    });
+
+    const emitted: OutboundDraft[] = [];
+    const finalDrafts = await driver.collectAssistantReply(binding, {
+      onDraft: async (draft) => {
+        emitted.push(draft);
+      }
+    });
+
+    expect(emitted).toMatchObject([
+      { text: "我先去外接硬盘里定位目录。" },
+      {
+        text: "",
+        mediaArtifacts: [
+          expect.objectContaining({
+            localPath: "/tmp/qq-media/final-a.png"
+          }),
+          expect.objectContaining({
+            localPath: "/tmp/qq-media/final-b.png"
+          })
+        ]
+      }
+    ]);
+    expect(finalDrafts).toEqual([]);
+  });
+
   it("probes the composer button icon as a streaming fallback signal", async () => {
     const evaluateOnPage = vi
       .fn()
@@ -1076,5 +1483,213 @@ describe("codex desktop driver contract", () => {
       expect.stringContaining("M4.5 5.75C4.5 5.05964"),
       "page-1"
     );
+  });
+
+  it("keeps polling when the latest assistant unit still shows reconnecting activity", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-reconnect-1", reply: "我先去外接硬盘里定位目录。", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-reconnect-1", reply: "我先去外接硬盘里定位目录。", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-reconnect-1", reply: "我先去外接硬盘里定位目录。", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-reconnect-1", reply: "我先去外接硬盘里定位目录。\n我在等全盘结果返回。", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-reconnect-1", reply: "我先去外接硬盘里定位目录。\n我在等全盘结果返回。", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-reconnect-1", reply: "我先去外接硬盘里定位目录。\n我在等全盘结果返回。", isStreaming: true })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-reconnect-1",
+        reply: [
+          "我先去外接硬盘里定位目录。",
+          "我在等全盘结果返回。",
+          "<qqmedia>/tmp/a.png</qqmedia>",
+          "<qqmedia>/tmp/b.png</qqmedia>"
+        ].join("\n"),
+        isStreaming: false
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-reconnect-1",
+        reply: [
+          "我先去外接硬盘里定位目录。",
+          "我在等全盘结果返回。",
+          "<qqmedia>/tmp/a.png</qqmedia>",
+          "<qqmedia>/tmp/b.png</qqmedia>"
+        ].join("\n"),
+        isStreaming: false
+      });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollAttempts: 12,
+        replyPollIntervalMs: 0,
+        replyStablePolls: 2,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-reconnecting-stream",
+      accountKey: "qqbot:default",
+      sessionKey: binding.sessionKey,
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "帮我把图片都发给我",
+      receivedAt: "2026-04-10T17:40:00.000Z"
+    });
+
+    const emitted: OutboundDraft[] = [];
+    const finalDrafts = await driver.collectAssistantReply(binding, {
+      onDraft: async (draft) => {
+        emitted.push(draft);
+      }
+    });
+
+    expect(emitted).toMatchObject([
+      { text: "我先去外接硬盘里定位目录。" },
+      { text: "我在等全盘结果返回。" },
+      {
+        text: "<qqmedia>/tmp/a.png</qqmedia>\n<qqmedia>/tmp/b.png</qqmedia>"
+      }
+    ]);
+    expect(finalDrafts).toEqual([]);
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      4,
+      expect.stringContaining("assistantStatusMatcher"),
+      "page-1"
+    );
+  });
+
+  it("does not timeout while the assistant remains streaming before a late qqmedia result arrives", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-long-running-1",
+        reply: "我先开始生成图片。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-long-running-1",
+        reply: "我先开始生成图片。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-long-running-1",
+        reply: "我先开始生成图片。\n图片正在生成，我检查一下成品文件。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-long-running-1",
+        reply: "我先开始生成图片。\n图片正在生成，我检查一下成品文件。",
+        mediaReferences: [],
+        isStreaming: true
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-long-running-1",
+        reply: [
+          "我先开始生成图片。",
+          "图片正在生成，我检查一下成品文件。",
+          "按你的要求生成好了：",
+          "<qqmedia>/tmp/final-image.jpg</qqmedia>"
+        ].join("\n"),
+        mediaReferences: [],
+        isStreaming: false
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-long-running-1",
+        reply: [
+          "我先开始生成图片。",
+          "图片正在生成，我检查一下成品文件。",
+          "按你的要求生成好了：",
+          "<qqmedia>/tmp/final-image.jpg</qqmedia>"
+        ].join("\n"),
+        mediaReferences: [],
+        isStreaming: false
+      });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollAttempts: 2,
+        replyPollIntervalMs: 0,
+        replyStablePolls: 2,
+        partialReplyStablePolls: 2,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-long-running-media",
+      accountKey: "qqbot:default",
+      sessionKey: binding.sessionKey,
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "帮我生成图片并发给我",
+      receivedAt: "2026-04-10T21:30:00.000Z"
+    });
+
+    const emitted: OutboundDraft[] = [];
+    const finalDrafts = await driver.collectAssistantReply(binding, {
+      onDraft: async (draft) => {
+        emitted.push(draft);
+      }
+    });
+
+    expect(emitted.length).toBeGreaterThanOrEqual(1);
+    expect(emitted.at(-1)?.text).toContain("按你的要求生成好了：");
+    expect(emitted.at(-1)?.text).toContain("<qqmedia>/tmp/final-image.jpg</qqmedia>");
+    expect(finalDrafts).toEqual([]);
   });
 });

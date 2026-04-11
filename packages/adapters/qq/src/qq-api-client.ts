@@ -11,6 +11,10 @@ type QqApiClientOptions = {
   markdownSupport?: boolean;
 };
 
+type SendMessageOptions = {
+  preferMarkdown?: boolean;
+};
+
 type CachedToken = {
   value: string;
   expiresAt: number;
@@ -107,12 +111,22 @@ export class QqApiClient {
     return payload.url;
   }
 
-  async sendC2CMessage(userOpenId: string, content: string, msgId: string): Promise<string | null> {
-    return this.sendMessage(`/v2/users/${encodeURIComponent(userOpenId)}/messages`, content, msgId);
+  async sendC2CMessage(
+    userOpenId: string,
+    content: string,
+    msgId: string,
+    options: SendMessageOptions = {}
+  ): Promise<string | null> {
+    return this.sendMessage(`/v2/users/${encodeURIComponent(userOpenId)}/messages`, content, msgId, options);
   }
 
-  async sendGroupMessage(groupOpenId: string, content: string, msgId: string): Promise<string | null> {
-    return this.sendMessage(`/v2/groups/${encodeURIComponent(groupOpenId)}/messages`, content, msgId);
+  async sendGroupMessage(
+    groupOpenId: string,
+    content: string,
+    msgId: string,
+    options: SendMessageOptions = {}
+  ): Promise<string | null> {
+    return this.sendMessage(`/v2/groups/${encodeURIComponent(groupOpenId)}/messages`, content, msgId, options);
   }
 
   async sendC2CMediaArtifact(
@@ -136,7 +150,8 @@ export class QqApiClient {
   private async sendMessage(
     path: string,
     content: string,
-    msgId: string
+    msgId: string,
+    options: SendMessageOptions = {}
   ): Promise<string | null> {
     const accessToken = await this.getAccessToken();
     const response = await this.fetchFn(`${this.apiBaseUrl}${path}`, {
@@ -146,7 +161,7 @@ export class QqApiClient {
         "content-type": "application/json",
         "X-Union-Appid": this.appId
       },
-      body: JSON.stringify(this.buildMessageBody(content, msgId))
+      body: JSON.stringify(this.buildMessageBody(content, msgId, options))
     });
 
     if (!response.ok) {
@@ -223,10 +238,15 @@ export class QqApiClient {
     return next;
   }
 
-  private buildMessageBody(content: string, msgId: string): Record<string, unknown> {
+  private buildMessageBody(
+    content: string,
+    msgId: string,
+    options: SendMessageOptions = {}
+  ): Record<string, unknown> {
     const msgSeq = this.nextMsgSeq(msgId);
+    const useMarkdown = this.markdownSupport || options.preferMarkdown === true;
 
-    if (this.markdownSupport) {
+    if (useMarkdown) {
       return {
         markdown: { content },
         msg_type: 2,

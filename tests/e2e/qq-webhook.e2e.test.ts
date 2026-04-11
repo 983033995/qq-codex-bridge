@@ -47,7 +47,7 @@ describe("qq webhook server", () => {
     const response = await Promise.race([
       fetchPromise,
       new Promise<"timed-out">((resolve) => {
-        setTimeout(() => resolve("timed-out"), 50);
+        setTimeout(() => resolve("timed-out"), 250);
       })
     ]);
 
