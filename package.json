@@ -1,7 +1,25 @@
 {
   "name": "qq-codex-bridge",
   "version": "0.1.0",
+  "description": "A bridge between QQ Official Bot and Codex Desktop, with media relay, STT, thread management, and incremental reply delivery.",
   "type": "module",
+  "homepage": "https://github.com/983033995/qq-codex-bridge",
+  "bugs": {
+    "url": "https://github.com/983033995/qq-codex-bridge/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/983033995/qq-codex-bridge.git"
+  },
+  "keywords": [
+    "bridge",
+    "cdp",
+    "codex",
+    "electron",
+    "qq",
+    "qq-bot",
+    "typescript"
+  ],
   "bin": {
     "qq-codex-bridge": "./bin/qq-codex-bridge.js"
   },
