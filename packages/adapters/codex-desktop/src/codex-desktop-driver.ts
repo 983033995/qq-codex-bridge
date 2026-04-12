@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type CodexControlState,
   DesktopDriverError,
   type CodexThreadSummary,
   type DriverBinding
@@ -89,6 +90,43 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         "app_not_ready"
       );
     }
+  }
+
+  async getControlState(): Promise<CodexControlState> {
+    const pageTarget = await this.resolvePageTarget();
+    const state = (await this.cdp.evaluateOnPage(
+      this.buildReadControlStateScript(),
+      pageTarget.id
+    )) as CodexControlState | null;
+
+    return (
+      state ?? {
+        model: null,
+        reasoningEffort: null,
+        workspace: null,
+        branch: null,
+        permissionMode: null,
+        quotaSummary: null
+      }
+    );
+  }
+
+  async switchModel(model: string): Promise<CodexControlState> {
+    const pageTarget = await this.resolvePageTarget();
+    const result = (await this.cdp.evaluateOnPage(
+      this.buildSwitchModelScript(model),
+      pageTarget.id
+    )) as { ok?: boolean; reason?: string } | undefined;
+
+    if (!result?.ok) {
+      throw new DesktopDriverError(
+        `Codex desktop model switch failed: ${result?.reason ?? "unknown"}`,
+        "control_not_found"
+      );
+    }
+
+    await this.sleep(300);
+    return this.getControlState();
   }
 
   async openOrBindSession(
@@ -1273,6 +1311,142 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         reason: currentText.length === 0 ? 'composer_cleared' : (isStreamingButton ? 'entered_streaming_state' : 'submit_not_confirmed')
       };
     })();`;
+  }
+
+  private buildReadControlStateScript(): string {
+    return `
+      (() => {
+        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+        const buttons = Array.from(document.querySelectorAll('button,[role="button"],[aria-label]'))
+          .map((node) => {
+            const rect = node instanceof HTMLElement ? node.getBoundingClientRect() : null;
+            return {
+              text: normalize(node.textContent || ''),
+              aria: normalize(node.getAttribute('aria-label') || ''),
+              title: normalize(node.getAttribute('title') || ''),
+              className: String(node.className || ''),
+              x: rect ? rect.x : 0,
+              y: rect ? rect.y : 0,
+              width: rect ? rect.width : 0,
+              height: rect ? rect.height : 0
+            };
+          })
+          .filter((item) => (item.text || item.aria || item.title) && item.y >= window.innerHeight - 180 && item.x >= 320)
+          .sort((left, right) => (left.y - right.y) || (left.x - right.x));
+
+        const modelPattern = /(?:gpt|o1|o3|o4|4\\.1|4\\.5|5\\.4|mini|nano|sonnet|haiku|opus|gemini|claude|qwen|deepseek)/i;
+        const effortPattern = /^(?:低|中|高|minimal|low|medium|high)$/i;
+        const permissionPattern = /(?:访问权限|permission|sandbox)/i;
+        const quotaPattern = /(?:quota|usage|remaining|limit|余额|额度|剩余|配额|限制)/i;
+
+        let model = null;
+        let reasoningEffort = null;
+        let workspace = null;
+        let branch = null;
+        let permissionMode = null;
+
+        for (const item of buttons) {
+          const text = item.text || item.aria || item.title;
+          if (!model && modelPattern.test(text)) {
+            model = text;
+            continue;
+          }
+          if (!reasoningEffort && effortPattern.test(text)) {
+            reasoningEffort = text;
+            continue;
+          }
+          if (!permissionMode && permissionPattern.test(text)) {
+            permissionMode = text;
+            continue;
+          }
+          if (!workspace && /^(?:本地|local|worktree)$/i.test(text)) {
+            workspace = text;
+            continue;
+          }
+          if (!branch && /[\\w.-]+\\/[\\w./-]+/.test(text)) {
+            branch = text;
+          }
+        }
+
+        const bodyLines = (document.body ? document.body.innerText : '')
+          .split('\\n')
+          .map((line) => normalize(line))
+          .filter(Boolean);
+        const quotaLine = bodyLines.find((line) => quotaPattern.test(line)) || null;
+
+        return {
+          model,
+          reasoningEffort,
+          workspace,
+          branch,
+          permissionMode,
+          quotaSummary: quotaLine
+        };
+      })()
+    `;
+  }
+
+  private buildSwitchModelScript(targetModel: string): string {
+    return `
+      (() => {
+        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        const target = ${JSON.stringify(targetModel)}.trim();
+        const targetNormalized = normalize(target);
+        const matchesModelText = (text) => /(?:gpt|o1|o3|o4|4\\.1|4\\.5|5\\.4|mini|nano|sonnet|haiku|opus|gemini|claude|qwen|deepseek)/i.test(text);
+        const collectControls = () =>
+          Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],[aria-label]'));
+        const findModelButton = () =>
+          collectControls().find((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return false;
+            }
+            const rect = node.getBoundingClientRect();
+            const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+            return rect.y >= window.innerHeight - 180 && rect.x >= 320 && matchesModelText(text);
+          });
+        const clickNode = (node) => {
+          node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        };
+        const modelButton = findModelButton();
+        if (!modelButton) {
+          return { ok: false, reason: 'model_button_not_found' };
+        }
+        clickNode(modelButton);
+
+        return new Promise((resolve) => {
+          let attempts = 0;
+          const tick = () => {
+            attempts += 1;
+            const option = collectControls().find((node) => {
+              const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+              if (!text) {
+                return false;
+              }
+              const normalized = normalize(text);
+              return normalized === targetNormalized || normalized.includes(targetNormalized);
+            });
+
+            if (option) {
+              clickNode(option);
+              resolve({ ok: true });
+              return;
+            }
+
+            if (attempts >= 20) {
+              resolve({ ok: false, reason: 'model_option_not_found' });
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      })()
+    `;
   }
 
   private buildAssistantReplyProbeScript(): string {

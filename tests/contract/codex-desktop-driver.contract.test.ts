@@ -279,6 +279,102 @@ describe("codex desktop driver contract", () => {
     );
   });
 
+  it("reads model, quota and runtime controls from the current desktop ui", async () => {
+    const evaluateOnPage = vi.fn().mockResolvedValue({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: "当前界面未显示明确额度，暂未识别到剩余配额。"
+    });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(driver.getControlState()).resolves.toEqual({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: "当前界面未显示明确额度，暂未识别到剩余配额。"
+    });
+    expect(evaluateOnPage).toHaveBeenCalledWith(
+      expect.stringContaining("quotaSummary"),
+      "page-1"
+    );
+  });
+
+  it("switches model from the current desktop ui and returns refreshed control state", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        model: "GPT-5.4-Mini",
+        reasoningEffort: "高",
+        workspace: "本地",
+        branch: "codex/qq-codex-bridge",
+        permissionMode: "完全访问权限",
+        quotaSummary: null
+      });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage
+      } as unknown as CdpSession,
+      {
+        sleep: async () => undefined
+      }
+    );
+
+    await expect(driver.switchModel("GPT-5.4-Mini")).resolves.toEqual({
+      model: "GPT-5.4-Mini",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    });
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("model_option_not_found"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("quotaSummary"),
+      "page-1"
+    );
+  });
+
   it("does not fail thread creation when the seed prompt does not produce an assistant reply", async () => {
     const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
     const insertText = vi.fn().mockResolvedValue(undefined);

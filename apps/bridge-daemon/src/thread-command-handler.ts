@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BridgeSessionStatus, type BridgeSession } from "../../../packages/domain/src/session.js";
-import { DesktopDriverError } from "../../../packages/domain/src/driver.js";
+import { DesktopDriverError, type CodexControlState } from "../../../packages/domain/src/driver.js";
 import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../../packages/domain/src/message.js";
 import type { DesktopDriverPort } from "../../../packages/ports/src/conversation.js";
 import type { QqEgressPort } from "../../../packages/ports/src/qq.js";
@@ -61,6 +61,38 @@ export class ThreadCommandHandler {
 
       if (text === "/help") {
         await this.deliverControlReply(message, this.buildHelpText());
+        return;
+      }
+
+      if (text === "/h") {
+        await this.deliverControlReply(message, this.buildHelpText());
+        return;
+      }
+
+      if (text === "/model" || text === "/m") {
+        const state = await this.deps.desktopDriver.getControlState();
+        await this.deliverControlReply(message, this.formatModelReply(state));
+        return;
+      }
+
+      const switchModelMatch = text.match(/^(?:\/model\s+use|\/mu)\s+(.+)$/);
+      if (switchModelMatch) {
+        const targetModel = switchModelMatch[1].trim();
+        const state = await this.deps.desktopDriver.switchModel(targetModel);
+        await this.deliverControlReply(message, this.formatModelSwitchReply(targetModel, state));
+        return;
+      }
+
+      if (text === "/quota" || text === "/q") {
+        const state = await this.deps.desktopDriver.getControlState();
+        await this.deliverControlReply(message, this.formatQuotaReply(state));
+        return;
+      }
+
+      if (text === "/status" || text === "/st") {
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        const state = await this.deps.desktopDriver.getControlState();
+        await this.deliverControlReply(message, this.formatStatusReply(session, state));
         return;
       }
 
@@ -162,8 +194,17 @@ export class ThreadCommandHandler {
       text === "/thread current" ||
       text === "/tc" ||
       text === "/help" ||
+      text === "/h" ||
+      text === "/model" ||
+      text === "/m" ||
+      text === "/quota" ||
+      text === "/q" ||
+      text === "/status" ||
+      text === "/st" ||
       /^\/thread\s+use\s+\d+$/.test(text) ||
       /^\/tu\s+\d+$/.test(text) ||
+      /^\/model\s+use\s+.+$/.test(text) ||
+      /^\/mu\s+.+$/.test(text) ||
       /^\/thread\s+new\s+.+$/.test(text) ||
       /^\/tn\s+.+$/.test(text) ||
       /^\/thread\s+fork\s+.+$/.test(text) ||
@@ -218,7 +259,7 @@ export class ThreadCommandHandler {
 
   private buildHelpText(): string {
     return [
-      "线程管理命令：",
+      "快捷命令：",
       "",
       "| 用途 | 完整命令 | 简写 |",
       "| --- | --- | --- |",
@@ -227,8 +268,51 @@ export class ThreadCommandHandler {
       "| 切换到指定线程 | `/thread use <序号>` | `/tu <序号>` |",
       "| 新建线程 | `/thread new <标题>` | `/tn <标题>` |",
       "| 基于最近对话 fork 线程 | `/thread fork <标题>` | `/tf <标题>` |",
+      "| 查看当前模型 | `/model` | `/m` |",
+      "| 切换模型 | `/model use <名称>` | `/mu <名称>` |",
+      "| 查看额度信息 | `/quota` | `/q` |",
+      "| 查看当前运行状态 | `/status` | `/st` |",
+      "| 查看帮助 | `/help` | `/h` |",
       "",
-      "建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。"
+      "建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。",
+      "模型和额度信息来自当前 Codex Desktop 界面，可见性取决于 UI 是否暴露对应信息。"
+    ].join("\n");
+  }
+
+  private formatModelReply(state: CodexControlState): string {
+    return [
+      `当前模型：${state.model ?? "未识别"}`,
+      `推理强度：${state.reasoningEffort ?? "未识别"}`,
+      `工作区：${state.workspace ?? "未识别"}`,
+      `分支：${state.branch ?? "未识别"}`
+    ].join("\n");
+  }
+
+  private formatModelSwitchReply(targetModel: string, state: CodexControlState): string {
+    return [
+      `已切换模型：${state.model ?? targetModel}`,
+      `推理强度：${state.reasoningEffort ?? "未识别"}`,
+      `工作区：${state.workspace ?? "未识别"}`
+    ].join("\n");
+  }
+
+  private formatQuotaReply(state: CodexControlState): string {
+    return `额度信息：${state.quotaSummary ?? "当前界面未显示明确额度，暂未识别到剩余配额。"}`;
+  }
+
+  private formatStatusReply(
+    session: BridgeSession | null,
+    state: CodexControlState
+  ): string {
+    return [
+      "当前运行状态：",
+      `线程绑定：${session?.codexThreadRef ?? "未绑定"}`,
+      `模型：${state.model ?? "未识别"}`,
+      `推理强度：${state.reasoningEffort ?? "未识别"}`,
+      `工作区：${state.workspace ?? "未识别"}`,
+      `分支：${state.branch ?? "未识别"}`,
+      `权限：${state.permissionMode ?? "未识别"}`,
+      `额度：${state.quotaSummary ?? "当前界面未显示明确额度，暂未识别到剩余配额。"}`
     ].join("\n");
   }
 

@@ -1,4 +1,4 @@
-import type { CodexThreadSummary, DriverBinding } from "../../domain/src/driver.js";
+import type { CodexControlState, CodexThreadSummary, DriverBinding } from "../../domain/src/driver.js";
 import type { InboundMessage, OutboundDraft, TurnEvent } from "../../domain/src/message.js";
 
 export type ConversationRunOptions = {
@@ -8,6 +8,8 @@ export type ConversationRunOptions = {
 
 export interface DesktopDriverPort {
   ensureAppReady(): Promise<void>;
+  getControlState(): Promise<CodexControlState>;
+  switchModel(model: string): Promise<CodexControlState>;
   openOrBindSession(sessionKey: string, binding: DriverBinding | null): Promise<DriverBinding>;
   listRecentThreads(limit: number): Promise<CodexThreadSummary[]>;
   switchToThread(sessionKey: string, threadRef: string): Promise<DriverBinding>;
