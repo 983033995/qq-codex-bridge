@@ -1,8 +1,9 @@
 import type { CodexThreadSummary, DriverBinding } from "../../domain/src/driver.js";
-import type { InboundMessage, OutboundDraft } from "../../domain/src/message.js";
+import type { InboundMessage, OutboundDraft, TurnEvent } from "../../domain/src/message.js";
 
 export type ConversationRunOptions = {
   onDraft?: (draft: OutboundDraft) => Promise<void>;
+  onTurnEvent?: (event: TurnEvent) => Promise<void>;
 };
 
 export interface DesktopDriverPort {
