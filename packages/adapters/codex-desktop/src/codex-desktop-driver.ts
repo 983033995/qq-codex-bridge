@@ -8,7 +8,9 @@ import {
   MediaArtifactKind,
   type InboundMessage,
   type MediaArtifact,
-  type OutboundDraft
+  type OutboundDraft,
+  TurnEventType,
+  type TurnEventPayload
 } from "../../../domain/src/message.js";
 import type {
   ConversationRunOptions,
@@ -318,6 +320,28 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     let stablePolls = 0;
     let emittedReplyText = "";
     const emittedMediaReferences = new Set<string>();
+    const turnId = randomUUID();
+    let turnSequence = 0;
+    const emitTurnEvent = async (
+      eventType: TurnEventType,
+      payload: TurnEventPayload,
+      isFinal: boolean
+    ): Promise<void> => {
+      if (!options.onTurnEvent) {
+        return;
+      }
+
+      turnSequence += 1;
+      await options.onTurnEvent({
+        sessionKey: binding.sessionKey,
+        turnId,
+        sequence: turnSequence,
+        eventType,
+        createdAt: new Date().toISOString(),
+        isFinal,
+        payload
+      });
+    };
 
     for (let attempt = 0; attempt < this.maxReplyPollAttempts; attempt += 1) {
       const reply = await this.readLatestAssistantSnapshot(targetId);
@@ -343,6 +367,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           stablePolls >= this.replyStablePolls
         ) {
           this.pendingReplyBaselines.delete(binding.sessionKey);
+          const finalPayload: TurnEventPayload = {
+            fullText: candidateReply.reply ?? "",
+            mediaReferences: candidateReply.mediaReferences
+          };
           if (options.onDraft) {
             const finalDeltaDraft = this.buildIncrementalDraftFromSnapshot(
               binding.sessionKey,
@@ -351,12 +379,42 @@ export class CodexDesktopDriver implements DesktopDriverPort {
               emittedMediaReferences
             );
             if (finalDeltaDraft) {
+              await emitTurnEvent(
+                TurnEventType.Delta,
+                {
+                  text: finalDeltaDraft.text,
+                  fullText: candidateReply.reply ?? "",
+                  mediaReferences: candidateReply.mediaReferences
+                },
+                false
+              );
               emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply ?? "");
               this.mergeObservedMediaReferences(emittedMediaReferences, candidateReply.mediaReferences);
               await options.onDraft(finalDeltaDraft);
             }
+            await emitTurnEvent(
+              TurnEventType.Completed,
+              {
+                ...finalPayload,
+                completionReason: "stable"
+              },
+              true
+            );
             return [];
           }
+          await emitTurnEvent(
+            TurnEventType.Delta,
+            finalPayload,
+            false
+          );
+          await emitTurnEvent(
+            TurnEventType.Completed,
+            {
+              ...finalPayload,
+              completionReason: "stable"
+            },
+            true
+          );
           return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply)];
         }
 
@@ -373,6 +431,15 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             emittedMediaReferences
           );
           if (deltaDraft) {
+            await emitTurnEvent(
+              TurnEventType.Delta,
+              {
+                text: deltaDraft.text,
+                fullText: candidateReply.reply ?? "",
+                mediaReferences: candidateReply.mediaReferences
+              },
+              false
+            );
             emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply ?? "");
             this.mergeObservedMediaReferences(emittedMediaReferences, candidateReply.mediaReferences);
             await options.onDraft(deltaDraft);
@@ -398,10 +465,45 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           emittedMediaReferences
         );
         if (timeoutDraft) {
+          await emitTurnEvent(
+            TurnEventType.Delta,
+            {
+              text: timeoutDraft.text,
+              fullText: latestNewReply.reply ?? "",
+              mediaReferences: latestNewReply.mediaReferences
+            },
+            false
+          );
           await options.onDraft(timeoutDraft);
         }
+        await emitTurnEvent(
+          TurnEventType.Completed,
+          {
+            fullText: latestNewReply.reply ?? "",
+            mediaReferences: latestNewReply.mediaReferences,
+            completionReason: "timeout_flush"
+          },
+          true
+        );
         return [];
       }
+      await emitTurnEvent(
+        TurnEventType.Delta,
+        {
+          fullText: latestNewReply.reply ?? "",
+          mediaReferences: latestNewReply.mediaReferences
+        },
+        false
+      );
+      await emitTurnEvent(
+        TurnEventType.Completed,
+        {
+          fullText: latestNewReply.reply ?? "",
+          mediaReferences: latestNewReply.mediaReferences,
+          completionReason: "timeout_flush"
+        },
+        true
+      );
       return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply)];
     }
 
