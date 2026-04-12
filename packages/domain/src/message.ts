@@ -31,11 +31,37 @@ export type InboundMessage = {
 
 export type OutboundDraft = {
   draftId: string;
+  turnId?: string;
   sessionKey: string;
   text: string;
   mediaArtifacts?: MediaArtifact[];
   createdAt: string;
   replyToMessageId?: string;
+};
+
+export enum TurnEventType {
+  Delta = "turn.delta",
+  Status = "turn.status",
+  Completed = "turn.completed"
+}
+
+export type TurnEventPayload = {
+  text?: string;
+  fullText?: string;
+  mediaReferences?: string[];
+  replyToMessageId?: string;
+  status?: string;
+  completionReason?: "stable" | "timeout_flush";
+};
+
+export type TurnEvent = {
+  sessionKey: string;
+  turnId: string;
+  sequence: number;
+  eventType: TurnEventType;
+  createdAt: string;
+  isFinal: boolean;
+  payload: TurnEventPayload;
 };
 
 export type DeliveryRecord = {

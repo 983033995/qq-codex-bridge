@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type CodexControlState,
   DesktopDriverError,
   type CodexThreadSummary,
   type DriverBinding
@@ -8,7 +9,9 @@ import {
   MediaArtifactKind,
   type InboundMessage,
   type MediaArtifact,
-  type OutboundDraft
+  type OutboundDraft,
+  TurnEventType,
+  type TurnEventPayload
 } from "../../../domain/src/message.js";
 import type {
   ConversationRunOptions,
@@ -87,6 +90,53 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         "app_not_ready"
       );
     }
+  }
+
+  async getControlState(): Promise<CodexControlState> {
+    const pageTarget = await this.resolvePageTarget();
+    const state = (await this.cdp.evaluateOnPage(
+      this.buildReadControlStateScript(),
+      pageTarget.id
+    )) as CodexControlState | null;
+
+    return (
+      state ?? {
+        model: null,
+        reasoningEffort: null,
+        workspace: null,
+        branch: null,
+        permissionMode: null,
+        quotaSummary: null
+      }
+    );
+  }
+
+  async getQuotaSummary(): Promise<string | null> {
+    const pageTarget = await this.resolvePageTarget();
+    const quotaSummary = (await this.cdp.evaluateOnPage(
+      this.buildReadQuotaSummaryScript(),
+      pageTarget.id
+    )) as string | null | undefined;
+
+    return quotaSummary ?? null;
+  }
+
+  async switchModel(model: string): Promise<CodexControlState> {
+    const pageTarget = await this.resolvePageTarget();
+    const result = (await this.cdp.evaluateOnPage(
+      this.buildSwitchModelScript(model),
+      pageTarget.id
+    )) as { ok?: boolean; reason?: string } | undefined;
+
+    if (!result?.ok) {
+      throw new DesktopDriverError(
+        `Codex desktop model switch failed: ${result?.reason ?? "unknown"}`,
+        "control_not_found"
+      );
+    }
+
+    await this.sleep(300);
+    return this.getControlState();
   }
 
   async openOrBindSession(
@@ -318,6 +368,28 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     let stablePolls = 0;
     let emittedReplyText = "";
     const emittedMediaReferences = new Set<string>();
+    const turnId = randomUUID();
+    let turnSequence = 0;
+    const emitTurnEvent = async (
+      eventType: TurnEventType,
+      payload: TurnEventPayload,
+      isFinal: boolean
+    ): Promise<void> => {
+      if (!options.onTurnEvent) {
+        return;
+      }
+
+      turnSequence += 1;
+      await options.onTurnEvent({
+        sessionKey: binding.sessionKey,
+        turnId,
+        sequence: turnSequence,
+        eventType,
+        createdAt: new Date().toISOString(),
+        isFinal,
+        payload
+      });
+    };
 
     for (let attempt = 0; attempt < this.maxReplyPollAttempts; attempt += 1) {
       const reply = await this.readLatestAssistantSnapshot(targetId);
@@ -343,21 +415,56 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           stablePolls >= this.replyStablePolls
         ) {
           this.pendingReplyBaselines.delete(binding.sessionKey);
+          const finalPayload: TurnEventPayload = {
+            fullText: candidateReply.reply ?? "",
+            mediaReferences: candidateReply.mediaReferences
+          };
           if (options.onDraft) {
             const finalDeltaDraft = this.buildIncrementalDraftFromSnapshot(
               binding.sessionKey,
               candidateReply,
               emittedReplyText,
-              emittedMediaReferences
+              emittedMediaReferences,
+              turnId
             );
             if (finalDeltaDraft) {
+              await emitTurnEvent(
+                TurnEventType.Delta,
+                {
+                  text: finalDeltaDraft.text,
+                  fullText: candidateReply.reply ?? "",
+                  mediaReferences: candidateReply.mediaReferences
+                },
+                false
+              );
               emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply ?? "");
               this.mergeObservedMediaReferences(emittedMediaReferences, candidateReply.mediaReferences);
               await options.onDraft(finalDeltaDraft);
             }
+            await emitTurnEvent(
+              TurnEventType.Completed,
+              {
+                ...finalPayload,
+                completionReason: "stable"
+              },
+              true
+            );
             return [];
           }
-          return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply)];
+          await emitTurnEvent(
+            TurnEventType.Delta,
+            finalPayload,
+            false
+          );
+          await emitTurnEvent(
+            TurnEventType.Completed,
+            {
+              ...finalPayload,
+              completionReason: "stable"
+            },
+            true
+          );
+          return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply, turnId)];
         }
 
         if (
@@ -370,9 +477,19 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             binding.sessionKey,
             candidateReply,
             emittedReplyText,
-            emittedMediaReferences
+            emittedMediaReferences,
+            turnId
           );
           if (deltaDraft) {
+            await emitTurnEvent(
+              TurnEventType.Delta,
+              {
+                text: deltaDraft.text,
+                fullText: candidateReply.reply ?? "",
+                mediaReferences: candidateReply.mediaReferences
+              },
+              false
+            );
             emittedReplyText = this.mergeObservedReply(emittedReplyText, candidateReply.reply ?? "");
             this.mergeObservedMediaReferences(emittedMediaReferences, candidateReply.mediaReferences);
             await options.onDraft(deltaDraft);
@@ -395,14 +512,50 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           binding.sessionKey,
           latestNewReply,
           emittedReplyText,
-          emittedMediaReferences
+          emittedMediaReferences,
+          turnId
         );
         if (timeoutDraft) {
+          await emitTurnEvent(
+            TurnEventType.Delta,
+            {
+              text: timeoutDraft.text,
+              fullText: latestNewReply.reply ?? "",
+              mediaReferences: latestNewReply.mediaReferences
+            },
+            false
+          );
           await options.onDraft(timeoutDraft);
         }
+        await emitTurnEvent(
+          TurnEventType.Completed,
+          {
+            fullText: latestNewReply.reply ?? "",
+            mediaReferences: latestNewReply.mediaReferences,
+            completionReason: "timeout_flush"
+          },
+          true
+        );
         return [];
       }
-      return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply)];
+      await emitTurnEvent(
+        TurnEventType.Delta,
+        {
+          fullText: latestNewReply.reply ?? "",
+          mediaReferences: latestNewReply.mediaReferences
+        },
+        false
+      );
+      await emitTurnEvent(
+        TurnEventType.Completed,
+        {
+          fullText: latestNewReply.reply ?? "",
+          mediaReferences: latestNewReply.mediaReferences,
+          completionReason: "timeout_flush"
+        },
+        true
+      );
+      return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply, turnId)];
     }
 
     throw new DesktopDriverError(
@@ -413,10 +566,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildOutboundDraftFromSnapshot(
     sessionKey: string,
-    snapshot: AssistantReplySnapshot
+    snapshot: AssistantReplySnapshot,
+    turnId?: string
   ): OutboundDraft {
     return {
       draftId: randomUUID(),
+      ...(turnId ? { turnId } : {}),
       sessionKey,
       text: snapshot.reply ?? "",
       ...(snapshot.mediaReferences.length > 0
@@ -434,7 +589,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     sessionKey: string,
     snapshot: AssistantReplySnapshot,
     emittedReplyText: string,
-    emittedMediaReferences: Set<string>
+    emittedMediaReferences: Set<string>,
+    turnId?: string
   ): OutboundDraft | null {
     const fullReply = snapshot.reply ?? "";
     const deltaText = this.extractReplyDelta(emittedReplyText, fullReply).trim();
@@ -448,6 +604,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     return {
       draftId: randomUUID(),
+      ...(turnId ? { turnId } : {}),
       sessionKey,
       text: deltaText,
       ...(incrementalMediaReferences.length > 0
@@ -1164,6 +1321,272 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         reason: currentText.length === 0 ? 'composer_cleared' : (isStreamingButton ? 'entered_streaming_state' : 'submit_not_confirmed')
       };
     })();`;
+  }
+
+  private buildReadControlStateScript(): string {
+    return `
+      (() => {
+        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+        const buttons = Array.from(document.querySelectorAll('button,[role="button"],[aria-label]'))
+          .map((node) => {
+            const rect = node instanceof HTMLElement ? node.getBoundingClientRect() : null;
+            return {
+              text: normalize(node.textContent || ''),
+              aria: normalize(node.getAttribute('aria-label') || ''),
+              title: normalize(node.getAttribute('title') || ''),
+              className: String(node.className || ''),
+              x: rect ? rect.x : 0,
+              y: rect ? rect.y : 0,
+              width: rect ? rect.width : 0,
+              height: rect ? rect.height : 0
+            };
+          })
+          .filter((item) => (item.text || item.aria || item.title) && item.y >= window.innerHeight - 180 && item.x >= 320)
+          .sort((left, right) => (left.y - right.y) || (left.x - right.x));
+
+        const modelPattern = /(?:gpt|o1|o3|o4|4\\.1|4\\.5|5\\.4|mini|nano|sonnet|haiku|opus|gemini|claude|qwen|deepseek)/i;
+        const effortPattern = /^(?:低|中|高|minimal|low|medium|high)$/i;
+        const permissionPattern = /(?:访问权限|permission|sandbox)/i;
+        const quotaPattern = /(?:quota|usage|remaining|allowance|credit|credits|余额|额度|剩余|配额|使用量)/i;
+        const ignoredQuotaPattern = /(?:QQBOT_RUNTIME_CONTEXT|<qqmedia>|<!--|-->|会话类型|bridge|runtime\\/media|内部实现|相对路径)/i;
+
+        let model = null;
+        let reasoningEffort = null;
+        let workspace = null;
+        let branch = null;
+        let permissionMode = null;
+
+        for (const item of buttons) {
+          const text = item.text || item.aria || item.title;
+          if (!model && modelPattern.test(text)) {
+            model = text;
+            continue;
+          }
+          if (!reasoningEffort && effortPattern.test(text)) {
+            reasoningEffort = text;
+            continue;
+          }
+          if (!permissionMode && permissionPattern.test(text)) {
+            permissionMode = text;
+            continue;
+          }
+          if (!workspace && /^(?:本地|local|worktree)$/i.test(text)) {
+            workspace = text;
+            continue;
+          }
+          if (!branch && /[\\w.-]+\\/[\\w./-]+/.test(text)) {
+            branch = text;
+          }
+        }
+
+        const bodyLines = (document.body ? document.body.innerText : '')
+          .split('\\n')
+          .map((line) => normalize(line))
+          .filter(Boolean);
+        const quotaLine =
+          bodyLines.find((line) => quotaPattern.test(line) && !ignoredQuotaPattern.test(line)) || null;
+
+        return {
+          model,
+          reasoningEffort,
+          workspace,
+          branch,
+          permissionMode,
+          quotaSummary: quotaLine
+        };
+      })()
+    `;
+  }
+
+  private buildReadQuotaSummaryScript(): string {
+    return `
+      (() => {
+        const normalize = (value) =>
+          (value || '')
+            .replace(/[\\u200B-\\u200D\\uFEFF]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim();
+        const clickNode = (node) => {
+          node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        };
+        const collectControls = () =>
+          Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],[aria-label]'));
+        const getText = (node) =>
+          normalize(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || '');
+        const isQuotaHeader = (line) => line === '剩余额度' || /^remaining usage$/i.test(line);
+        const parseQuotaEntries = (lines) => {
+          const entries = [];
+          for (let index = 0; index < lines.length; index += 1) {
+            const line = lines[index];
+            if (
+              !line ||
+              isQuotaHeader(line) ||
+              /^\\d+%$/.test(line) ||
+              /^(?:继续使用|本地项目|云端|升级至\\s*Pro|了解更多|移至工作树)$/i.test(line)
+            ) {
+              continue;
+            }
+
+            const combinedMatch = line.match(/^(.+?(?:分钟|小时|天|周|月|minutes?|hours?|days?|weeks?|months?))\\s+(\\d+%)\\s+(.+)$/i);
+            if (combinedMatch) {
+              entries.push(\`\${combinedMatch[1]} \${combinedMatch[2]}（\${combinedMatch[3]} 重置）\`);
+              continue;
+            }
+
+            const timeframeMatch = line.match(/^(.+?(?:分钟|小时|天|周|月|minutes?|hours?|days?|weeks?|months?))$/i);
+            if (timeframeMatch && index + 2 < lines.length) {
+              const percentLine = lines[index + 1];
+              const resetLine = lines[index + 2];
+              if (/^\\d+%$/.test(percentLine) && resetLine) {
+                entries.push(\`\${timeframeMatch[1]} \${percentLine}（\${resetLine} 重置）\`);
+                index += 2;
+                continue;
+              }
+            }
+          }
+
+          return entries;
+        };
+
+        const findModeButton = () =>
+          collectControls().find((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return false;
+            }
+            const text = getText(node);
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.y >= window.innerHeight - 120 &&
+              rect.height <= 40 &&
+              rect.width <= 120 &&
+              /^(?:本地|云端|local|cloud)(?:\\d+%)?$/i.test(text)
+            );
+          });
+
+        const modeButton = findModeButton();
+        if (!modeButton) {
+          return null;
+        }
+
+        const readVisibleQuotaSummary = () => {
+          const lines = (document.body ? document.body.innerText : '')
+            .split('\\n')
+            .map((line) => normalize(line))
+            .filter(Boolean);
+          const quotaIndex = lines.findIndex((line) => isQuotaHeader(line));
+          if (quotaIndex < 0) {
+            return null;
+          }
+
+          const quotaBlock = lines.slice(quotaIndex, quotaIndex + 10);
+          const entries = parseQuotaEntries(quotaBlock);
+          return entries.length > 0 ? entries.join('\\n') : null;
+        };
+
+        const ensureQuotaVisible = () =>
+          new Promise((resolve) => {
+            let attempts = 0;
+            let openedMenu = false;
+            let expandedQuota = false;
+            const tick = () => {
+              attempts += 1;
+              const summary = readVisibleQuotaSummary();
+              if (summary) {
+                resolve(summary);
+                return;
+              }
+
+              if (!openedMenu) {
+                clickNode(modeButton);
+                openedMenu = true;
+              }
+
+              const quotaToggle = collectControls().find((node) => /剩余额度|remaining usage/i.test(getText(node)));
+              if (quotaToggle && !expandedQuota) {
+                clickNode(quotaToggle);
+                expandedQuota = true;
+              }
+
+              if (attempts >= 8) {
+                resolve(null);
+                return;
+              }
+
+              setTimeout(tick, 80);
+            };
+
+            tick();
+          });
+
+        return ensureQuotaVisible();
+      })()
+    `;
+  }
+
+  private buildSwitchModelScript(targetModel: string): string {
+    return `
+      (() => {
+        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        const target = ${JSON.stringify(targetModel)}.trim();
+        const targetNormalized = normalize(target);
+        const matchesModelText = (text) => /(?:gpt|o1|o3|o4|4\\.1|4\\.5|5\\.4|mini|nano|sonnet|haiku|opus|gemini|claude|qwen|deepseek)/i.test(text);
+        const collectControls = () =>
+          Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],[aria-label]'));
+        const findModelButton = () =>
+          collectControls().find((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return false;
+            }
+            const rect = node.getBoundingClientRect();
+            const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+            return rect.y >= window.innerHeight - 180 && rect.x >= 320 && matchesModelText(text);
+          });
+        const clickNode = (node) => {
+          node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        };
+        const modelButton = findModelButton();
+        if (!modelButton) {
+          return { ok: false, reason: 'model_button_not_found' };
+        }
+        clickNode(modelButton);
+
+        return new Promise((resolve) => {
+          let attempts = 0;
+          const tick = () => {
+            attempts += 1;
+            const option = collectControls().find((node) => {
+              const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+              if (!text) {
+                return false;
+              }
+              const normalized = normalize(text);
+              return normalized === targetNormalized || normalized.includes(targetNormalized);
+            });
+
+            if (option) {
+              clickNode(option);
+              resolve({ ok: true });
+              return;
+            }
+
+            if (attempts >= 20) {
+              resolve({ ok: false, reason: 'model_option_not_found' });
+              return;
+            }
+
+            setTimeout(tick, 50);
+          };
+
+          tick();
+        });
+      })()
+    `;
   }
 
   private buildAssistantReplyProbeScript(): string {

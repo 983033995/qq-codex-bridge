@@ -63,9 +63,36 @@ function createTranscriptStore(): TranscriptStorePort {
   };
 }
 
-function createDriver(overrides: Partial<DesktopDriverPort> = {}): DesktopDriverPort {
+function createDriver(
+  overrides: Partial<
+    DesktopDriverPort & {
+      getQuotaSummary: () => Promise<string | null>;
+    }
+  > = {}
+): DesktopDriverPort & {
+  getQuotaSummary: () => Promise<string | null>;
+} {
   return {
     ensureAppReady: vi.fn().mockResolvedValue(undefined),
+    getControlState: vi.fn().mockResolvedValue({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    }),
+    switchModel: vi.fn().mockResolvedValue({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    }),
+    getQuotaSummary: vi
+      .fn()
+      .mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）"),
     openOrBindSession: vi.fn(),
     sendUserMessage: vi.fn(),
     collectAssistantReply: vi.fn(),
@@ -135,7 +162,7 @@ describe("thread command handler", () => {
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("| → 1 | skills | 线程 A | 2 小时 |")
+        text: expect.stringContaining("| 👉🏻 1 | skills | 线程 A | 2 小时 |")
       })
     );
   });
@@ -243,6 +270,172 @@ describe("thread command handler", () => {
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。")
+      })
+    );
+  });
+
+  it("shows model status for /model and /m", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver({
+      getControlState: vi.fn().mockResolvedValue({
+        model: "GPT-5.4",
+        reasoningEffort: "高",
+        workspace: "本地",
+        branch: "codex/qq-codex-bridge",
+        permissionMode: "完全访问权限",
+        quotaSummary: null
+      })
+    });
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/model"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/m"))).resolves.toBe(true);
+
+    expect(desktopDriver.getControlState).toHaveBeenCalledTimes(2);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("当前模型：GPT-5.4")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("推理强度：高")
+      })
+    );
+  });
+
+  it("switches model for /model use and /mu", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver({
+      switchModel: vi.fn().mockResolvedValue({
+        model: "GPT-5.4-Mini",
+        reasoningEffort: "高",
+        workspace: "本地",
+        branch: "codex/qq-codex-bridge",
+        permissionMode: "完全访问权限",
+        quotaSummary: null
+      })
+    });
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/model use GPT-5.4-Mini"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/mu GPT-5.4-Mini"))).resolves.toBe(true);
+
+    expect(desktopDriver.switchModel).toHaveBeenNthCalledWith(1, "GPT-5.4-Mini");
+    expect(desktopDriver.switchModel).toHaveBeenNthCalledWith(2, "GPT-5.4-Mini");
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("已切换模型：GPT-5.4-Mini")
+      })
+    );
+  });
+
+  it("shows quota summary for /quota and /q", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver({
+      getControlState: vi.fn().mockResolvedValue({
+        model: "GPT-5.4",
+        reasoningEffort: "高",
+        workspace: "本地",
+        branch: "codex/qq-codex-bridge",
+        permissionMode: "完全访问权限",
+        quotaSummary: null
+      }),
+      getQuotaSummary: vi.fn().mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）")
+    });
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/quota"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/q"))).resolves.toBe(true);
+
+    expect(desktopDriver.getQuotaSummary).toHaveBeenCalledTimes(2);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("额度信息：5 小时 22%（01:56 重置）")
+      })
+    );
+  });
+
+  it("shows control status for /status and /st", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver({
+      getControlState: vi.fn().mockResolvedValue({
+        model: "GPT-5.4",
+        reasoningEffort: "高",
+        workspace: "本地",
+        branch: "codex/qq-codex-bridge",
+        permissionMode: "完全访问权限",
+        quotaSummary: null
+      }),
+      getQuotaSummary: vi.fn().mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）")
+    });
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/status"))).resolves.toBe(true);
+    await expect(handler.handleIfCommand(createPrivateMessage("/st"))).resolves.toBe(true);
+
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("工作区：本地")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("分支：codex/qq-codex-bridge")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("额度：5 小时 22%（01:56 重置）")
+      })
+    );
+  });
+
+  it("shows help for /h", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/h"))).resolves.toBe(true);
+
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("| 查看当前模型 | `/model` | `/m` |")
       })
     );
   });

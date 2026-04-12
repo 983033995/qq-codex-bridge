@@ -1,9 +1,66 @@
 import { describe, expect, it, vi } from "vitest";
 import { DesktopDriverError } from "../../packages/domain/src/driver.js";
-import type { OutboundDraft } from "../../packages/domain/src/message.js";
+import {
+  TurnEventType,
+  type OutboundDraft,
+  type TurnEvent
+} from "../../packages/domain/src/message.js";
 import { CodexDesktopDriver } from "../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { parseAssistantReply } from "../../packages/adapters/codex-desktop/src/reply-parser.js";
 import type { CdpSession } from "../../packages/adapters/codex-desktop/src/cdp-session.js";
+
+class FakeControlElement {
+  textContent: string;
+  className: string;
+  private readonly attrs: Record<string, string>;
+  private readonly rect: { x: number; y: number; width: number; height: number };
+  private readonly onClick?: () => void;
+
+  constructor(options: {
+    text?: string;
+    aria?: string;
+    title?: string;
+    className?: string;
+    rect: { x: number; y: number; width?: number; height?: number };
+    onClick?: () => void;
+  }) {
+    this.textContent = options.text ?? "";
+    this.className = options.className ?? "";
+    this.attrs = {};
+    if (options.aria) {
+      this.attrs["aria-label"] = options.aria;
+    }
+    if (options.title) {
+      this.attrs.title = options.title;
+    }
+    this.rect = {
+      x: options.rect.x,
+      y: options.rect.y,
+      width: options.rect.width ?? 80,
+      height: options.rect.height ?? 28
+    };
+    this.onClick = options.onClick;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs[name] ?? null;
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
+  }
+
+  dispatchEvent(event: { type?: string }) {
+    if (event?.type === "click") {
+      this.onClick?.();
+    }
+    return true;
+  }
+}
+
+class FakeMouseEvent {
+  constructor(public readonly type: string) {}
+}
 
 describe("codex desktop driver contract", () => {
   it("extracts the latest assistant reply from a snapshot string", () => {
@@ -271,6 +328,221 @@ describe("codex desktop driver contract", () => {
     expect(evaluateOnPage).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining("fresh_thread"),
+      "page-1"
+    );
+  });
+
+  it("reads model, quota and runtime controls from the current desktop ui", async () => {
+    const evaluateOnPage = vi.fn().mockResolvedValue({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: "当前界面未显示明确额度，暂未识别到剩余配额。"
+    });
+
+    const driver = new CodexDesktopDriver({
+      connect: vi.fn().mockResolvedValue({
+        appName: "Codex",
+        browserVersion: "Codex/1.0",
+        browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+      }),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }
+      ]),
+      evaluateOnPage
+    } as unknown as CdpSession);
+
+    await expect(driver.getControlState()).resolves.toEqual({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: "当前界面未显示明确额度，暂未识别到剩余配额。"
+    });
+    expect(evaluateOnPage).toHaveBeenCalledWith(
+      expect.stringContaining("quotaSummary"),
+      "page-1"
+    );
+  });
+
+  it("ignores injected runtime context when deriving quota summary", () => {
+    const driver = new CodexDesktopDriver({} as unknown as CdpSession);
+    const script = (driver as unknown as { buildReadControlStateScript: () => string }).buildReadControlStateScript();
+    const execute = new Function(
+      "document",
+      "window",
+      "HTMLElement",
+      `return (${script});`
+    ) as (
+      document: {
+        querySelectorAll: (selector: string) => FakeControlElement[];
+        body: { innerText: string };
+      },
+      window: { innerHeight: number },
+      HTMLElement: typeof FakeControlElement
+    ) => {
+      model: string | null;
+      reasoningEffort: string | null;
+      workspace: string | null;
+      branch: string | null;
+      permissionMode: string | null;
+      quotaSummary: string | null;
+    };
+
+    const state = execute(
+      {
+        querySelectorAll: () => [
+          new FakeControlElement({ text: "GPT-5.4", rect: { x: 460, y: 740 } }),
+          new FakeControlElement({ text: "高", rect: { x: 560, y: 740 } }),
+          new FakeControlElement({ text: "本地", rect: { x: 620, y: 740 } }),
+          new FakeControlElement({ text: "codex/qq-codex-bridge", rect: { x: 680, y: 740 } }),
+          new FakeControlElement({ text: "完全访问权限", rect: { x: 870, y: 740 } })
+        ],
+        body: {
+          innerText:
+            "GPT-5.4\n高\n本地\ncodex/qq-codex-bridge\n完全访问权限\n<!-- QQBOT_RUNTIME_CONTEXT 会话类型：QQ 私聊 给 QQ 用户发图片、语音、视频、文件时，必须输出 <qqmedia>绝对路径或URL</qqmedia>。大小限制：图片 30MB、语音 20MB、视频/文件 100MB。 -->"
+        }
+      },
+      { innerHeight: 800 },
+      FakeControlElement
+    );
+
+    expect(state).toMatchObject({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    });
+  });
+
+  it("reads quota summary from the local/cloud dropdown instead of page body guesses", async () => {
+    const driver = new CodexDesktopDriver({} as unknown as CdpSession);
+    const script = (driver as unknown as { buildReadQuotaSummaryScript: () => string }).buildReadQuotaSummaryScript();
+    const execute = new Function(
+      "document",
+      "window",
+      "HTMLElement",
+      "MouseEvent",
+      `return (${script});`
+    ) as (
+      document: {
+        querySelectorAll: (selector: string) => FakeControlElement[];
+        body: { innerText: string };
+      },
+      window: { innerHeight: number },
+      HTMLElement: typeof FakeControlElement,
+      MouseEvent: typeof FakeMouseEvent
+    ) => Promise<string | null>;
+
+    const uiState = {
+      menuOpen: false,
+      quotaExpanded: false
+    };
+    const document = {
+      querySelectorAll: () => {
+        const controls = [
+          new FakeControlElement({
+            text: "本地8%",
+            rect: { x: 80, y: 740 },
+            onClick: () => {
+              uiState.menuOpen = !uiState.menuOpen;
+            }
+          })
+        ];
+
+        if (uiState.menuOpen) {
+          controls.push(
+            new FakeControlElement({
+              text: "剩余额度",
+              rect: { x: 140, y: 520 },
+              onClick: () => {
+                uiState.quotaExpanded = true;
+              }
+            })
+          );
+        }
+
+        return controls;
+      },
+      body: {
+        get innerText() {
+          if (!uiState.menuOpen) {
+            return "本地\ncodex/qq-codex-bridge";
+          }
+          if (!uiState.quotaExpanded) {
+            return "继续使用\n本地项目\n云端\n剩余额度8%\n移至工作树";
+          }
+          return "继续使用\n本地项目\n云端\n剩余额度\n8%\n5 小时\n22%\n01:56\n1 周\n25%\n4月17日\n升级至 Pro\n了解更多\n移至工作树";
+        }
+      }
+    };
+
+    await expect(
+      execute(document, { innerHeight: 800 }, FakeControlElement, FakeMouseEvent)
+    ).resolves.toBe("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）");
+  });
+
+  it("switches model from the current desktop ui and returns refreshed control state", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        model: "GPT-5.4-Mini",
+        reasoningEffort: "高",
+        workspace: "本地",
+        branch: "codex/qq-codex-bridge",
+        permissionMode: "完全访问权限",
+        quotaSummary: null
+      });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage
+      } as unknown as CdpSession,
+      {
+        sleep: async () => undefined
+      }
+    );
+
+    await expect(driver.switchModel("GPT-5.4-Mini")).resolves.toEqual({
+      model: "GPT-5.4-Mini",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    });
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("model_option_not_found"),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("quotaSummary"),
       "page-1"
     );
   });
@@ -1304,6 +1576,87 @@ describe("codex desktop driver contract", () => {
       { text: "最终结论" }
     ]);
     expect(finalDrafts).toEqual([]);
+  });
+
+  it("emits turn events while collecting assistant reply", async () => {
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValueOnce({ unitKey: "assistant-turn-event-1", reply: "先回一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-turn-event-1", reply: "先回一句", isStreaming: true })
+      .mockResolvedValueOnce({ unitKey: "assistant-turn-event-1", reply: "先回一句", isStreaming: true })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-turn-event-1",
+        reply: "先回一句\n最终结论",
+        isStreaming: false
+      })
+      .mockResolvedValueOnce({
+        unitKey: "assistant-turn-event-1",
+        reply: "先回一句\n最终结论",
+        isStreaming: false
+      });
+
+    const driver = new CodexDesktopDriver(
+      {
+        connect: vi.fn().mockResolvedValue({
+          appName: "Codex",
+          browserVersion: "Codex/1.0",
+          browserWebSocketUrl: "ws://127.0.0.1:9229/devtools/browser/abc"
+        }),
+        listTargets: vi.fn().mockResolvedValue([
+          {
+            id: "page-1",
+            title: "Codex",
+            type: "page",
+            url: "app://codex"
+          }
+        ]),
+        evaluateOnPage,
+        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      {
+        replyPollAttempts: 10,
+        replyPollIntervalMs: 0,
+        replyStablePolls: 2,
+        partialReplyStablePolls: 2,
+        sleep: async () => undefined
+      }
+    );
+
+    const binding = {
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await driver.sendUserMessage(binding, {
+      messageId: "msg-turn-event-stream",
+      accountKey: "qqbot:default",
+      sessionKey: binding.sessionKey,
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      senderId: "OPENID123",
+      text: "请分阶段回答并结束",
+      receivedAt: "2026-04-12T00:10:00.000Z"
+    });
+
+    const events: TurnEvent[] = [];
+    const finalDrafts = await driver.collectAssistantReply(binding, {
+      onTurnEvent: async (event) => {
+        events.push(event);
+      }
+    });
+
+    expect(finalDrafts).toMatchObject([
+      {
+        text: "先回一句\n最终结论"
+      }
+    ]);
+    expect(events.some((event) => event.eventType === TurnEventType.Delta)).toBe(true);
+    expect(events.at(-1)?.eventType).toBe(TurnEventType.Completed);
+    expect(events.at(-1)?.payload.fullText).toContain("最终结论");
   });
 
   it("emits newly discovered media references through onDraft even when no new text arrives", async () => {

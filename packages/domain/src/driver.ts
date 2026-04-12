@@ -12,6 +12,15 @@ export type CodexThreadSummary = {
   threadRef: string;
 };
 
+export type CodexControlState = {
+  model: string | null;
+  reasoningEffort: string | null;
+  workspace: string | null;
+  branch: string | null;
+  permissionMode: string | null;
+  quotaSummary: string | null;
+};
+
 export class DesktopDriverError extends Error {
   constructor(
     message: string,
@@ -22,6 +31,7 @@ export class DesktopDriverError extends Error {
       | "submit_failed"
       | "reply_timeout"
       | "reply_parse_failed"
+      | "control_not_found"
   ) {
     super(message);
   }

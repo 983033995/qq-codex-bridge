@@ -5,6 +5,7 @@ import { FileQqGatewaySessionStore } from "../../../packages/adapters/qq/src/qq-
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
+import type { TurnEvent } from "../../../packages/domain/src/message.js";
 import { BridgeOrchestrator } from "../../../packages/orchestrator/src/bridge-orchestrator.js";
 import { buildCodexInboundText } from "../../../packages/orchestrator/src/media-context.js";
 import { formatQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-format.js";
@@ -15,6 +16,8 @@ import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
 import { loadConfigFromEnv } from "./config.js";
+
+const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
 
 export function bootstrap() {
   const config = loadConfigFromEnv(process.env);
@@ -94,7 +97,16 @@ export function bootstrap() {
                 )
               );
             }
-          : undefined
+          : undefined,
+        onTurnEvent: async (event) => {
+          await postTurnEvent(config.runtime.listenPort, {
+            ...event,
+            payload: {
+              ...event.payload,
+              replyToMessageId: message.messageId
+            }
+          });
+        }
       });
       return drafts.map((draft) =>
         formatQqOutboundDraft(
@@ -124,3 +136,23 @@ export function bootstrap() {
     qqGatewaySessionStore
   };
 }
+
+async function postTurnEvent(port: number, event: TurnEvent): Promise<void> {
+  try {
+    await fetch(`http://127.0.0.1:${port}${INTERNAL_TURN_EVENT_PATH}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(event)
+    });
+  } catch (error) {
+    console.warn("[qq-codex-bridge] turn event callback failed", {
+      turnId: event.turnId,
+      sessionKey: event.sessionKey,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+export { INTERNAL_TURN_EVENT_PATH };
