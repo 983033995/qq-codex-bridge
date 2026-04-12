@@ -1,15 +1,31 @@
 {
   "name": "qq-codex-bridge",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "bin": {
+    "qq-codex-bridge": "./bin/qq-codex-bridge.js"
+  },
+  "files": [
+    "bin",
+    "dist/apps",
+    "dist/packages",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx --env-file=.env apps/bridge-daemon/src/dev.ts",
+    "start": "node dist/apps/bridge-daemon/src/cli.js",
     "debug:codex-workers": "tsx apps/bridge-daemon/src/debug-codex-workers.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "prepare-release": "pnpm run build && npm pack --dry-run",
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

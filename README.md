@@ -23,6 +23,7 @@
 - [快速开始](#快速开始)
 - [FAQ 与故障排查](./docs/faq.md)
 - [架构说明](./docs/architecture.md)
+- [在线 Wiki（GitNexus 自动生成）](https://gistcdn.githack.com/983033995/3206d28d1bd71323166bc511b8681620/raw/index.html#overview)
 - [测试说明](./docs/testing.md)
 - [变更记录](./CHANGELOG.md)
 - [贡献指南](./CONTRIBUTING.md)
@@ -230,7 +231,6 @@ packages/store/
 
 - macOS
 - Node.js 20+
-- `pnpm`
 - 已安装 Codex Desktop
 - Codex Desktop 可通过远程调试端口暴露 page target
 - QQ 官方机器人 `AppID` 和 `ClientSecret`
@@ -239,37 +239,49 @@ packages/store/
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 生成当前目录配置
+
+推荐直接用 `npx`：
 
 ```bash
-cd qq-codex-bridge
-pnpm install
+npx qq-codex-bridge init
 ```
 
-### 2. 准备环境变量
+如果你更喜欢先全局安装：
 
 ```bash
-cp .env.example .env
+npm i -g qq-codex-bridge
+qq-codex-bridge init
 ```
 
-最少需要配置：
+这一步会把包内置的模板写成当前目录下的 `.env`。
+
+### 2. 填写 `.env`
+
+最少需要配置这两个变量：
 
 - `QQBOT_APP_ID`
 - `QQBOT_CLIENT_SECRET`
 
-### 3. 启动 Codex Desktop 远程调试
+### 3. 启动桥接
 
-默认端口：
+临时运行：
+
+```bash
+npx qq-codex-bridge
+```
+
+如果已经全局安装：
+
+```bash
+qq-codex-bridge
+```
+
+默认端口仍然是：
 
 - `CODEX_REMOTE_DEBUGGING_PORT=9229`
 
-项目的 `pnpm dev` 会尽量自动拉起 Codex Desktop；如果你本地环境特殊，也可以先手动启动。
-
-### 4. 启动桥接
-
-```bash
-pnpm dev
-```
+正式 CLI 会先检查 Codex Desktop 的 CDP 端口；如果尚未启动，会尽量自动拉起 Codex Desktop 后再继续启动桥接。
 
 正常启动日志类似：
 
@@ -278,7 +290,7 @@ pnpm dev
 [qq-codex-bridge] ready { transport: 'qq-gateway-websocket', accountKey: 'qqbot:default' }
 ```
 
-### 5. 在 QQ 中联调
+### 4. 在 QQ 中联调
 
 建议先按这个顺序测试：
 
@@ -287,6 +299,24 @@ pnpm dev
 3. 一条语音
 4. 一张图片
 5. `/t` 与 `/tu 2`
+
+### 5. 说明
+
+- 这是“**无需源码启动**”，不是“**无依赖运行**”
+- 你仍然需要本机已经安装 **Codex Desktop**
+- 当前推荐平台仍然是 **macOS**
+
+### 6. 开发者源码启动
+
+如果你是要参与开发、调试源码或跑测试，再走下面这条路径：
+
+```bash
+git clone https://github.com/983033995/qq-codex-bridge.git
+cd qq-codex-bridge
+pnpm install
+cp .env.example .env
+pnpm dev
+```
 
 ---
 
