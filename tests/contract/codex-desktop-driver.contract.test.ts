@@ -9,6 +9,59 @@ import { CodexDesktopDriver } from "../../packages/adapters/codex-desktop/src/co
 import { parseAssistantReply } from "../../packages/adapters/codex-desktop/src/reply-parser.js";
 import type { CdpSession } from "../../packages/adapters/codex-desktop/src/cdp-session.js";
 
+class FakeControlElement {
+  textContent: string;
+  className: string;
+  private readonly attrs: Record<string, string>;
+  private readonly rect: { x: number; y: number; width: number; height: number };
+  private readonly onClick?: () => void;
+
+  constructor(options: {
+    text?: string;
+    aria?: string;
+    title?: string;
+    className?: string;
+    rect: { x: number; y: number; width?: number; height?: number };
+    onClick?: () => void;
+  }) {
+    this.textContent = options.text ?? "";
+    this.className = options.className ?? "";
+    this.attrs = {};
+    if (options.aria) {
+      this.attrs["aria-label"] = options.aria;
+    }
+    if (options.title) {
+      this.attrs.title = options.title;
+    }
+    this.rect = {
+      x: options.rect.x,
+      y: options.rect.y,
+      width: options.rect.width ?? 80,
+      height: options.rect.height ?? 28
+    };
+    this.onClick = options.onClick;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs[name] ?? null;
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
+  }
+
+  dispatchEvent(event: { type?: string }) {
+    if (event?.type === "click") {
+      this.onClick?.();
+    }
+    return true;
+  }
+}
+
+class FakeMouseEvent {
+  constructor(public readonly type: string) {}
+}
+
 describe("codex desktop driver contract", () => {
   it("extracts the latest assistant reply from a snapshot string", () => {
     const reply = parseAssistantReply(`
@@ -318,6 +371,125 @@ describe("codex desktop driver contract", () => {
       expect.stringContaining("quotaSummary"),
       "page-1"
     );
+  });
+
+  it("ignores injected runtime context when deriving quota summary", () => {
+    const driver = new CodexDesktopDriver({} as unknown as CdpSession);
+    const script = (driver as unknown as { buildReadControlStateScript: () => string }).buildReadControlStateScript();
+    const execute = new Function(
+      "document",
+      "window",
+      "HTMLElement",
+      `return (${script});`
+    ) as (
+      document: {
+        querySelectorAll: (selector: string) => FakeControlElement[];
+        body: { innerText: string };
+      },
+      window: { innerHeight: number },
+      HTMLElement: typeof FakeControlElement
+    ) => {
+      model: string | null;
+      reasoningEffort: string | null;
+      workspace: string | null;
+      branch: string | null;
+      permissionMode: string | null;
+      quotaSummary: string | null;
+    };
+
+    const state = execute(
+      {
+        querySelectorAll: () => [
+          new FakeControlElement({ text: "GPT-5.4", rect: { x: 460, y: 740 } }),
+          new FakeControlElement({ text: "高", rect: { x: 560, y: 740 } }),
+          new FakeControlElement({ text: "本地", rect: { x: 620, y: 740 } }),
+          new FakeControlElement({ text: "codex/qq-codex-bridge", rect: { x: 680, y: 740 } }),
+          new FakeControlElement({ text: "完全访问权限", rect: { x: 870, y: 740 } })
+        ],
+        body: {
+          innerText:
+            "GPT-5.4\n高\n本地\ncodex/qq-codex-bridge\n完全访问权限\n<!-- QQBOT_RUNTIME_CONTEXT 会话类型：QQ 私聊 给 QQ 用户发图片、语音、视频、文件时，必须输出 <qqmedia>绝对路径或URL</qqmedia>。大小限制：图片 30MB、语音 20MB、视频/文件 100MB。 -->"
+        }
+      },
+      { innerHeight: 800 },
+      FakeControlElement
+    );
+
+    expect(state).toMatchObject({
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "本地",
+      branch: "codex/qq-codex-bridge",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    });
+  });
+
+  it("reads quota summary from the local/cloud dropdown instead of page body guesses", async () => {
+    const driver = new CodexDesktopDriver({} as unknown as CdpSession);
+    const script = (driver as unknown as { buildReadQuotaSummaryScript: () => string }).buildReadQuotaSummaryScript();
+    const execute = new Function(
+      "document",
+      "window",
+      "HTMLElement",
+      "MouseEvent",
+      `return (${script});`
+    ) as (
+      document: {
+        querySelectorAll: (selector: string) => FakeControlElement[];
+        body: { innerText: string };
+      },
+      window: { innerHeight: number },
+      HTMLElement: typeof FakeControlElement,
+      MouseEvent: typeof FakeMouseEvent
+    ) => Promise<string | null>;
+
+    const uiState = {
+      menuOpen: false,
+      quotaExpanded: false
+    };
+    const document = {
+      querySelectorAll: () => {
+        const controls = [
+          new FakeControlElement({
+            text: "本地8%",
+            rect: { x: 80, y: 740 },
+            onClick: () => {
+              uiState.menuOpen = !uiState.menuOpen;
+            }
+          })
+        ];
+
+        if (uiState.menuOpen) {
+          controls.push(
+            new FakeControlElement({
+              text: "剩余额度",
+              rect: { x: 140, y: 520 },
+              onClick: () => {
+                uiState.quotaExpanded = true;
+              }
+            })
+          );
+        }
+
+        return controls;
+      },
+      body: {
+        get innerText() {
+          if (!uiState.menuOpen) {
+            return "本地\ncodex/qq-codex-bridge";
+          }
+          if (!uiState.quotaExpanded) {
+            return "继续使用\n本地项目\n云端\n剩余额度8%\n移至工作树";
+          }
+          return "继续使用\n本地项目\n云端\n剩余额度\n8%\n5 小时\n22%\n01:56\n1 周\n25%\n4月17日\n升级至 Pro\n了解更多\n移至工作树";
+        }
+      }
+    };
+
+    await expect(
+      execute(document, { innerHeight: 800 }, FakeControlElement, FakeMouseEvent)
+    ).resolves.toBe("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）");
   });
 
   it("switches model from the current desktop ui and returns refreshed control state", async () => {

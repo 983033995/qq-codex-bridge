@@ -84,15 +84,16 @@ export class ThreadCommandHandler {
       }
 
       if (text === "/quota" || text === "/q") {
-        const state = await this.deps.desktopDriver.getControlState();
-        await this.deliverControlReply(message, this.formatQuotaReply(state));
+        const quotaSummary = await this.deps.desktopDriver.getQuotaSummary();
+        await this.deliverControlReply(message, this.formatQuotaReply(quotaSummary));
         return;
       }
 
       if (text === "/status" || text === "/st") {
         const session = await this.deps.sessionStore.getSession(message.sessionKey);
         const state = await this.deps.desktopDriver.getControlState();
-        await this.deliverControlReply(message, this.formatStatusReply(session, state));
+        const quotaSummary = await this.deps.desktopDriver.getQuotaSummary();
+        await this.deliverControlReply(message, this.formatStatusReply(session, state, quotaSummary));
         return;
       }
 
@@ -235,7 +236,7 @@ export class ThreadCommandHandler {
       "| 序号 | 项目 | 线程标题 | 最近活动 |",
       "| --- | --- | --- | --- |",
       ...threads.map((thread) => {
-        const index = thread.isCurrent ? `→ ${thread.index}` : `${thread.index}`;
+        const index = thread.isCurrent ? `👉🏻 ${thread.index}` : `${thread.index}`;
         const project = escapeCell(thread.projectName) || "-";
         const title = escapeCell(thread.title) || "-";
         const time = escapeCell(thread.relativeTime) || "-";
@@ -296,13 +297,14 @@ export class ThreadCommandHandler {
     ].join("\n");
   }
 
-  private formatQuotaReply(state: CodexControlState): string {
-    return `额度信息：${state.quotaSummary ?? "当前界面未显示明确额度，暂未识别到剩余配额。"}`;
+  private formatQuotaReply(quotaSummary: string | null): string {
+    return `额度信息：${quotaSummary ?? "当前界面未显示明确额度，暂未识别到剩余配额。"}`;
   }
 
   private formatStatusReply(
     session: BridgeSession | null,
-    state: CodexControlState
+    state: CodexControlState,
+    quotaSummary: string | null
   ): string {
     return [
       "当前运行状态：",
@@ -312,7 +314,7 @@ export class ThreadCommandHandler {
       `工作区：${state.workspace ?? "未识别"}`,
       `分支：${state.branch ?? "未识别"}`,
       `权限：${state.permissionMode ?? "未识别"}`,
-      `额度：${state.quotaSummary ?? "当前界面未显示明确额度，暂未识别到剩余配额。"}`
+      `额度：${quotaSummary ?? "当前界面未显示明确额度，暂未识别到剩余配额。"}`
     ].join("\n");
   }
 

@@ -63,7 +63,15 @@ function createTranscriptStore(): TranscriptStorePort {
   };
 }
 
-function createDriver(overrides: Partial<DesktopDriverPort> = {}): DesktopDriverPort {
+function createDriver(
+  overrides: Partial<
+    DesktopDriverPort & {
+      getQuotaSummary: () => Promise<string | null>;
+    }
+  > = {}
+): DesktopDriverPort & {
+  getQuotaSummary: () => Promise<string | null>;
+} {
   return {
     ensureAppReady: vi.fn().mockResolvedValue(undefined),
     getControlState: vi.fn().mockResolvedValue({
@@ -82,6 +90,9 @@ function createDriver(overrides: Partial<DesktopDriverPort> = {}): DesktopDriver
       permissionMode: "完全访问权限",
       quotaSummary: null
     }),
+    getQuotaSummary: vi
+      .fn()
+      .mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）"),
     openOrBindSession: vi.fn(),
     sendUserMessage: vi.fn(),
     collectAssistantReply: vi.fn(),
@@ -151,7 +162,7 @@ describe("thread command handler", () => {
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("| → 1 | skills | 线程 A | 2 小时 |")
+        text: expect.stringContaining("| 👉🏻 1 | skills | 线程 A | 2 小时 |")
       })
     );
   });
@@ -343,8 +354,9 @@ describe("thread command handler", () => {
         workspace: "本地",
         branch: "codex/qq-codex-bridge",
         permissionMode: "完全访问权限",
-        quotaSummary: "当前界面未显示明确额度，暂未识别到剩余配额。"
-      })
+        quotaSummary: null
+      }),
+      getQuotaSummary: vi.fn().mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）")
     });
     const qqEgress = createEgress();
     const handler = new ThreadCommandHandler({
@@ -357,9 +369,10 @@ describe("thread command handler", () => {
     await expect(handler.handleIfCommand(createPrivateMessage("/quota"))).resolves.toBe(true);
     await expect(handler.handleIfCommand(createPrivateMessage("/q"))).resolves.toBe(true);
 
+    expect(desktopDriver.getQuotaSummary).toHaveBeenCalledTimes(2);
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("额度信息：当前界面未显示明确额度")
+        text: expect.stringContaining("额度信息：5 小时 22%（01:56 重置）")
       })
     );
   });
@@ -374,8 +387,9 @@ describe("thread command handler", () => {
         workspace: "本地",
         branch: "codex/qq-codex-bridge",
         permissionMode: "完全访问权限",
-        quotaSummary: "当前界面未显示明确额度，暂未识别到剩余配额。"
-      })
+        quotaSummary: null
+      }),
+      getQuotaSummary: vi.fn().mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）")
     });
     const qqEgress = createEgress();
     const handler = new ThreadCommandHandler({
@@ -396,6 +410,11 @@ describe("thread command handler", () => {
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("分支：codex/qq-codex-bridge")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("额度：5 小时 22%（01:56 重置）")
       })
     );
   });

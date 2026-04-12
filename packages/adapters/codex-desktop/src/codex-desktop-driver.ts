@@ -111,6 +111,16 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     );
   }
 
+  async getQuotaSummary(): Promise<string | null> {
+    const pageTarget = await this.resolvePageTarget();
+    const quotaSummary = (await this.cdp.evaluateOnPage(
+      this.buildReadQuotaSummaryScript(),
+      pageTarget.id
+    )) as string | null | undefined;
+
+    return quotaSummary ?? null;
+  }
+
   async switchModel(model: string): Promise<CodexControlState> {
     const pageTarget = await this.resolvePageTarget();
     const result = (await this.cdp.evaluateOnPage(
@@ -1337,7 +1347,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         const modelPattern = /(?:gpt|o1|o3|o4|4\\.1|4\\.5|5\\.4|mini|nano|sonnet|haiku|opus|gemini|claude|qwen|deepseek)/i;
         const effortPattern = /^(?:低|中|高|minimal|low|medium|high)$/i;
         const permissionPattern = /(?:访问权限|permission|sandbox)/i;
-        const quotaPattern = /(?:quota|usage|remaining|limit|余额|额度|剩余|配额|限制)/i;
+        const quotaPattern = /(?:quota|usage|remaining|allowance|credit|credits|余额|额度|剩余|配额|使用量)/i;
+        const ignoredQuotaPattern = /(?:QQBOT_RUNTIME_CONTEXT|<qqmedia>|<!--|-->|会话类型|bridge|runtime\\/media|内部实现|相对路径)/i;
 
         let model = null;
         let reasoningEffort = null;
@@ -1372,7 +1383,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           .split('\\n')
           .map((line) => normalize(line))
           .filter(Boolean);
-        const quotaLine = bodyLines.find((line) => quotaPattern.test(line)) || null;
+        const quotaLine =
+          bodyLines.find((line) => quotaPattern.test(line) && !ignoredQuotaPattern.test(line)) || null;
 
         return {
           model,
@@ -1382,6 +1394,134 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           permissionMode,
           quotaSummary: quotaLine
         };
+      })()
+    `;
+  }
+
+  private buildReadQuotaSummaryScript(): string {
+    return `
+      (() => {
+        const normalize = (value) =>
+          (value || '')
+            .replace(/[\\u200B-\\u200D\\uFEFF]/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim();
+        const clickNode = (node) => {
+          node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        };
+        const collectControls = () =>
+          Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],[aria-label]'));
+        const getText = (node) =>
+          normalize(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || '');
+        const isQuotaHeader = (line) => line === '剩余额度' || /^remaining usage$/i.test(line);
+        const parseQuotaEntries = (lines) => {
+          const entries = [];
+          for (let index = 0; index < lines.length; index += 1) {
+            const line = lines[index];
+            if (
+              !line ||
+              isQuotaHeader(line) ||
+              /^\\d+%$/.test(line) ||
+              /^(?:继续使用|本地项目|云端|升级至\\s*Pro|了解更多|移至工作树)$/i.test(line)
+            ) {
+              continue;
+            }
+
+            const combinedMatch = line.match(/^(.+?(?:分钟|小时|天|周|月|minutes?|hours?|days?|weeks?|months?))\\s+(\\d+%)\\s+(.+)$/i);
+            if (combinedMatch) {
+              entries.push(\`\${combinedMatch[1]} \${combinedMatch[2]}（\${combinedMatch[3]} 重置）\`);
+              continue;
+            }
+
+            const timeframeMatch = line.match(/^(.+?(?:分钟|小时|天|周|月|minutes?|hours?|days?|weeks?|months?))$/i);
+            if (timeframeMatch && index + 2 < lines.length) {
+              const percentLine = lines[index + 1];
+              const resetLine = lines[index + 2];
+              if (/^\\d+%$/.test(percentLine) && resetLine) {
+                entries.push(\`\${timeframeMatch[1]} \${percentLine}（\${resetLine} 重置）\`);
+                index += 2;
+                continue;
+              }
+            }
+          }
+
+          return entries;
+        };
+
+        const findModeButton = () =>
+          collectControls().find((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return false;
+            }
+            const text = getText(node);
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.y >= window.innerHeight - 120 &&
+              rect.height <= 40 &&
+              rect.width <= 120 &&
+              /^(?:本地|云端|local|cloud)(?:\\d+%)?$/i.test(text)
+            );
+          });
+
+        const modeButton = findModeButton();
+        if (!modeButton) {
+          return null;
+        }
+
+        const readVisibleQuotaSummary = () => {
+          const lines = (document.body ? document.body.innerText : '')
+            .split('\\n')
+            .map((line) => normalize(line))
+            .filter(Boolean);
+          const quotaIndex = lines.findIndex((line) => isQuotaHeader(line));
+          if (quotaIndex < 0) {
+            return null;
+          }
+
+          const quotaBlock = lines.slice(quotaIndex, quotaIndex + 10);
+          const entries = parseQuotaEntries(quotaBlock);
+          return entries.length > 0 ? entries.join('\\n') : null;
+        };
+
+        const ensureQuotaVisible = () =>
+          new Promise((resolve) => {
+            let attempts = 0;
+            let openedMenu = false;
+            let expandedQuota = false;
+            const tick = () => {
+              attempts += 1;
+              const summary = readVisibleQuotaSummary();
+              if (summary) {
+                resolve(summary);
+                return;
+              }
+
+              if (!openedMenu) {
+                clickNode(modeButton);
+                openedMenu = true;
+              }
+
+              const quotaToggle = collectControls().find((node) => /剩余额度|remaining usage/i.test(getText(node)));
+              if (quotaToggle && !expandedQuota) {
+                clickNode(quotaToggle);
+                expandedQuota = true;
+              }
+
+              if (attempts >= 8) {
+                resolve(null);
+                return;
+              }
+
+              setTimeout(tick, 80);
+            };
+
+            tick();
+          });
+
+        return ensureQuotaVisible();
       })()
     `;
   }

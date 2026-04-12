@@ -9,6 +9,7 @@ export type ConversationRunOptions = {
 export interface DesktopDriverPort {
   ensureAppReady(): Promise<void>;
   getControlState(): Promise<CodexControlState>;
+  getQuotaSummary(): Promise<string | null>;
   switchModel(model: string): Promise<CodexControlState>;
   openOrBindSession(sessionKey: string, binding: DriverBinding | null): Promise<DriverBinding>;
   listRecentThreads(limit: number): Promise<CodexThreadSummary[]>;
