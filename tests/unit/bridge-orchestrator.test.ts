@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { BridgeSessionStatus } from "../../packages/domain/src/session.js";
 import type { BridgeSession } from "../../packages/domain/src/session.js";
 import { DesktopDriverError } from "../../packages/domain/src/driver.js";
-import type { InboundMessage, OutboundDraft } from "../../packages/domain/src/message.js";
+import {
+  TurnEventType,
+  type InboundMessage,
+  type OutboundDraft
+} from "../../packages/domain/src/message.js";
 import type { ConversationProviderPort } from "../../packages/ports/src/conversation.js";
 import type { QqEgressPort } from "../../packages/ports/src/qq.js";
 import type { SessionStorePort, TranscriptStorePort } from "../../packages/ports/src/store.js";
@@ -537,6 +541,165 @@ describe("BridgeOrchestrator", () => {
       expect.objectContaining({
         onDraft: expect.any(Function)
       })
+    );
+  });
+
+  it("flushes only the missing tail text when a completed turn event carries a longer full text", async () => {
+    const message = createMessage();
+    const firstDraft: OutboundDraft = {
+      draftId: "draft-partial-1",
+      turnId: "turn-1",
+      sessionKey: message.sessionKey,
+      text: "前半段",
+      createdAt: "2026-04-12T12:00:01.000Z"
+    };
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(createSession(message)),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+
+    let orchestrator!: BridgeOrchestrator;
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn(async (_message, options) => {
+        await options?.onDraft?.(firstDraft);
+        await orchestrator.handleTurnEvent({
+          sessionKey: message.sessionKey,
+          turnId: "turn-1",
+          sequence: 2,
+          eventType: TurnEventType.Completed,
+          createdAt: "2026-04-12T12:00:03.000Z",
+          isFinal: true,
+          payload: {
+            fullText: "前半段后半段",
+            replyToMessageId: message.messageId,
+            completionReason: "stable"
+          }
+        });
+        return [];
+      })
+    };
+
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn(async (draft: OutboundDraft) => ({
+        jobId: `job-${draft.draftId}`,
+        sessionKey: draft.sessionKey,
+        providerMessageId: null,
+        deliveredAt: draft.createdAt
+      }))
+    };
+
+    orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await orchestrator.handleInbound(message);
+
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ text: "前半段", turnId: "turn-1" })
+    );
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ text: "后半段", replyToMessageId: message.messageId })
+    );
+  });
+
+  it("does not duplicate completed flush when incremental drafts trim whitespace between segments", async () => {
+    const message = createMessage();
+    const firstDraft: OutboundDraft = {
+      draftId: "draft-partial-1",
+      turnId: "turn-2",
+      sessionKey: message.sessionKey,
+      text: "hello",
+      createdAt: "2026-04-12T12:10:01.000Z"
+    };
+    const secondDraft: OutboundDraft = {
+      draftId: "draft-partial-2",
+      turnId: "turn-2",
+      sessionKey: message.sessionKey,
+      text: "world",
+      createdAt: "2026-04-12T12:10:02.000Z"
+    };
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(createSession(message)),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+
+    let orchestrator!: BridgeOrchestrator;
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn(async (_message, options) => {
+        await options?.onDraft?.(firstDraft);
+        await options?.onDraft?.(secondDraft);
+        await orchestrator.handleTurnEvent({
+          sessionKey: message.sessionKey,
+          turnId: "turn-2",
+          sequence: 3,
+          eventType: TurnEventType.Completed,
+          createdAt: "2026-04-12T12:10:03.000Z",
+          isFinal: true,
+          payload: {
+            fullText: "hello world",
+            replyToMessageId: message.messageId,
+            completionReason: "stable"
+          }
+        });
+        return [];
+      })
+    };
+
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn(async (draft: OutboundDraft) => ({
+        jobId: `job-${draft.draftId}`,
+        sessionKey: draft.sessionKey,
+        providerMessageId: null,
+        deliveredAt: draft.createdAt
+      }))
+    };
+
+    orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await orchestrator.handleInbound(message);
+
+    expect(qqEgress.deliver).toHaveBeenCalledTimes(2);
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ text: "hello", turnId: "turn-2" })
+    );
+    expect(qqEgress.deliver).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ text: "world", turnId: "turn-2" })
     );
   });
 });

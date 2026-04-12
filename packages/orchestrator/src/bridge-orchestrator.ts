@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { BridgeSessionStatus, type BridgeSession } from "../../domain/src/session.js";
-import type { InboundMessage, OutboundDraft } from "../../domain/src/message.js";
+import { TurnEventType, type InboundMessage, type OutboundDraft, type TurnEvent } from "../../domain/src/message.js";
 import { DesktopDriverError } from "../../domain/src/driver.js";
 import type { ConversationProviderPort } from "../../ports/src/conversation.js";
 import type { QqEgressPort } from "../../ports/src/qq.js";
 import type { SessionStorePort, TranscriptStorePort } from "../../ports/src/store.js";
+import { formatQqOutboundDraft } from "./qq-outbound-format.js";
 
 type BridgeOrchestratorDeps = {
   sessionStore: SessionStorePort;
@@ -12,11 +14,21 @@ type BridgeOrchestratorDeps = {
   qqEgress: QqEgressPort;
 };
 
+type TurnState = {
+  lastSequence: number;
+  assembledText: string;
+  sentText: string;
+  lastEventAt: string | null;
+  completed: boolean;
+  finalFlushed: boolean;
+};
+
 export class BridgeOrchestrator {
   private readonly recentInboundFingerprints = new Map<
     string,
     { fingerprint: string; receivedAtMs: number; messageId: string }
   >();
+  private readonly turnStates = new Map<string, TurnState>();
 
   constructor(private readonly deps: BridgeOrchestratorDeps) {}
 
@@ -73,6 +85,7 @@ export class BridgeOrchestrator {
           await this.deps.transcriptStore.recordOutbound(draft);
           try {
             await this.deps.qqEgress.deliver(draft);
+            this.recordDeliveredDraft(draft);
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             deliveryErrors.push(`${draft.draftId}: ${reason}`);
@@ -124,6 +137,58 @@ export class BridgeOrchestrator {
     });
   }
 
+  async handleTurnEvent(event: TurnEvent): Promise<void> {
+    await this.deps.sessionStore.withSessionLock(event.sessionKey, async () => {
+      const state = this.getOrCreateTurnState(event);
+      if (event.sequence <= state.lastSequence) {
+        return;
+      }
+
+      state.lastSequence = event.sequence;
+      state.lastEventAt = event.createdAt;
+      if (typeof event.payload.fullText === "string") {
+        state.assembledText = event.payload.fullText;
+      } else if (typeof event.payload.text === "string" && event.payload.text.length > 0) {
+        state.assembledText += event.payload.text;
+      }
+
+      if (event.eventType !== TurnEventType.Completed) {
+        return;
+      }
+
+      const pendingText = computePendingTurnText(state.sentText, state.assembledText);
+      if (!pendingText) {
+        state.completed = true;
+        state.finalFlushed = true;
+        return;
+      }
+
+      const draft = formatQqOutboundDraft({
+        draftId: randomUUID(),
+        turnId: event.turnId,
+        sessionKey: event.sessionKey,
+        text: pendingText,
+        createdAt: event.createdAt,
+        ...(event.payload.replyToMessageId
+          ? { replyToMessageId: event.payload.replyToMessageId }
+          : {})
+      });
+
+      if (!draft.text.trim()) {
+        state.sentText = state.assembledText;
+        state.completed = true;
+        state.finalFlushed = true;
+        return;
+      }
+
+      await this.deps.transcriptStore.recordOutbound(draft);
+      await this.deps.qqEgress.deliver(draft);
+      state.sentText = state.assembledText;
+      state.completed = true;
+      state.finalFlushed = true;
+    });
+  }
+
   private isLikelyDuplicateInbound(message: InboundMessage): boolean {
     const record = this.recentInboundFingerprints.get(message.sessionKey);
     if (!record) {
@@ -161,6 +226,43 @@ export class BridgeOrchestrator {
       messageId: message.messageId
     });
   }
+
+  private getOrCreateTurnState(event: TurnEvent): TurnState {
+    const key = buildTurnStateKey(event.sessionKey, event.turnId);
+    const existing = this.turnStates.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const created: TurnState = {
+      lastSequence: 0,
+      assembledText: "",
+      sentText: "",
+      lastEventAt: null,
+      completed: false,
+      finalFlushed: false
+    };
+    this.turnStates.set(key, created);
+    return created;
+  }
+
+  private recordDeliveredDraft(draft: OutboundDraft): void {
+    if (!draft.turnId || !draft.text) {
+      return;
+    }
+
+    const key = buildTurnStateKey(draft.sessionKey, draft.turnId);
+    const state = this.turnStates.get(key) ?? {
+      lastSequence: 0,
+      assembledText: "",
+      sentText: "",
+      lastEventAt: null,
+      completed: false,
+      finalFlushed: false
+    };
+    state.sentText += draft.text;
+    this.turnStates.set(key, state);
+  }
 }
 
 function isRecoverableTurnError(error: unknown): boolean {
@@ -187,4 +289,48 @@ function buildInboundFingerprint(message: InboundMessage): string {
     message.text.trim(),
     mediaFingerprint
   ].join("||");
+}
+
+function buildTurnStateKey(sessionKey: string, turnId: string): string {
+  return `${sessionKey}::${turnId}`;
+}
+
+function computePendingTurnText(sentText: string, fullText: string): string {
+  if (!fullText) {
+    return "";
+  }
+
+  if (!sentText) {
+    return fullText;
+  }
+
+  if (fullText.startsWith(sentText)) {
+    return fullText.slice(sentText.length);
+  }
+
+  if (stripWhitespace(fullText) === stripWhitespace(sentText)) {
+    return "";
+  }
+
+  const overlap = findSuffixPrefixOverlap(sentText, fullText);
+  if (overlap > 0) {
+    return fullText.slice(overlap);
+  }
+
+  return fullText;
+}
+
+function findSuffixPrefixOverlap(previous: string, next: string): number {
+  const maxLength = Math.min(previous.length, next.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (previous.slice(-length) === next.slice(0, length)) {
+      return length;
+    }
+  }
+
+  return 0;
+}
+
+function stripWhitespace(value: string): string {
+  return value.replace(/\s+/g, "");
 }

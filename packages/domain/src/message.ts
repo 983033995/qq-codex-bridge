@@ -31,6 +31,7 @@ export type InboundMessage = {
 
 export type OutboundDraft = {
   draftId: string;
+  turnId?: string;
   sessionKey: string;
   text: string;
   mediaArtifacts?: MediaArtifact[];

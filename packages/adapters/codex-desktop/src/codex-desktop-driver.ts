@@ -376,7 +376,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
               binding.sessionKey,
               candidateReply,
               emittedReplyText,
-              emittedMediaReferences
+              emittedMediaReferences,
+              turnId
             );
             if (finalDeltaDraft) {
               await emitTurnEvent(
@@ -415,7 +416,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             },
             true
           );
-          return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply)];
+          return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, candidateReply, turnId)];
         }
 
         if (
@@ -428,7 +429,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             binding.sessionKey,
             candidateReply,
             emittedReplyText,
-            emittedMediaReferences
+            emittedMediaReferences,
+            turnId
           );
           if (deltaDraft) {
             await emitTurnEvent(
@@ -462,7 +464,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           binding.sessionKey,
           latestNewReply,
           emittedReplyText,
-          emittedMediaReferences
+          emittedMediaReferences,
+          turnId
         );
         if (timeoutDraft) {
           await emitTurnEvent(
@@ -504,7 +507,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         },
         true
       );
-      return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply)];
+      return [this.buildOutboundDraftFromSnapshot(binding.sessionKey, latestNewReply, turnId)];
     }
 
     throw new DesktopDriverError(
@@ -515,10 +518,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildOutboundDraftFromSnapshot(
     sessionKey: string,
-    snapshot: AssistantReplySnapshot
+    snapshot: AssistantReplySnapshot,
+    turnId?: string
   ): OutboundDraft {
     return {
       draftId: randomUUID(),
+      ...(turnId ? { turnId } : {}),
       sessionKey,
       text: snapshot.reply ?? "",
       ...(snapshot.mediaReferences.length > 0
@@ -536,7 +541,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     sessionKey: string,
     snapshot: AssistantReplySnapshot,
     emittedReplyText: string,
-    emittedMediaReferences: Set<string>
+    emittedMediaReferences: Set<string>,
+    turnId?: string
   ): OutboundDraft | null {
     const fullReply = snapshot.reply ?? "";
     const deltaText = this.extractReplyDelta(emittedReplyText, fullReply).trim();
@@ -550,6 +556,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     return {
       draftId: randomUUID(),
+      ...(turnId ? { turnId } : {}),
       sessionKey,
       text: deltaText,
       ...(incrementalMediaReferences.length > 0
