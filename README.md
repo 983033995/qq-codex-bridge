@@ -7,117 +7,143 @@
 
 ![qq-codex-bridge README Hero](./output/readme-hero-nanobanana-productized-v1.png)
 
-一个把 **QQ 官方机器人会话** 桥接到 **Codex Desktop** 的开源实验项目。
+## 把 Codex Desktop 变成你的 QQ 私人 AI 助理
 
-它的核心目标很直接：
+不想在浏览器和 QQ 之间来回切换？想把 Codex 的强大能力直接搬到你的 QQ 好友列表和群聊里？
 
-- 在 QQ 私聊 / 群聊里接收用户消息
-- 按会话把消息映射到 Codex Desktop 线程
-- 用 CDP 驱动 Codex Desktop 发送消息、切线程、读取回复
-- 把 Codex 的文本、图片、文件、语音转写结果继续回送到 QQ
-
-项目当前已经能跑真实链路，但仍然属于 **实验性可用** 阶段，更适合开发者联调、研究和二次改造，而不是直接当成稳定生产系统。
-
-## 文档导航
-
-- [快速开始](#快速开始)
-- [FAQ 与故障排查](./docs/faq.md)
-- [架构说明](./docs/architecture.md)
-- [在线 Wiki（GitNexus 自动生成）](https://gistcdn.githack.com/983033995/3206d28d1bd71323166bc511b8681620/raw/index.html#overview)
-- [测试说明](./docs/testing.md)
-- [变更记录](./CHANGELOG.md)
-- [贡献指南](./CONTRIBUTING.md)
-- [安全策略](./SECURITY.md)
+**qq-codex-bridge** 是一个开源桥接工具，它让 Codex Desktop 成为你 QQ 上的实时 AI 对话伙伴——支持图片理解、语音提问、文件分析和 AI 生图回传，私聊群聊都能用。
 
 ---
 
-## 项目特性
+## 你可以这样用
 
-### 核心链路
+### 发张图片，让 Codex 帮你看
 
-- QQ 官方 Bot WebSocket gateway 入站
-- QQ 私聊 / 群聊会话隔离
-- Codex Desktop 启动检查与 CDP 连接
-- QQ 消息映射到 Codex 线程
-- Codex 回复增量采集并多次回传到 QQ
-- SQLite 持久化会话、入站记录、出站任务
-
-### 媒体与 STT
-
-- QQ 附件下载与上下文注入
-  - 图片
-  - 语音
-  - 视频
-  - 文件
-- 语音转文字
-  - QQ 自带 `asr_refer_text` 回退
-  - `openai-compatible`
-  - `volcengine-flash`
-  - 本地离线 `whisper.cpp`
-- QQ 媒体回传
-  - 图片
-  - 音频
-  - 视频
-  - 文件
-
-### Codex 回复处理
-
-- 富文本链接提取
-- 有序列表编号保留
-- 代码块序列化为 fenced markdown
-- 表格结构保留
-- 长耗时任务回复采集窗口延长
-- 同一轮回复中的媒体结果继续跟进，不再只截前几段文本
-
-### 线程管理
-
-仅私聊可用：
-
-| 用途 | 完整命令 | 简写 |
-| --- | --- | --- |
-| 查看最近活跃线程 | `/threads` | `/t` |
-| 查看当前绑定线程 | `/thread current` | `/tc` |
-| 切换到指定线程 | `/thread use <序号>` | `/tu <序号>` |
-| 新建线程 | `/thread new <标题>` | `/tn <标题>` |
-| 基于最近对话 fork 线程 | `/thread fork <标题>` | `/tf <标题>` |
-| 查看帮助 | `/help` | - |
-
----
-
-## 适用场景
-
-- 想直接在 QQ 里把 Codex 当成一个“会话型桌面代理”来用
-- 需要把图片、语音、文件上下文桥接给 Codex
-- 想研究 Codex Desktop 的 CDP 自动化与回复采集
-- 想复用 QQ 官方 Bot 能力，但不依赖 OpenClaw 宿主
-
----
-
-## 项目效果
-
-### Markdown 与代码回复
-
-Codex 的列表、代码块、表格会尽量保留结构后再发给 QQ。
-
-![Markdown 渲染效果](./output/截屏%202026-04-10%2021.31.46.png)
-
-### 图片理解
-
-发送图片给机器人，Codex 可以结合图片内容继续回答。
+遇到截图、照片、产品图？直接发给机器人，Codex 会结合图片内容给出分析。手机端 QQ、桌面端 QQ 均可使用。
 
 ![图片理解](./output/截屏%202026-04-10%2021.33.09.png)
 
-### 线程管理
+### 语音提问，张口就来
 
-在 QQ 私聊中直接查看最近活跃线程，并快速切换。
+发一条语音，桥接会自动转写后发给 Codex。双手不便打字时，直接说话就能问 AI。
+
+### Markdown 和代码，结构完整回传
+
+Codex 输出的列表、代码块、表格会尽量保留格式后再发到 QQ。写代码、看文档都清晰。
+
+![Markdown 渲染效果](./output/截屏%202026-04-10%2021.31.46.png)
+
+### AI 生成了图片？直接发回 QQ
+
+Codex 调用图片生成工具后，成品会自动回传到 QQ 对话里。创作结果一目了然。
+
+![AI 生图回传](./output/截屏%202026-04-10%2022.00.25.png)
+
+### 私聊线程管理，复杂任务不丢上下文
+
+在 QQ 私聊中直接查看、切换、新建 Codex 线程。大型项目可以分线程讨论，每个线程独立记忆，互不干扰。
 
 ![线程管理](./output/截屏%202026-04-10%2021.47.08.png)
 
-### AI 生图回传
+---
 
-Codex 调用图片生成工具后，桥接会把成品图片继续回传到 QQ。
+## 工作原理
 
-![AI 生图回传](./output/截屏%202026-04-10%2022.00.25.png)
+```
+QQ 私聊/群聊 ──► 桥接服务 ──► Codex Desktop（CDP 驱动）
+                    ▲                      │
+                    └────── 回复回传 ───────┘
+```
+
+桥接运行在本地 Node.js 进程中，通过 Chrome DevTools Protocol 驱动已运行的 Codex Desktop，完成消息收发和上下文注入。
+
+---
+
+## 快速开始
+
+### 第 0 步：创建 QQ 机器人，获取 AppID 和 AppSecret
+
+1. 打开 [QQ 开放平台](https://q.qq.com/qqbot/openclaw/index.html)，登录后点击「**创建机器人**」
+2. 填写机器人名称和简介，完成创建
+3. 进入机器人详情页，复制 **AppID** 和 **AppSecret**（点击"查看"可显示 AppSecret）
+
+![QQ 开放平台机器人创建页面](https://minimax-algeng-chat-tts.oss-cn-wulanchabu.aliyuncs.com/ccv2%2F2026-04-13%2FMiniMax-M2.7%2F2022349168671990452%2F7e608ce17a900fa601a014dc957ef1314be87cff5a110e27615a5393bf2912d6..png?Expires=1776145198&OSSAccessKeyId=LTAI5tGLnRTkBjLuYPjNcKQ8&Signature=eM71QgFWMmELUyeGG2fLn3Onugk%3D)
+
+> 同一 AppID + AppSecret 可以同时在多个群聊和私聊中使用，无需重复创建。
+
+### 第 1 步：生成配置文件
+
+推荐直接用 `npx`：
+
+```bash
+npx qq-codex-bridge init
+```
+
+或全局安装后使用：
+
+```bash
+npm i -g qq-codex-bridge
+qq-codex-bridge init
+```
+
+这会将内置配置模板写入当前目录的 `.env`。
+
+### 第 2 步：填写 `.env`
+
+将上一步复制的 **AppID** 和 **AppSecret** 填入 `.env`：
+
+```env
+QQBOT_APP_ID=你的AppID
+QQBOT_CLIENT_SECRET=你的ClientSecret
+```
+
+`.env` 中其他变量说明：
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `CODEX_REMOTE_DEBUGGING_PORT` | Codex Desktop 远程调试端口 | `9229` |
+| `QQBOT_STT_*` | 语音转文字配置（可选，不填则用 QQ 内置 ASR） | — |
+| `QQBOT_MARKDOWN_SUPPORT` | 是否启用 QQ markdown 文本发送 | `false` |
+
+### 第 3 步：启动桥接
+
+```bash
+npx qq-codex-bridge
+```
+
+正常启动后会看到类似日志：
+
+```text
+[qq-codex-bridge] codex desktop ready { launched: true|false, remoteDebuggingPort: 9229 }
+[qq-codex-bridge] ready { transport: 'qq-gateway-websocket', accountKey: 'qqbot:default' }
+```
+
+> 桥接会先检查 Codex Desktop 是否已运行；若未运行，会尽量自动拉起后再继续。
+
+### 第 4 步：在 QQ 中联调
+
+建议按这个顺序测试：
+
+1. **普通文本** — 先确认消息收发正常
+2. **一条会让 Codex 分阶段回答的问题** — 验证增量回复采集
+3. **一条语音** — 验证 STT 转写链路
+4. **一张图片** — 验证图片上下文注入
+5. **`/t` 与 `/tu 2`** — 验证线程管理命令
+
+---
+
+## 开发者源码启动
+
+如果你要参与开发、调试源码或运行测试：
+
+```bash
+git clone https://github.com/983033995/qq-codex-bridge.git
+cd qq-codex-bridge
+pnpm install
+cp .env.example .env
+# 填写 .env 中的 QQBOT_APP_ID 和 QQBOT_CLIENT_SECRET
+pnpm dev
+```
 
 ---
 
@@ -141,89 +167,69 @@ BridgeOrchestrator
                         └── Codex Desktop
 ```
 
-更贴近实际运行时的链路是：
-
-```text
-QQ 消息
-  -> 归一化 / 附件下载 / STT
-  -> 构造成 Codex 入站上下文
-  -> 注入 Codex Desktop
-  -> 轮询最新 assistant unit
-  -> 增量 draft
-  -> QQ 文本 / 媒体发送
-  -> SQLite 记录入站与出站任务
-```
-
 ---
 
-## 和官方项目的关系
+## 项目特性
 
-这个项目参考了：
+### 核心能力
 
-- [tencent-connect/openclaw-qqbot](https://github.com/tencent-connect/openclaw-qqbot)
-- [openclaw/openclaw](https://github.com/openclaw/openclaw)
+- QQ 官方 Bot WebSocket gateway 入站
+- QQ 私聊 / 群聊会话隔离
+- Codex Desktop 启动检查与 CDP 连接
+- QQ 消息映射到 Codex 线程
+- Codex 回复增量采集并多次回传到 QQ
+- SQLite 持久化会话、入站记录、出站任务
 
-主要借鉴了这些思路：
+### 媒体与语音
 
-- QQ gateway WebSocket 入站
-- 出站消息路由与媒体发送
-- 语音 / 文件处理方式
-- Markdown 分块发送思路
-- “增量回复 -> 分段回传”的设计方向
+- QQ 附件下载与上下文注入（图片、语音、视频、文件）
+- 语音转文字：支持 QQ 内置 ASR / OpenAI 兼容 / 火山引擎 / 本地 whisper.cpp
+- QQ 媒体回传：图片、音频、视频、文件
 
-但两者仍然不同：
+### Codex 回复处理
 
-| 项目 | 运行位置 | 宿主 |
+- 富文本链接提取、有序列表编号保留
+- 代码块序列化为 fenced markdown、表格结构保留
+- 长耗时任务回复采集窗口延长
+- 同一轮回复中的媒体结果持续跟进，不再只截前几段文本
+
+### 线程管理命令
+
+仅私聊可用：
+
+| 用途 | 完整命令 | 简写 |
 | --- | --- | --- |
-| `openclaw-qqbot` | OpenClaw 插件 | OpenClaw |
-| `qq-codex-bridge` | 本地 Node.js 进程 | Codex Desktop |
-
-所以这个项目不是 OpenClaw 插件移植版，而是 **面向 Codex Desktop 的独立桥接实现**。
+| 查看最近活跃线程 | `/threads` | `/t` |
+| 查看当前绑定线程 | `/thread current` | `/tc` |
+| 切换到指定线程 | `/thread use <序号>` | `/tu <序号>` |
+| 新建线程 | `/thread new <标题>` | `/tn <标题>` |
+| 基于最近对话 fork 线程 | `/thread fork <标题>` | `/tf <标题>` |
+| 查看当前模型 | `/model` | `/m` |
+| 切换模型 | `/model use <名称>` | `/mu <名称>` |
+| 查看额度信息 | `/quota` | `/q` |
+| 查看当前运行状态 | `/status` | `/st` |
+| 查看帮助 | `/help` | `/h` |
 
 ---
 
-## 项目结构
+## 当前实现上的保护逻辑
 
-```text
-apps/bridge-daemon/
-  src/
-    main.ts
-    bootstrap.ts
-    config.ts
-    thread-command-handler.ts
-    debug-codex-workers.ts
+这几个是和"最小 demo"相比的重要工程细节：
 
-packages/adapters/qq/
-  src/
-    qq-gateway-client.ts
-    qq-gateway.ts
-    qq-api-client.ts
-    qq-sender.ts
-    qq-media-downloader.ts
-    qq-media-parser.ts
-    qq-stt.ts
+- **重复 QQ 入站抑制** — 短时间内同一会话、同一正文、同一媒体指纹的重复消息会被拦下
+- **长耗时任务回复采集窗口延长** — 图片生成、长搜索、长工具执行不再因默认 30 秒窗口被提前截断
+- **单条 draft 发送失败不再截断整轮回复** — 某一条 QQ 发送失败时，后续 draft 仍会继续尝试
+- **可恢复错误不会把整个桥接打成不可用** — 例如 `reply_timeout` 被当成可恢复错误，不再直接把会话打成 `needs_rebind`
 
-packages/adapters/codex-desktop/
-  src/
-    cdp-session.ts
-    codex-desktop-driver.ts
-    composer-heuristics.ts
-    reply-parser.ts
+---
 
-packages/orchestrator/
-  src/
-    bridge-orchestrator.ts
-    media-context.ts
-    qq-outbound-draft.ts
-    qq-outbound-format.ts
-    qqbot-skill-context.ts
+## 已知限制
 
-packages/store/
-  src/
-    sqlite.ts
-    session-repo.ts
-    message-repo.ts
-```
+- 核心能力依赖 Codex Desktop 当前版本的 DOM 结构和 CDP 可见性，桌面端改版后可能需要跟着适配
+- 对 Codex 回复的增量采集是**基于页面快照的伪流式**，不是官方内部事件流
+- QQ 客户端的消息样式、Markdown 支持、媒体卡片展示不完全可控
+- 线程管理命令目前只在 **QQ 私聊** 中开放
+- 某些极端场景下，如果 Codex Desktop 页面结构变化很大，线程定位与回复提取可能失效
 
 ---
 
@@ -237,214 +243,51 @@ packages/store/
 
 ---
 
-## 快速开始
-
-### 1. 生成当前目录配置
-
-推荐直接用 `npx`：
-
-```bash
-npx qq-codex-bridge init
-```
-
-如果你更喜欢先全局安装：
-
-```bash
-npm i -g qq-codex-bridge
-qq-codex-bridge init
-```
-
-这一步会把包内置的模板写成当前目录下的 `.env`。
-
-### 2. 填写 `.env`
-
-最少需要配置这两个变量：
-
-- `QQBOT_APP_ID`
-- `QQBOT_CLIENT_SECRET`
-
-### 3. 启动桥接
-
-临时运行：
-
-```bash
-npx qq-codex-bridge
-```
-
-如果已经全局安装：
-
-```bash
-qq-codex-bridge
-```
-
-默认端口仍然是：
-
-- `CODEX_REMOTE_DEBUGGING_PORT=9229`
-
-正式 CLI 会先检查 Codex Desktop 的 CDP 端口；如果尚未启动，会尽量自动拉起 Codex Desktop 后再继续启动桥接。
-
-正常启动日志类似：
-
-```text
-[qq-codex-bridge] codex desktop ready { launched: true|false, remoteDebuggingPort: 9229 }
-[qq-codex-bridge] ready { transport: 'qq-gateway-websocket', accountKey: 'qqbot:default' }
-```
-
-### 4. 在 QQ 中联调
-
-建议先按这个顺序测试：
-
-1. 普通文本
-2. 一条会让 Codex 分阶段回答的问题
-3. 一条语音
-4. 一张图片
-5. `/t` 与 `/tu 2`
-
-### 5. 说明
-
-- 这是“**无需源码启动**”，不是“**无依赖运行**”
-- 你仍然需要本机已经安装 **Codex Desktop**
-- 当前推荐平台仍然是 **macOS**
-
-### 6. 开发者源码启动
-
-如果你是要参与开发、调试源码或跑测试，再走下面这条路径：
-
-```bash
-git clone https://github.com/983033995/qq-codex-bridge.git
-cd qq-codex-bridge
-pnpm install
-cp .env.example .env
-pnpm dev
-```
-
----
-
-## STT 配置
-
-项目支持三层语音转写策略。
-
-### 1. 零配置模式
-
-不配置任何 `QQBOT_STT_*` 时：
-
-- 优先使用 QQ 事件里的 `asr_refer_text`
-- 如果 QQ 没返回 ASR，再回退到附件占位
-
-这是最适合开源项目默认体验的模式。
-
-### 2. 云端 STT
-
-支持：
-
-- `openai-compatible`
-- `volcengine-flash`
-
-适合需要更高转写稳定性的人。
-
-### 3. 本地离线 STT
-
-支持：
-
-- `local-whisper-cpp`
-
-适合重视隐私、不想依赖云端 API 的人。
-
-### STT 日志
-
-当前会输出这些 STT 日志：
-
-- `qq stt started`
-- `qq stt completed`
-- `qq stt produced no transcript`
-- `qq stt fallback used`
-- `qq stt failed`
-
-日志中会带：
-
-- `provider`
-- `file`
-- `extension`
-- `durationMs`
-- `hasAsrReferText`
-- `transcriptPreview`
-
----
-
-## 当前实现上的一些保护逻辑
-
-这几个点是项目和“最小 demo”相比比较重要的部分：
-
-- **重复 QQ 入站抑制**  
-  短时间内同一会话、同一正文、同一媒体指纹的重复消息会被拦下，避免同一句话多次注入 Codex。
-
-- **长耗时任务回复采集窗口延长**  
-  图片生成、长搜索、长工具执行不再因为默认 30 秒窗口被提前截断。
-
-- **单条 draft 发送失败不再截断整轮回复**  
-  某一条 QQ 发送失败时，后续 draft 仍会继续尝试发送。
-
-- **可恢复错误不会把整个桥接打成不可用**  
-  比如 `reply_timeout` 这类错误会被当成可恢复错误记录，不再直接把会话打成 `needs_rebind`。
-
----
-
-## 已知限制
-
-- 核心能力依赖 Codex Desktop 当前版本的 DOM 结构和 CDP 可见性，桌面端改版后可能需要跟着适配。
-- 对 Codex 回复的增量采集仍然是 **基于页面快照的伪流式**，不是官方内部事件流。
-- QQ 客户端自己的消息样式、Markdown 支持、媒体卡片展示不完全可控。
-- 线程管理命令目前只在 **QQ 私聊** 中开放。
-- 某些极端场景下，如果 Codex Desktop 页面结构变化很大，线程定位与回复提取可能失效。
-
----
-
-## 调试建议
-
-### 查看类型检查
-
-```bash
-pnpm run check
-```
-
-### 运行测试
-
-```bash
-pnpm test
-```
-
-### 调试 Codex page / worker
-
-```bash
-pnpm run debug:codex-workers -- --duration-ms 12000
-```
-
----
-
 ## 安全提醒
 
-- `.env` 里会包含 QQ Bot、STT 等敏感密钥，不要提交到仓库
+- `.env` 里会包含 QQ Bot、STT 等敏感密钥，**不要提交到仓库**
 - 如果你把项目分享给别人，请务必轮换已经暴露过的密钥
 - 本项目会处理用户消息、附件、语音与本地文件路径，联调时请注意隐私边界
 
 ---
 
+## 调试建议
+
+```bash
+# 类型检查
+pnpm run check
+
+# 运行测试
+pnpm test
+
+# 调试 Codex page / worker
+pnpm run debug:codex-workers -- --duration-ms 12000
+```
+
+---
+
+## 文档导航
+
+- [FAQ 与故障排查](./docs/faq.md)
+- [架构说明](./docs/architecture.md)
+- [测试说明](./docs/testing.md)
+- [变更记录](./CHANGELOG.md)
+- [贡献指南](./CONTRIBUTING.md)
+- [安全策略](./SECURITY.md)
+- [在线 Wiki（GitNexus 自动生成）](https://gistcdn.githack.com/983033995/e5715ad0d61605f039ca4e6055094083/raw/index.html#overview)
+
+---
+
 ## 贡献
 
-欢迎 issue、讨论和 PR。
-
-在提交改动前，建议至少执行：
+欢迎 issue、讨论和 PR。在提交改动前，建议至少执行：
 
 ```bash
 pnpm run check
 pnpm test
 ```
 
-更多约定请看：
-
-- [CONTRIBUTING.md](./CONTRIBUTING.md)
-- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
-- [SECURITY.md](./SECURITY.md)
+更多约定请看 [CONTRIBUTING.md](./CONTRIBUTING.md) 和 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。
 
 ---
 
