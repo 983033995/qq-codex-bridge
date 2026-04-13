@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInternalTurnEventServer } from "../../apps/bridge-daemon/src/http-server.js";
+import {
+  createBridgeHttpServer,
+  createInternalTurnEventServer
+} from "../../apps/bridge-daemon/src/http-server.js";
 import { TurnEventType } from "../../packages/domain/src/message.js";
 
 describe("internal turn event server", () => {
@@ -90,5 +93,48 @@ describe("internal turn event server", () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  it("supports multiple json routes in one bridge http server", async () => {
+    const payloads: unknown[] = [];
+    const server = createBridgeHttpServer([
+      {
+        routePath: "/internal/codex-turn-events",
+        allowOnlyLocal: true,
+        dispatchPayload: async (payload) => {
+          payloads.push({ route: "internal", payload });
+        }
+      },
+      {
+        routePath: "/webhooks/weixin",
+        dispatchPayload: async (payload) => {
+          payloads.push({ route: "weixin", payload });
+        }
+      }
+    ]);
+    servers.push(server);
+
+    const response = await new Promise<{ statusCode: number }>((resolve) => {
+      server.emit(
+        "request",
+        {
+          method: "POST",
+          url: "/webhooks/weixin",
+          socket: { remoteAddress: "10.0.0.8" },
+          [Symbol.asyncIterator]: async function* () {
+            yield Buffer.from(JSON.stringify({ text: "hello" }));
+          }
+        } as never,
+        {
+          statusCode: 200,
+          end: function () {
+            resolve({ statusCode: this.statusCode });
+          }
+        }
+      );
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(payloads).toEqual([{ route: "weixin", payload: { text: "hello" } }]);
   });
 });

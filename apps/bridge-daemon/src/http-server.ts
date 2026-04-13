@@ -1,10 +1,14 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 
-type JsonServerDeps = {
+type JsonRoute = {
   routePath: string;
   dispatchPayload(payload: unknown): Promise<void>;
   onDispatchError?: (error: Error, payload: unknown) => void;
   allowOnlyLocal?: boolean;
+};
+
+type JsonServerDeps = {
+  routes: JsonRoute[];
 };
 
 type QqWebhookServerDeps = {
@@ -25,30 +29,43 @@ type InternalTurnEventServerDeps = {
 
 export function createQqWebhookServer(deps: QqWebhookServerDeps): Server {
   return createJsonServer({
-    routePath: deps.webhookPath,
-    dispatchPayload: deps.ingress.dispatchPayload,
-    onDispatchError: deps.onDispatchError
+    routes: [
+      {
+        routePath: deps.webhookPath,
+        dispatchPayload: deps.ingress.dispatchPayload,
+        onDispatchError: deps.onDispatchError
+      }
+    ]
   });
 }
 
 export function createInternalTurnEventServer(deps: InternalTurnEventServerDeps): Server {
   return createJsonServer({
-    routePath: deps.routePath,
-    dispatchPayload: deps.ingress.dispatchTurnEvent,
-    onDispatchError: deps.onDispatchError,
-    allowOnlyLocal: true
+    routes: [
+      {
+        routePath: deps.routePath,
+        dispatchPayload: deps.ingress.dispatchTurnEvent,
+        onDispatchError: deps.onDispatchError,
+        allowOnlyLocal: true
+      }
+    ]
   });
+}
+
+export function createBridgeHttpServer(routes: JsonRoute[]): Server {
+  return createJsonServer({ routes });
 }
 
 function createJsonServer(deps: JsonServerDeps): Server {
   return createServer(async (request, response) => {
-    if (request.url !== deps.routePath) {
+    const route = deps.routes.find((candidate) => candidate.routePath === request.url);
+    if (!route) {
       response.statusCode = 404;
       response.end("not found");
       return;
     }
 
-    if (deps.allowOnlyLocal && !isLocalRequest(request)) {
+    if (route.allowOnlyLocal && !isLocalRequest(request)) {
       response.statusCode = 403;
       response.end("forbidden");
       return;
@@ -76,11 +93,11 @@ function createJsonServer(deps: JsonServerDeps): Server {
     }
 
     Promise.resolve()
-      .then(() => deps.dispatchPayload(payload))
+      .then(() => route.dispatchPayload(payload))
       .catch((error) => {
         const normalized =
           error instanceof Error ? error : new Error(typeof error === "string" ? error : "dispatch failed");
-        deps.onDispatchError?.(normalized, payload);
+        route.onDispatchError?.(normalized, payload);
       });
 
     response.statusCode = 202;

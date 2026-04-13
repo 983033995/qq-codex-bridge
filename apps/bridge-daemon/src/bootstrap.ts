@@ -2,6 +2,10 @@ import path from "node:path";
 import { QqApiClient } from "../../../packages/adapters/qq/src/qq-api-client.js";
 import { createQqChannelAdapter } from "../../../packages/adapters/qq/src/qq-channel-adapter.js";
 import { FileQqGatewaySessionStore } from "../../../packages/adapters/qq/src/qq-gateway-session-store.js";
+import {
+  createWeixinChannelAdapter,
+  type WeixinChannelAdapter
+} from "../../../packages/adapters/weixin/src/weixin-channel-adapter.js";
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
@@ -12,12 +16,24 @@ import { formatQqOutboundDraft } from "../../../packages/orchestrator/src/qq-out
 import { enrichQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-draft.js";
 import { shouldInjectQqbotSkillContext } from "../../../packages/orchestrator/src/qqbot-skill-context.js";
 import type { ConversationRunOptions } from "../../../packages/ports/src/conversation.js";
+import type { ChatEgressPort } from "../../../packages/ports/src/chat.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
 import { loadConfigFromEnv } from "./config.js";
 
 const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
+
+type BootstrapAdapters = {
+  qq: ReturnType<typeof createQqChannelAdapter>;
+  codexDesktop: CodexDesktopDriver;
+  weixin?: WeixinChannelAdapter;
+};
+
+type BootstrapOrchestrators = {
+  qq: BridgeOrchestrator;
+  weixin?: BridgeOrchestrator;
+};
 
 export function bootstrap() {
   const config = loadConfigFromEnv(process.env);
@@ -119,20 +135,44 @@ export function bootstrap() {
     }
   };
 
-  const orchestrator = new BridgeOrchestrator({
-    sessionStore,
-    transcriptStore,
-    conversationProvider,
-    qqEgress: adapters.qq.egress
-  });
+  const createChannelOrchestrator = (egress: ChatEgressPort) =>
+    new BridgeOrchestrator({
+      sessionStore,
+      transcriptStore,
+      conversationProvider,
+      qqEgress: egress
+    });
+
+  const channelOrchestrators: BootstrapOrchestrators = {
+    qq: createChannelOrchestrator(adapters.qq.egress)
+  };
+
+  const weixinAdapter =
+    config.weixin.enabled && config.weixin.egressBaseUrl && config.weixin.egressToken
+      ? createWeixinChannelAdapter({
+          accountKey: `weixin:${config.weixin.accountId}`,
+          webhookPath: config.weixin.webhookPath,
+          egressBaseUrl: config.weixin.egressBaseUrl,
+          egressToken: config.weixin.egressToken
+        })
+      : null;
+  if (weixinAdapter) {
+    channelOrchestrators.weixin = createChannelOrchestrator(weixinAdapter.egress);
+  }
+
+  const allAdapters: BootstrapAdapters = {
+    ...adapters,
+    ...(weixinAdapter ? { weixin: weixinAdapter } : {})
+  };
 
   return {
     config,
     db,
     sessionStore,
     transcriptStore,
-    adapters,
-    orchestrator,
+    adapters: allAdapters,
+    orchestrator: channelOrchestrators.qq,
+    orchestrators: channelOrchestrators,
     qqGatewaySessionStore
   };
 }

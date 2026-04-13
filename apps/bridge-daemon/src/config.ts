@@ -36,6 +36,13 @@ export const appConfigSchema = z.object({
       ])
       .nullable()
   }),
+  weixin: z.object({
+    enabled: z.boolean(),
+    accountId: z.string().min(1),
+    webhookPath: z.string().startsWith("/"),
+    egressBaseUrl: z.string().url().nullable(),
+    egressToken: z.string().min(1).nullable()
+  }),
   codexDesktop: z.object({
     appName: z.string().min(1),
     remoteDebuggingPort: z.number().int().positive()
@@ -57,6 +64,13 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
       clientSecret: env.QQBOT_CLIENT_SECRET,
       markdownSupport: env.QQBOT_MARKDOWN_SUPPORT === "true",
       stt: resolveSttConfig(env)
+    },
+    weixin: {
+      enabled: env.WEIXIN_ENABLED === "true",
+      accountId: env.WEIXIN_ACCOUNT_ID ?? "default",
+      webhookPath: env.WEIXIN_WEBHOOK_PATH ?? "/webhooks/weixin",
+      egressBaseUrl: env.WEIXIN_EGRESS_BASE_URL ?? null,
+      egressToken: env.WEIXIN_EGRESS_TOKEN ?? null
     },
     codexDesktop: {
       appName: env.CODEX_APP_NAME ?? "Codex",

@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import type { InboundMessage, TurnEvent } from "../../../packages/domain/src/message.js";
 import { bootstrap, INTERNAL_TURN_EVENT_PATH } from "./bootstrap.js";
-import { createInternalTurnEventServer } from "./http-server.js";
+import { createBridgeHttpServer } from "./http-server.js";
 import { ThreadCommandHandler } from "./thread-command-handler.js";
 
 type IngressMessageHandlerDeps = {
@@ -34,39 +34,73 @@ export function createIngressMessageHandler(deps: IngressMessageHandlerDeps) {
 
 export async function runBridgeDaemon() {
   const app = bootstrap();
-  const internalTurnEventServer = createInternalTurnEventServer({
-    routePath: INTERNAL_TURN_EVENT_PATH,
-    ingress: {
-      dispatchTurnEvent: async (payload) => {
-        await app.orchestrator.handleTurnEvent(payload as TurnEvent);
-      }
-    },
-    onDispatchError: (error, payload) => {
-      console.warn("[qq-codex-bridge] internal turn event dispatch failed", {
-        error: error.message,
-        payload
-      });
-    }
-  });
-  const threadCommandHandler = new ThreadCommandHandler({
+  const qqThreadCommandHandler = new ThreadCommandHandler({
     sessionStore: app.sessionStore,
     transcriptStore: app.transcriptStore,
     desktopDriver: app.adapters.codexDesktop,
     qqEgress: app.adapters.qq.egress
   });
+  const weixinAdapter = app.adapters.weixin;
+  const weixinOrchestrator = app.orchestrators.weixin;
+  const weixinThreadCommandHandler = weixinAdapter && weixinOrchestrator
+    ? new ThreadCommandHandler({
+        sessionStore: app.sessionStore,
+        transcriptStore: app.transcriptStore,
+        desktopDriver: app.adapters.codexDesktop,
+        qqEgress: weixinAdapter.egress
+      })
+    : null;
+  const weixinIngressHandler = weixinThreadCommandHandler && weixinOrchestrator
+    ? createIngressMessageHandler({
+        threadCommandHandler: weixinThreadCommandHandler,
+        orchestrator: weixinOrchestrator
+      })
+    : null;
+  const bridgeHttpServer = createBridgeHttpServer([
+    {
+      routePath: INTERNAL_TURN_EVENT_PATH,
+      allowOnlyLocal: true,
+      dispatchPayload: async (payload) => {
+        await app.orchestrators.qq.handleTurnEvent(payload as TurnEvent);
+      },
+      onDispatchError: (error, payload) => {
+        console.warn("[qq-codex-bridge] internal turn event dispatch failed", {
+          error: error.message,
+          payload
+        });
+      }
+    },
+    ...(weixinAdapter && weixinIngressHandler
+      ? [
+          {
+            routePath: app.config.weixin.webhookPath,
+            dispatchPayload: async (payload: unknown) => {
+              const message = weixinAdapter.webhook.toInboundMessage(payload);
+              await weixinIngressHandler(message);
+            },
+            onDispatchError: (error: Error, payload: unknown) => {
+              console.warn("[qq-codex-bridge] weixin webhook dispatch failed", {
+                error: error.message,
+                payload
+              });
+            }
+          }
+        ]
+      : [])
+  ]);
 
   await new Promise<void>((resolve, reject) => {
-    internalTurnEventServer.once("error", reject);
-    internalTurnEventServer.listen(app.config.runtime.listenPort, "127.0.0.1", () => {
-      internalTurnEventServer.off("error", reject);
+    bridgeHttpServer.once("error", reject);
+    bridgeHttpServer.listen(app.config.runtime.listenPort, app.config.runtime.listenHost, () => {
+      bridgeHttpServer.off("error", reject);
       resolve();
     });
   });
 
   await app.adapters.qq.ingress.onMessage(
     createIngressMessageHandler({
-      threadCommandHandler,
-      orchestrator: app.orchestrator
+      threadCommandHandler: qqThreadCommandHandler,
+      orchestrator: app.orchestrators.qq
     })
   );
 
@@ -75,7 +109,14 @@ export async function runBridgeDaemon() {
   console.log("[qq-codex-bridge] ready", {
     transport: "qq-gateway-websocket",
     accountKey: "qqbot:default",
-    internalTurnEventPath: INTERNAL_TURN_EVENT_PATH
+    listenHost: app.config.runtime.listenHost,
+    listenPort: app.config.runtime.listenPort,
+    internalTurnEventPath: INTERNAL_TURN_EVENT_PATH,
+    ...(weixinThreadCommandHandler
+      ? {
+          weixinWebhookPath: app.config.weixin.webhookPath
+        }
+      : {})
   });
 }
 
