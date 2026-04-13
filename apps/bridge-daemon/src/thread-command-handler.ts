@@ -22,9 +22,10 @@ export class ThreadCommandHandler {
     }
 
     const text = message.text.trim();
-    if (!this.isSupportedCommand(text)) {
+    if (!text.startsWith("/")) {
       return false;
     }
+    const supportedCommand = this.isSupportedCommand(text);
 
     const alreadySeen = await this.deps.transcriptStore.hasInbound(message.messageId);
     if (alreadySeen) {
@@ -39,6 +40,11 @@ export class ThreadCommandHandler {
 
       await this.ensureSessionExists(message);
       await this.deps.transcriptStore.recordInbound(message);
+
+      if (!supportedCommand) {
+        await this.deliverControlReply(message, this.buildUnknownCommandText(text));
+        return;
+      }
 
       if (text === "/threads" || text === "/t") {
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
@@ -275,8 +281,18 @@ export class ThreadCommandHandler {
       "| 查看当前运行状态 | `/status` | `/st` |",
       "| 查看帮助 | `/help` | `/h` |",
       "",
+      "所有 `/` 开头的桥接快捷指令都会先由桥接层处理，不会直接发给 Codex。",
       "建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。",
       "模型和额度信息来自当前 Codex Desktop 界面，可见性取决于 UI 是否暴露对应信息。"
+    ].join("\n");
+  }
+
+  private buildUnknownCommandText(text: string): string {
+    return [
+      `未识别的桥接快捷指令：\`${text}\``,
+      "这条 `/` 指令不会转发给 Codex。",
+      "",
+      this.buildHelpText()
     ].join("\n");
   }
 

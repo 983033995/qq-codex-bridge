@@ -440,6 +440,39 @@ describe("thread command handler", () => {
     );
   });
 
+  it("intercepts unknown slash commands and returns bridge guidance", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/quotaa"))).resolves.toBe(true);
+
+    expect(desktopDriver.getControlState).not.toHaveBeenCalled();
+    expect(desktopDriver.listRecentThreads).not.toHaveBeenCalled();
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("未识别的桥接快捷指令：`/quotaa`")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("这条 `/` 指令不会转发给 Codex。")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("| 查看额度信息 | `/quota` | `/q` |")
+      })
+    );
+  });
+
   it("creates a forked thread with recent qq conversation summary", async () => {
     const sessionStore = createSessionStore();
     const transcriptStore = createTranscriptStore();
