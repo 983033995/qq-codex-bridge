@@ -2,6 +2,31 @@ import { describe, expect, it, vi } from "vitest";
 import { createWeixinGatewayServer } from "../../apps/weixin-gateway/src/server.js";
 import type { WeixinGatewayOutboundMessage } from "../../apps/weixin-gateway/src/message-store.js";
 
+function createGatewayConfig() {
+  return {
+    listenHost: "127.0.0.1",
+    listenPort: 3200,
+    bridgeBaseUrl: "http://127.0.0.1:3100",
+    bridgeWebhookPath: "/webhooks/weixin",
+    expectedBearerToken: "token",
+    messageStorePath: "runtime/test.ndjson",
+    recentMessageLimit: 20,
+    enabled: true,
+    accountId: "default",
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "bot-token",
+    longPollTimeoutMs: 35_000,
+    apiTimeoutMs: 15_000,
+    stateFilePath: "runtime/weixin-gateway-state.json",
+    loginBaseUrl: "https://ilinkai.weixin.qq.com",
+    loginBotType: "3",
+    qrFetchTimeoutMs: 10_000,
+    qrPollTimeoutMs: 35_000,
+    qrTotalTimeoutMs: 480_000,
+    stateWatchIntervalMs: 1_000
+  };
+}
+
 describe("weixin gateway server", () => {
   it("forwards inbound text payloads to bridge webhook", async () => {
     const fetchFn = vi.fn().mockResolvedValue({
@@ -13,15 +38,7 @@ describe("weixin gateway server", () => {
       listRecent: vi.fn().mockReturnValue([])
     };
     const server = createWeixinGatewayServer({
-      config: {
-        listenHost: "127.0.0.1",
-        listenPort: 3200,
-        bridgeBaseUrl: "http://127.0.0.1:3100",
-        bridgeWebhookPath: "/webhooks/weixin",
-        expectedBearerToken: "token",
-        messageStorePath: "runtime/test.ndjson",
-        recentMessageLimit: 20
-      },
+      config: createGatewayConfig(),
       messageStore: store,
       fetchFn
     });
@@ -67,7 +84,7 @@ describe("weixin gateway server", () => {
     expect(store.append).not.toHaveBeenCalled();
   });
 
-  it("stores outbound bridge messages and exposes them via recent list", async () => {
+  it("stores outbound bridge messages, sends them to weixin, and exposes them via recent list", async () => {
     const items: WeixinGatewayOutboundMessage[] = [];
     const store = {
       append(message: WeixinGatewayOutboundMessage) {
@@ -77,18 +94,14 @@ describe("weixin gateway server", () => {
         return [...items].reverse();
       }
     };
+    const outboundSender = {
+      sendTextMessage: vi.fn().mockResolvedValue(undefined)
+    };
     const server = createWeixinGatewayServer({
-      config: {
-        listenHost: "127.0.0.1",
-        listenPort: 3200,
-        bridgeBaseUrl: "http://127.0.0.1:3100",
-        bridgeWebhookPath: "/webhooks/weixin",
-        expectedBearerToken: "token",
-        messageStorePath: "runtime/test.ndjson",
-        recentMessageLimit: 20
-      },
+      config: createGatewayConfig(),
       messageStore: store,
-      fetchFn: vi.fn()
+      fetchFn: vi.fn(),
+      outboundSender
     });
 
     const postResponse = await new Promise<{ statusCode: number; body?: string }>((resolve) => {
@@ -126,6 +139,12 @@ describe("weixin gateway server", () => {
     expect(postResponse.statusCode).toBe(200);
     expect(items).toHaveLength(1);
     expect(items[0]?.content).toBe("bridge reply");
+    expect(outboundSender.sendTextMessage).toHaveBeenCalledWith({
+      peerId: "wxid_peer",
+      chatType: "c2c",
+      text: "bridge reply",
+      replyToMessageId: undefined
+    });
 
     const getResponse = await new Promise<{ statusCode: number; body?: string }>((resolve) => {
       server.emit(

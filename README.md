@@ -15,8 +15,8 @@
 
 现在也提供了**实验性的微信文本通道**：
 - bridge 已支持微信文本入站/出站 adapter
-- 仓库内置了一个**参考微信文本网关 CLI**
-- 可以先把端到端文本收发跑通，再替换成你自己的真实微信提供方
+- 仓库内置了一个**真实微信文本网关 CLI**
+- 参考 `qq-codex-runner` 的方式，支持扫码登录、long-poll 拉取和文本回发
 
 ---
 
@@ -139,7 +139,7 @@ npx qq-codex-bridge
 
 ## 微信文本通道（实验性）
 
-如果你想先接入微信文本，不需要一开始就绑定某个具体微信服务。仓库里已经提供了一套**参考微信文本网关**，可以先把 bridge 的文本入站/出站协议跑通。
+如果你想先接入微信文本，仓库里已经提供了一套**真实微信文本网关**。它会直接对接微信 long-poll 接口，把收到的文本转发给 bridge，再把 bridge 的回复发回微信。
 
 ### 最小配置
 
@@ -153,7 +153,15 @@ WEIXIN_EGRESS_BASE_URL=http://127.0.0.1:3200
 WEIXIN_EGRESS_TOKEN=your-token
 ```
 
-### 启动参考网关
+### 首次扫码登录
+
+```bash
+qq-codex-weixin-gateway --weixin-login
+```
+
+扫码成功后，再启动网关。
+
+### 启动真实网关
 
 ```bash
 pnpm dev:weixin-gateway
@@ -163,20 +171,6 @@ pnpm dev:weixin-gateway
 
 ```bash
 qq-codex-weixin-gateway
-```
-
-### 联调入口
-
-把微信文本 POST 到：
-
-```text
-POST http://127.0.0.1:3200/inbound/text
-```
-
-bridge 回来的出站文本会记录在：
-
-```text
-GET http://127.0.0.1:3200/messages
 ```
 
 完整说明见：
@@ -224,7 +218,7 @@ BridgeOrchestrator
 ### 核心能力
 
 - QQ 官方 Bot WebSocket gateway 入站
-- 微信文本 webhook 入站 / HTTP 文本出站（实验性）
+- 微信文本 long-poll 入站 / HTTP 文本出站（实验性）
 - QQ 私聊 / 群聊会话隔离
 - 多通道会话隔离（QQ / 微信）
 - Codex Desktop 启动检查与 CDP 连接

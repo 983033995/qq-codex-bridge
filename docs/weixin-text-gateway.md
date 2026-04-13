@@ -1,14 +1,12 @@
-# 微信文本通道接入
+# 微信真实网关接入
 
-这份文档对应仓库内置的**参考微信文本网关**。它的定位不是绑定某个特定微信实现，而是提供一套稳定的本地 HTTP 协议，先把：
+这份文档对应仓库内置的**真实微信文本网关**。它参考 `qq-codex-runner` 的接法，直接对接微信 long-poll 接口：
 
-- 微信侧文本入站
-- `qq-codex-bridge` 编排
-- 微信侧文本出站
+- 网关主动轮询微信消息
+- 收到文本后转发给 `qq-codex-bridge`
+- bridge 的文本回复再经本地网关发送回微信
 
-这条链路跑通。
-
-后面你换成真实的微信提供方时，只要让它对接这套协议，不需要重写 bridge。
+这样你不需要额外再写一层“参考 webhook 适配器”，而是可以直接把微信文本链路跑起来。
 
 ---
 
@@ -35,7 +33,7 @@ pnpm dev
 
 ---
 
-## 2. 启动参考微信网关
+## 2. 启动真实微信网关
 
 可以直接复用同一个 `.env`，再补上网关变量：
 
@@ -47,6 +45,16 @@ WEIXIN_GATEWAY_BRIDGE_WEBHOOK_PATH=/webhooks/weixin
 WEIXIN_GATEWAY_EXPECTED_TOKEN=your-token
 WEIXIN_GATEWAY_MESSAGE_STORE_PATH=runtime/weixin-gateway-messages.ndjson
 WEIXIN_GATEWAY_RECENT_MESSAGE_LIMIT=100
+WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com
+WEIXIN_LONG_POLL_TIMEOUT_MS=35000
+WEIXIN_API_TIMEOUT_MS=15000
+WEIXIN_GATEWAY_STATE_FILE_PATH=runtime/weixin-gateway-state.json
+WEIXIN_LOGIN_BASE_URL=https://ilinkai.weixin.qq.com
+WEIXIN_BOT_TYPE=3
+WEIXIN_QR_FETCH_TIMEOUT_MS=10000
+WEIXIN_QR_POLL_TIMEOUT_MS=35000
+WEIXIN_QR_TOTAL_TIMEOUT_MS=480000
+WEIXIN_GATEWAY_STATE_WATCH_INTERVAL_MS=1000
 ```
 
 启动方式：
@@ -61,11 +69,38 @@ pnpm dev:weixin-gateway
 qq-codex-weixin-gateway
 ```
 
+首次扫码登录：
+
+```bash
+qq-codex-weixin-gateway --weixin-login
+```
+
+命令会输出二维码链接。扫码确认后，登录态会写入：
+
+```text
+runtime/weixin-gateway-state.json
+```
+
+下次再启动网关时，会自动复用这份登录态并开始 long-poll。
+
 ---
 
-## 3. 入站协议
+## 3. 真实入站链路
 
-向参考网关发送微信文本消息：
+真实网关启动后，会主动调用微信接口：
+
+- `ilink/bot/getupdates`
+- `ilink/bot/sendmessage`
+
+收到微信文本后，会自动转发到：
+
+```text
+POST http://127.0.0.1:3100/webhooks/weixin
+```
+
+也就是 bridge 内部的微信 webhook。
+
+如果你只是想联调 bridge，而不想真的连微信，仍然可以手动用旧的调试入口：
 
 ```bash
 curl -X POST http://127.0.0.1:3200/inbound/text \
@@ -79,17 +114,7 @@ curl -X POST http://127.0.0.1:3200/inbound/text \
   }'
 ```
 
-字段说明：
-
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `senderId` | 是 | 微信发送者标识 |
-| `peerId` | 否 | 会话对象标识；私聊默认回落到 `senderId` |
-| `messageId` | 是 | 外部消息唯一 ID |
-| `text` | 是 | 文本正文 |
-| `chatType` | 否 | `c2c` 或 `group`，默认 `c2c` |
-| `receivedAt` | 否 | ISO 时间戳 |
-| `accountKey` | 否 | 多账号场景下可覆盖默认账号键 |
+这个入口只用于本地调试，不是主入站模式。
 
 ---
 
@@ -123,7 +148,8 @@ Content-Type: application/json
 
 1. 校验 Bearer Token
 2. 记录一条出站文本
-3. 返回 JSON：`{ "id": "..." }`
+3. 调用真实微信 `sendmessage`
+4. 返回 JSON：`{ "id": "..." }`
 
 ---
 
@@ -143,23 +169,23 @@ tail -f runtime/weixin-gateway-messages.ndjson
 
 ---
 
-## 6. 当前范围
+## 6. 当前范围与限制
 
-这套参考网关当前只覆盖：
+当前这套真实网关只覆盖：
 
-- 微信**文本**入站
+- 微信**文本** long-poll 入站
 - bridge 文本回复出站
+- 扫码登录与本地状态持久化
 - 本地联调可观测性
 
 还没有覆盖：
 
 - 图片、语音、文件
 - 群聊 `@bot`
-- 真实微信提供方鉴权/签名适配
 - 富媒体卡片
 
-所以它更适合作为：
+所以它当前更适合作为：
 
-- 本地联调入口
-- 真实微信服务前面的协议适配层
-- 后续媒体扩展的基线
+- 微信私聊文本桥接
+- long-poll 基线实现
+- 后续媒体扩展的起点

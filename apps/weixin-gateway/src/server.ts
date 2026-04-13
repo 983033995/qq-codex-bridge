@@ -33,6 +33,14 @@ type WeixinGatewayDeps = {
   config: WeixinGatewayConfig;
   messageStore?: Pick<WeixinGatewayMessageStore, "append" | "listRecent">;
   fetchFn?: typeof fetch;
+  outboundSender?: {
+    sendTextMessage(target: {
+      peerId: string;
+      chatType: "c2c" | "group";
+      text: string;
+      replyToMessageId?: string;
+    }): Promise<void>;
+  };
 };
 
 export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
@@ -112,6 +120,14 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
         };
 
         messageStore.append(message);
+        if (deps.outboundSender) {
+          await deps.outboundSender.sendTextMessage({
+            peerId: payload.peerId,
+            chatType: payload.chatType,
+            text: payload.content,
+            ...(payload.replyToMessageId ? { replyToMessageId: payload.replyToMessageId } : {})
+          });
+        }
         console.log("[weixin-gateway] outbound text", {
           id: message.id,
           chatType: message.chatType,

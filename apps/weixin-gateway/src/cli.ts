@@ -1,18 +1,73 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { ZodError } from "zod";
 import { loadWeixinGatewayConfigFromEnv } from "./config.js";
+import { WeixinGatewayMessageStore } from "./message-store.js";
 import { createWeixinGatewayServer } from "./server.js";
+import {
+  forwardWeixinInboundToBridge,
+  runWeixinLoginFlow as runWeixinLoginFlowImpl,
+  WeixinClient,
+  type WeixinInboundMessage
+} from "./weixin-client.js";
+import { WeixinGatewayStateStore, type WeixinStoredAccount } from "./state.js";
+
+type WeixinGatewayStateStoreLike = Pick<
+  WeixinGatewayStateStore,
+  | "reload"
+  | "getContextToken"
+  | "resolveRuntimeAccount"
+  | "setStoredAccount"
+  | "clearStoredAccount"
+>;
+
+type WeixinClientLike = {
+  accountId: string;
+  baseUrl: string;
+  token: string;
+  ready: boolean;
+  connect(): Promise<void>;
+  close(): Promise<void>;
+  sendTextMessage(peerId: string, text: string, contextToken?: string | null): Promise<void>;
+};
+
+type WeixinGatewayServerLike = Pick<Server, "listen" | "once" | "off" | "close">;
 
 type CliDeps = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   packageRoot?: string;
+  fetchFn?: typeof fetch;
   loadEnvFile?: (filePath: string) => void;
+  createMessageStore?: (
+    filePath: string,
+    limit: number
+  ) => Pick<WeixinGatewayMessageStore, "append" | "listRecent">;
+  createStateStore?: (filePath: string) => WeixinGatewayStateStoreLike;
+  createServer?: (deps: Parameters<typeof createWeixinGatewayServer>[0]) => WeixinGatewayServerLike;
+  createWeixinClient?: (options: {
+    accountId: string;
+    baseUrl: string;
+    token: string;
+    longPollTimeoutMs: number;
+    apiTimeoutMs: number;
+    stateStore: WeixinGatewayStateStoreLike;
+    onInboundMessage(message: WeixinInboundMessage): Promise<void>;
+    fetchFn?: typeof fetch;
+  }) => WeixinClientLike;
+  runWeixinLoginFlow?: typeof runWeixinLoginFlowImpl;
+  watchStateFile?: boolean;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
+};
+
+type ParsedCliArgs = {
+  command: "help" | "init" | "serve" | "login" | "logout";
+  accountId?: string;
+  forceLogin: boolean;
 };
 
 export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<number> {
@@ -20,22 +75,24 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
   const cwd = deps.cwd ?? process.cwd();
   const env = deps.env ?? process.env;
   const packageRoot = deps.packageRoot ?? findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
+  const fetchFn = deps.fetchFn ?? fetch;
   const writeStdout = deps.writeStdout ?? ((line: string) => console.log(line));
   const writeStderr = deps.writeStderr ?? ((line: string) => console.error(line));
 
-  if (args[0] === "init") {
-    return initEnvTemplate({ cwd, packageRoot, writeStdout, writeStderr });
-  }
-
-  if (args[0] === "help" || args[0] === "-h" || args[0] === "--help") {
-    printHelp(writeStdout);
-    return 0;
-  }
-
-  if (args.length > 0) {
+  const parsedArgs = parseCliArgs(args);
+  if (!parsedArgs) {
     writeStderr(`[qq-codex-weixin-gateway] 未知命令：${args.join(" ")}`);
     printHelp(writeStdout);
     return 1;
+  }
+
+  if (parsedArgs.command === "init") {
+    return initEnvTemplate({ cwd, packageRoot, writeStdout, writeStderr });
+  }
+
+  if (parsedArgs.command === "help") {
+    printHelp(writeStdout);
+    return 0;
   }
 
   const envFilePath = path.join(cwd, ".env");
@@ -46,7 +103,162 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
 
   try {
     const config = loadWeixinGatewayConfigFromEnv(env);
-    const server = createWeixinGatewayServer({ config });
+    const createMessageStore =
+      deps.createMessageStore
+      ?? ((filePath: string, limit: number) => new WeixinGatewayMessageStore(filePath, limit));
+    const messageStore = createMessageStore(
+      config.messageStorePath,
+      config.recentMessageLimit
+    );
+    const stateStore =
+      deps.createStateStore?.(config.stateFilePath)
+      ?? new WeixinGatewayStateStore(config.stateFilePath);
+    const runWeixinLoginFlow = deps.runWeixinLoginFlow ?? runWeixinLoginFlowImpl;
+
+    const selectedAccountId = parsedArgs.accountId ?? config.accountId;
+    if (parsedArgs.command === "login") {
+      const result = await runWeixinLoginFlow({
+        accountId: selectedAccountId,
+        force: parsedArgs.forceLogin,
+        config,
+        stateStore: stateStore as WeixinGatewayStateStore,
+        fetchFn
+      });
+
+      if (result.qrcodeUrl) {
+        writeStdout(`[qq-codex-weixin-gateway] 扫码登录：${result.qrcodeUrl}`);
+      } else {
+        writeStdout(
+          `[qq-codex-weixin-gateway] 账号 ${result.accountId} 已存在可用登录态，baseUrl=${result.baseUrl}`
+        );
+      }
+      return 0;
+    }
+
+    if (parsedArgs.command === "logout") {
+      stateStore.clearStoredAccount(selectedAccountId);
+      writeStdout(`[qq-codex-weixin-gateway] 已清理账号 ${selectedAccountId} 的登录态`);
+      return 0;
+    }
+
+    const bridgeAccountKey = `weixin:${config.accountId}`;
+    let activeClient: WeixinClientLike | null = null;
+    let activeClientKey = "";
+
+    const closeActiveClient = async () => {
+      if (!activeClient) {
+        activeClientKey = "";
+        return;
+      }
+      const previousClient = activeClient;
+      activeClient = null;
+      activeClientKey = "";
+      await previousClient.close();
+    };
+
+    const resolveRuntimeAccount = (): WeixinStoredAccount | null =>
+      stateStore.resolveRuntimeAccount(selectedAccountId, {
+        token: config.token,
+        baseUrl: config.baseUrl
+      }) as WeixinStoredAccount | null;
+
+    const createWeixinClient =
+      deps.createWeixinClient
+      ?? ((options) =>
+        new WeixinClient({
+          ...options,
+          stateStore: options.stateStore as WeixinGatewayStateStore,
+          fetchFn: options.fetchFn
+        }));
+
+    const refreshWeixinClient = async (reason: string) => {
+      const runtimeAccount = resolveRuntimeAccount();
+      const nextClientKey = runtimeAccount
+        ? `${runtimeAccount.accountId}|${runtimeAccount.baseUrl}|${runtimeAccount.token}`
+        : "";
+
+      if (!runtimeAccount) {
+        if (activeClient) {
+          writeStdout("[qq-codex-weixin-gateway] 未找到微信登录态，已停用 long-poll client");
+          await closeActiveClient();
+        }
+        return;
+      }
+
+      if (activeClient && activeClientKey === nextClientKey) {
+        return;
+      }
+
+      await closeActiveClient();
+
+      const nextClient = createWeixinClient({
+        accountId: runtimeAccount.accountId,
+        baseUrl: runtimeAccount.baseUrl,
+        token: runtimeAccount.token,
+        longPollTimeoutMs: config.longPollTimeoutMs,
+        apiTimeoutMs: config.apiTimeoutMs,
+        stateStore,
+        fetchFn,
+        onInboundMessage: async (message) => {
+          await forwardWeixinInboundToBridge(fetchFn, {
+            bridgeBaseUrl: config.bridgeBaseUrl,
+            bridgeWebhookPath: config.bridgeWebhookPath,
+            accountKey: bridgeAccountKey
+          }, message);
+        }
+      });
+
+      activeClient = nextClient;
+      activeClientKey = nextClientKey;
+      void nextClient.connect();
+      writeStdout(
+        `[qq-codex-weixin-gateway] 微信 client 已连接 { reason: ${reason}, accountId: ${runtimeAccount.accountId}, baseUrl: ${runtimeAccount.baseUrl} }`
+      );
+    };
+
+    const server =
+      deps.createServer?.({
+        config,
+        messageStore,
+        fetchFn,
+        outboundSender: {
+          sendTextMessage: async ({ peerId, chatType, text, replyToMessageId }) => {
+            if (!activeClient) {
+              throw new Error("weixin gateway has no active logged-in client");
+            }
+
+            const contextToken = stateStore.getContextToken(activeClient.accountId, peerId);
+            await activeClient.sendTextMessage(peerId, text, contextToken || null);
+            console.log("[weixin-gateway] delivered outbound message", {
+              peerId,
+              chatType,
+              hasContextToken: Boolean(contextToken),
+              replyToMessageId
+            });
+          }
+        }
+      })
+      ?? createWeixinGatewayServer({
+        config,
+        messageStore,
+        fetchFn,
+        outboundSender: {
+          sendTextMessage: async ({ peerId, chatType, text, replyToMessageId }) => {
+            if (!activeClient) {
+              throw new Error("weixin gateway has no active logged-in client");
+            }
+
+            const contextToken = stateStore.getContextToken(activeClient.accountId, peerId);
+            await activeClient.sendTextMessage(peerId, text, contextToken || null);
+            console.log("[weixin-gateway] delivered outbound message", {
+              peerId,
+              chatType,
+              hasContextToken: Boolean(contextToken),
+              replyToMessageId
+            });
+          }
+        }
+      });
 
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -56,8 +268,50 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
       });
     });
 
+    await refreshWeixinClient("startup");
+
+    const shouldWatchStateFile = deps.watchStateFile !== false;
+    let stateWatcher: fs.StatWatcher | null = null;
+    if (shouldWatchStateFile) {
+      stateWatcher = fs.watchFile(
+        config.stateFilePath,
+        { interval: config.stateWatchIntervalMs },
+        async (current, previous) => {
+          if (current.mtimeMs === previous.mtimeMs) {
+            return;
+          }
+
+          try {
+            stateStore.reload();
+            await refreshWeixinClient("state-file-change");
+          } catch (error) {
+            writeStderr(
+              `[qq-codex-weixin-gateway] 刷新微信状态失败：${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+      );
+    }
+
+    const shutdown = async () => {
+      fs.unwatchFile(config.stateFilePath);
+      await closeActiveClient();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    };
+
+    process.once("SIGINT", () => {
+      void shutdown().finally(() => {
+        process.exit(0);
+      });
+    });
+    process.once("SIGTERM", () => {
+      void shutdown().finally(() => {
+        process.exit(0);
+      });
+    });
+
     writeStdout(
-      `[qq-codex-weixin-gateway] ready { listenHost: ${config.listenHost}, listenPort: ${config.listenPort}, bridgeWebhook: ${config.bridgeBaseUrl}${config.bridgeWebhookPath} }`
+      `[qq-codex-weixin-gateway] ready { listenHost: ${config.listenHost}, listenPort: ${config.listenPort}, bridgeWebhook: ${config.bridgeBaseUrl}${config.bridgeWebhookPath}, loggedIn: ${Boolean(activeClient)} }`
     );
     return 0;
   } catch (error) {
@@ -93,18 +347,31 @@ function initEnvTemplate(options: {
   }
 
   const template = [
+    "WEIXIN_ENABLED=true",
+    "WEIXIN_ACCOUNT_ID=default",
+    "WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com",
+    "# WEIXIN_TOKEN=",
+    "WEIXIN_LONG_POLL_TIMEOUT_MS=35000",
+    "WEIXIN_API_TIMEOUT_MS=15000",
+    "WEIXIN_GATEWAY_STATE_FILE_PATH=runtime/weixin-gateway-state.json",
+    "WEIXIN_LOGIN_BASE_URL=https://ilinkai.weixin.qq.com",
+    "WEIXIN_BOT_TYPE=3",
+    "WEIXIN_QR_FETCH_TIMEOUT_MS=10000",
+    "WEIXIN_QR_POLL_TIMEOUT_MS=35000",
+    "WEIXIN_QR_TOTAL_TIMEOUT_MS=480000",
+    "WEIXIN_GATEWAY_STATE_WATCH_INTERVAL_MS=1000",
     "WEIXIN_GATEWAY_LISTEN_HOST=127.0.0.1",
     "WEIXIN_GATEWAY_LISTEN_PORT=3200",
     "WEIXIN_GATEWAY_BRIDGE_BASE_URL=http://127.0.0.1:3100",
     "WEIXIN_GATEWAY_BRIDGE_WEBHOOK_PATH=/webhooks/weixin",
-    "WEIXIN_GATEWAY_EXPECTED_TOKEN=your-token",
+    "# WEIXIN_GATEWAY_EXPECTED_TOKEN=your-token",
     "WEIXIN_GATEWAY_MESSAGE_STORE_PATH=runtime/weixin-gateway-messages.ndjson",
     "WEIXIN_GATEWAY_RECENT_MESSAGE_LIMIT=100",
     ""
   ].join("\n");
   fs.writeFileSync(targetPath, template, "utf8");
 
-  options.writeStdout(`[qq-codex-weixin-gateway] 已生成参考配置：${targetPath}`);
+  options.writeStdout(`[qq-codex-weixin-gateway] 已生成真实微信网关配置：${targetPath}`);
   options.writeStdout("[qq-codex-weixin-gateway] 你也可以直接把这些变量写进项目根目录的 .env。");
   return 0;
 }
@@ -113,9 +380,12 @@ function printHelp(writeStdout: (line: string) => void) {
   writeStdout("qq-codex-weixin-gateway");
   writeStdout("");
   writeStdout("用法：");
-  writeStdout("  qq-codex-weixin-gateway        启动参考微信文本网关");
-  writeStdout("  qq-codex-weixin-gateway init   生成 .env.weixin-gateway 模板");
-  writeStdout("  qq-codex-weixin-gateway help   查看帮助");
+  writeStdout("  qq-codex-weixin-gateway                         启动真实微信网关（long-poll + 本地转发）");
+  writeStdout("  qq-codex-weixin-gateway init                    生成 .env.weixin-gateway 模板");
+  writeStdout("  qq-codex-weixin-gateway --weixin-login          发起微信扫码登录");
+  writeStdout("  qq-codex-weixin-gateway --weixin-login-force    强制重新扫码登录");
+  writeStdout("  qq-codex-weixin-gateway --weixin-logout         清理微信登录态");
+  writeStdout("  qq-codex-weixin-gateway help                    查看帮助");
 }
 
 function findPackageRoot(startDir: string) {
@@ -132,6 +402,66 @@ function findPackageRoot(startDir: string) {
     }
     currentDir = parentDir;
   }
+}
+
+function parseCliArgs(args: string[]): ParsedCliArgs | null {
+  if (args.length === 0) {
+    return {
+      command: "serve",
+      forceLogin: false
+    };
+  }
+
+  if (args.length === 1 && (args[0] === "help" || args[0] === "-h" || args[0] === "--help")) {
+    return {
+      command: "help",
+      forceLogin: false
+    };
+  }
+
+  if (args.length === 1 && args[0] === "init") {
+    return {
+      command: "init",
+      forceLogin: false
+    };
+  }
+
+  let command: ParsedCliArgs["command"] | null = null;
+  let accountId: string | undefined;
+  let forceLogin = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--weixin-login") {
+      command = "login";
+      continue;
+    }
+    if (arg === "--weixin-login-force") {
+      command = "login";
+      forceLogin = true;
+      continue;
+    }
+    if (arg === "--weixin-logout") {
+      command = "logout";
+      continue;
+    }
+    if (arg === "--weixin-account") {
+      accountId = args[index + 1];
+      index += 1;
+      continue;
+    }
+    return null;
+  }
+
+  if (!command) {
+    return null;
+  }
+
+  return {
+    command,
+    accountId,
+    forceLogin
+  };
 }
 
 const isEntrypoint = (() => {
