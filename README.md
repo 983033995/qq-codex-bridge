@@ -13,6 +13,11 @@
 
 **qq-codex-bridge** 是一个开源桥接工具，它让 Codex Desktop 成为你 QQ 上的实时 AI 对话伙伴——支持图片理解、语音提问、文件分析和 AI 生图回传，私聊群聊都能用。
 
+现在也提供了**实验性的微信文本通道**：
+- bridge 已支持微信文本入站/出站 adapter
+- 仓库内置了一个**参考微信文本网关 CLI**
+- 可以先把端到端文本收发跑通，再替换成你自己的真实微信提供方
+
 ---
 
 ## 你可以这样用
@@ -132,6 +137,54 @@ npx qq-codex-bridge
 
 ---
 
+## 微信文本通道（实验性）
+
+如果你想先接入微信文本，不需要一开始就绑定某个具体微信服务。仓库里已经提供了一套**参考微信文本网关**，可以先把 bridge 的文本入站/出站协议跑通。
+
+### 最小配置
+
+在 `.env` 中补充：
+
+```env
+WEIXIN_ENABLED=true
+WEIXIN_ACCOUNT_ID=default
+WEIXIN_WEBHOOK_PATH=/webhooks/weixin
+WEIXIN_EGRESS_BASE_URL=http://127.0.0.1:3200
+WEIXIN_EGRESS_TOKEN=your-token
+```
+
+### 启动参考网关
+
+```bash
+pnpm dev:weixin-gateway
+```
+
+或者在已发布包里使用：
+
+```bash
+qq-codex-weixin-gateway
+```
+
+### 联调入口
+
+把微信文本 POST 到：
+
+```text
+POST http://127.0.0.1:3200/inbound/text
+```
+
+bridge 回来的出站文本会记录在：
+
+```text
+GET http://127.0.0.1:3200/messages
+```
+
+完整说明见：
+
+- [微信文本通道接入文档](./docs/weixin-text-gateway.md)
+
+---
+
 ## 开发者源码启动
 
 如果你要参与开发、调试源码或运行测试：
@@ -150,21 +203,18 @@ pnpm dev
 ## 技术架构
 
 ```text
-QQ Official Bot Gateway
-        │
-        ▼
-QqGatewayClient / QqGateway
-        │
-        ▼
+QQ / 微信 Channel Adapter
+          │
+          ▼
 BridgeOrchestrator
-        │
-        ├── SessionStore / TranscriptStore (SQLite)
-        ├── QqSender / QqApiClient
-        └── CodexDesktopDriver
-                │
-                └── Chrome DevTools Protocol
-                        │
-                        └── Codex Desktop
+          │
+          ├── SessionStore / TranscriptStore (SQLite)
+          ├── Channel Sender (QQ / Weixin)
+          └── CodexDesktopDriver
+                  │
+                  └── Chrome DevTools Protocol
+                          │
+                          └── Codex Desktop
 ```
 
 ---
@@ -174,9 +224,11 @@ BridgeOrchestrator
 ### 核心能力
 
 - QQ 官方 Bot WebSocket gateway 入站
+- 微信文本 webhook 入站 / HTTP 文本出站（实验性）
 - QQ 私聊 / 群聊会话隔离
+- 多通道会话隔离（QQ / 微信）
 - Codex Desktop 启动检查与 CDP 连接
-- QQ 消息映射到 Codex 线程
+- 通道消息映射到 Codex 线程
 - Codex 回复增量采集并多次回传到 QQ
 - SQLite 持久化会话、入站记录、出站任务
 
@@ -228,6 +280,7 @@ BridgeOrchestrator
 - 核心能力依赖 Codex Desktop 当前版本的 DOM 结构和 CDP 可见性，桌面端改版后可能需要跟着适配
 - 对 Codex 回复的增量采集是**基于页面快照的伪流式**，不是官方内部事件流
 - QQ 客户端的消息样式、Markdown 支持、媒体卡片展示不完全可控
+- 微信当前只开放了**文本通道的参考网关**，还没有内置图片、语音、文件与真实提供方签名适配
 - 线程管理命令目前只在 **QQ 私聊** 中开放
 - 某些极端场景下，如果 Codex Desktop 页面结构变化很大，线程定位与回复提取可能失效
 
