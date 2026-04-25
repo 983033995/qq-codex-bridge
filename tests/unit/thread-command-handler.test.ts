@@ -29,6 +29,7 @@ function createSessionStore(): SessionStorePort {
       chatType: "c2c",
       peerId: "OPENID123",
       codexThreadRef: null,
+      lastCodexTurnId: null,
       skillContextKey: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: null,
@@ -38,6 +39,7 @@ function createSessionStore(): SessionStorePort {
     createSession: vi.fn().mockResolvedValue(undefined),
     updateSessionStatus: vi.fn().mockResolvedValue(undefined),
     updateBinding: vi.fn().mockResolvedValue(undefined),
+    updateLastCodexTurnId: vi.fn().mockResolvedValue(undefined),
     updateSkillContextKey: vi.fn().mockResolvedValue(undefined),
     withSessionLock: vi.fn(async (_sessionKey, work) => work())
   };
@@ -167,6 +169,60 @@ describe("thread command handler", () => {
     );
   });
 
+  it("marks the bound app-server thread in /threads even when it is not the desktop current thread", async () => {
+    const sessionStore = createSessionStore();
+    vi.mocked(sessionStore.getSession).mockResolvedValue({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      accountKey: "qqbot:default",
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      peerId: "OPENID123",
+      codexThreadRef: "codex-app-thread:thread-b:old-title",
+      lastCodexTurnId: null,
+      skillContextKey: null,
+      status: BridgeSessionStatus.Active,
+      lastInboundAt: null,
+      lastOutboundAt: null,
+      lastError: null
+    });
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver({
+      listRecentThreads: vi.fn().mockResolvedValue([
+        {
+          index: 1,
+          title: "线程 A",
+          projectName: "skills",
+          relativeTime: "2 小时",
+          isCurrent: false,
+          threadRef: "codex-app-thread:thread-a:new-title"
+        },
+        {
+          index: 2,
+          title: "线程 B",
+          projectName: "Desktop",
+          relativeTime: "1 天",
+          isCurrent: false,
+          threadRef: "codex-app-thread:thread-b:new-title"
+        }
+      ])
+    });
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/t"))).resolves.toBe(true);
+
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("| 👉🏻 2 | Desktop | 线程 B | 1 天 |")
+      })
+    );
+  });
+
   it("switches binding for /thread use <index>", async () => {
     const sessionStore = createSessionStore();
     const transcriptStore = createTranscriptStore();
@@ -187,6 +243,15 @@ describe("thread command handler", () => {
     expect(sessionStore.updateBinding).toHaveBeenCalledWith(
       "qqbot:default::qq:c2c:OPENID123",
       "codex-thread:page-1:bbb"
+    );
+    expect(sessionStore.updateSkillContextKey).toHaveBeenCalledWith(
+      "qqbot:default::qq:c2c:OPENID123",
+      null
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("绑定标识：codex-thread:page-1:bbb")
+      })
     );
   });
 
@@ -379,16 +444,35 @@ describe("thread command handler", () => {
 
   it("shows control status for /status and /st", async () => {
     const sessionStore = createSessionStore();
+    vi.mocked(sessionStore.getSession).mockResolvedValue({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      accountKey: "qqbot:default",
+      peerKey: "qq:c2c:OPENID123",
+      chatType: "c2c",
+      peerId: "OPENID123",
+      codexThreadRef: "codex-app-thread:thread-b:stale-title",
+      lastCodexTurnId: null,
+      skillContextKey: null,
+      status: BridgeSessionStatus.Active,
+      lastInboundAt: null,
+      lastOutboundAt: null,
+      lastError: null
+    });
     const transcriptStore = createTranscriptStore();
+    const getControlState = vi.fn().mockResolvedValue({
+      threadRef: "codex-app-thread:thread-b:fresh-title",
+      threadTitle: "线程 B",
+      threadProjectName: "qq-codex-bridge",
+      threadRelativeTime: "刚刚",
+      model: "GPT-5.4",
+      reasoningEffort: "高",
+      workspace: "qq-codex-bridge",
+      branch: "codex/weixin-multi-channel",
+      permissionMode: "完全访问权限",
+      quotaSummary: null
+    });
     const desktopDriver = createDriver({
-      getControlState: vi.fn().mockResolvedValue({
-        model: "GPT-5.4",
-        reasoningEffort: "高",
-        workspace: "本地",
-        branch: "codex/qq-codex-bridge",
-        permissionMode: "完全访问权限",
-        quotaSummary: null
-      }),
+      getControlState,
       getQuotaSummary: vi.fn().mockResolvedValue("5 小时 22%（01:56 重置）\n1 周 25%（4月17日 重置）")
     });
     const qqEgress = createEgress();
@@ -402,14 +486,28 @@ describe("thread command handler", () => {
     await expect(handler.handleIfCommand(createPrivateMessage("/status"))).resolves.toBe(true);
     await expect(handler.handleIfCommand(createPrivateMessage("/st"))).resolves.toBe(true);
 
+    expect(getControlState).toHaveBeenCalledWith({
+      sessionKey: "qqbot:default::qq:c2c:OPENID123",
+      codexThreadRef: "codex-app-thread:thread-b:stale-title"
+    });
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("工作区：本地")
+        text: expect.stringContaining("线程绑定：codex-app-thread:thread-b:fresh-title")
       })
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("分支：codex/qq-codex-bridge")
+        text: expect.stringContaining("线程标题：线程 B")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("工作区：qq-codex-bridge")
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("分支：codex/weixin-multi-channel")
       })
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(

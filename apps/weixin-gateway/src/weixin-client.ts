@@ -1,8 +1,27 @@
 import crypto from "node:crypto";
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { MediaArtifactKind, type MediaArtifact } from "../../../packages/domain/src/message.js";
 import type { WeixinGatewayConfig } from "./config.js";
 import type { WeixinGatewayStateStore } from "./state.js";
 
 type FetchLike = typeof fetch;
+const WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
+
+type WeixinMediaType = 1 | 2 | 3;
+type WeixinCdnMedia = {
+  encrypt_query_param: string;
+  aes_key: string;
+  encrypt_type: 1;
+};
+
+type UploadedWeixinArtifact = {
+  artifact: MediaArtifact;
+  fileData: Buffer;
+  fileMd5: string;
+  media: WeixinCdnMedia;
+};
 
 export type WeixinInboundMessage = {
   from_user_id?: string;
@@ -33,6 +52,7 @@ type WeixinClientOptions = {
 type LoginFlowOptions = {
   accountId: string;
   force?: boolean;
+  onQrCode?: (url: string) => void;
   config: Pick<
     WeixinGatewayConfig,
     "loginBaseUrl"
@@ -114,9 +134,42 @@ export class WeixinClient {
   }
 
   async sendTextMessage(peerId: string, text: string, contextToken?: string | null): Promise<void> {
-    const normalizedPeerId = sanitizeText(peerId);
+    await this.sendMessage({
+      peerId,
+      chatType: "c2c",
+      content: text,
+      contextToken
+    });
+  }
+
+  async sendMessage(target: {
+    peerId: string;
+    chatType: "c2c" | "group";
+    content?: string;
+    mediaArtifacts?: MediaArtifact[];
+    contextToken?: string | null;
+  }): Promise<void> {
+    const normalizedPeerId = sanitizeText(target.peerId);
     if (!normalizedPeerId) {
       throw new Error("weixin target user id is missing");
+    }
+
+    const content = sanitizeText(target.content);
+    const mediaArtifacts = target.mediaArtifacts ?? [];
+    if (!content && mediaArtifacts.length === 0) {
+      throw new Error("weixin outbound payload requires text or media artifacts");
+    }
+
+    const itemList: Array<Record<string, unknown>> = [];
+    if (content) {
+      itemList.push({
+        type: 1,
+        text_item: { text: content }
+      });
+    }
+
+    for (const item of await this.buildMediaItems(normalizedPeerId, mediaArtifacts)) {
+      itemList.push(item);
     }
 
     const payload = {
@@ -126,13 +179,10 @@ export class WeixinClient {
         client_id: crypto.randomUUID(),
         message_type: 2,
         message_state: 2,
-        ...(sanitizeText(contextToken) ? { context_token: sanitizeText(contextToken) } : {}),
-        item_list: [
-          {
-            type: 1,
-            text_item: { text: String(text ?? "") }
-          }
-        ]
+        ...(sanitizeText(target.contextToken)
+          ? { context_token: sanitizeText(target.contextToken) }
+          : {}),
+        item_list: itemList
       },
       base_info: {
         channel_version: "qq-codex-bridge"
@@ -141,6 +191,165 @@ export class WeixinClient {
 
     const response = await this.request("ilink/bot/sendmessage", payload, this.options.apiTimeoutMs);
     assertWeixinSuccess(response, "sendmessage");
+  }
+
+  private async buildMediaItems(
+    peerId: string,
+    mediaArtifacts: MediaArtifact[]
+  ): Promise<Array<Record<string, unknown>>> {
+    const items: Array<Record<string, unknown>> = [];
+
+    for (let index = 0; index < mediaArtifacts.length; index += 1) {
+      const artifact = mediaArtifacts[index]!;
+      if (
+        artifact.kind === MediaArtifactKind.Image
+        && isLikelyVideoThumbnail(artifact)
+        && mediaArtifacts[index + 1]?.kind === MediaArtifactKind.Video
+      ) {
+        const thumbnail = await this.uploadArtifact(peerId, artifact);
+        const video = await this.uploadArtifact(peerId, mediaArtifacts[index + 1]!);
+        items.push({
+          type: 5,
+          video_item: {
+            media: video.media,
+            video_size: video.fileData.length,
+            video_md5: video.fileMd5,
+            thumb_media: thumbnail.media
+          }
+        });
+        index += 1;
+        continue;
+      }
+
+      items.push(await this.buildStandaloneMediaItem(peerId, artifact));
+    }
+
+    return items;
+  }
+
+  private async buildStandaloneMediaItem(
+    peerId: string,
+    artifact: MediaArtifact
+  ): Promise<Record<string, unknown>> {
+    const uploaded = await this.uploadArtifact(peerId, artifact);
+    const fileName = sanitizeText(artifact.originalName) || inferFileNameFromArtifact(artifact);
+
+    switch (artifact.kind) {
+      case MediaArtifactKind.Image:
+        return {
+          type: 2,
+          image_item: {
+            media: uploaded.media,
+            mid_size: uploaded.fileData.length
+          }
+        };
+      case MediaArtifactKind.Video:
+        return {
+          type: 5,
+          video_item: {
+            media: uploaded.media,
+            video_size: uploaded.fileData.length,
+            video_md5: uploaded.fileMd5
+          }
+        };
+      case MediaArtifactKind.File:
+      default:
+        return {
+          type: 4,
+          file_item: {
+            media: uploaded.media,
+            file_name: fileName,
+            md5: uploaded.fileMd5,
+            len: String(uploaded.fileData.length)
+          }
+        };
+    }
+  }
+
+  private async uploadArtifact(
+    peerId: string,
+    artifact: MediaArtifact
+  ): Promise<UploadedWeixinArtifact> {
+    const fileData = await readArtifactData(this.fetchFn, artifact);
+    const fileMd5 = createHash("md5").update(fileData).digest("hex");
+    const upload = await this.uploadMedia(peerId, artifact, fileData, fileMd5);
+    return {
+      artifact,
+      fileData,
+      fileMd5,
+      media: upload.media
+    };
+  }
+
+  private async uploadMedia(
+    peerId: string,
+    artifact: MediaArtifact,
+    fileData: Buffer,
+    fileMd5: string
+  ): Promise<{ media: WeixinCdnMedia }> {
+    const aesKey = randomBytes(16);
+    const encryptedData = encryptAesEcb(fileData, aesKey);
+    const filekey = randomBytes(16).toString("hex");
+    const mediaType = mapArtifactKindToMediaType(artifact.kind);
+    const uploadResponse = (await this.request(
+      "ilink/bot/getuploadurl",
+      {
+        filekey,
+        media_type: mediaType,
+        to_user_id: peerId,
+        rawsize: fileData.length,
+        rawfilemd5: fileMd5,
+        filesize: encryptedData.length,
+        no_need_thumb: true,
+        aeskey: aesKey.toString("hex"),
+        base_info: {
+          channel_version: "qq-codex-bridge"
+        }
+      },
+      this.options.apiTimeoutMs
+    )) as {
+      ret?: number;
+      errcode?: number;
+      errmsg?: string;
+      upload_param?: string;
+      upload_full_url?: string;
+    };
+    assertWeixinSuccess(uploadResponse, "getuploadurl");
+
+    const uploadUrl =
+      sanitizeText(uploadResponse.upload_full_url)
+      || `${WEIXIN_CDN_BASE_URL}/upload?encrypted_query_param=${encodeURIComponent(sanitizeText(uploadResponse.upload_param))}&filekey=${encodeURIComponent(filekey)}`;
+    if (!uploadUrl.includes("upload")) {
+      throw new Error("weixin getuploadurl returned no usable upload url");
+    }
+
+    const cdnResponse = await this.fetchFn(uploadUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream"
+      },
+      body: new Uint8Array(encryptedData),
+      signal: AbortSignal.timeout(60_000)
+    });
+    if (!cdnResponse.ok) {
+      const cdnText = await cdnResponse.text().catch(() => "");
+      throw new Error(
+        `weixin cdn upload failed: ${cdnResponse.status}${cdnText ? ` ${cdnText}` : ""}`
+      );
+    }
+
+    const encryptQueryParam = sanitizeText(cdnResponse.headers.get("x-encrypted-param"));
+    if (!encryptQueryParam) {
+      throw new Error("weixin cdn upload response missing x-encrypted-param");
+    }
+
+    return {
+      media: {
+        encrypt_query_param: encryptQueryParam,
+        aes_key: Buffer.from(aesKey.toString("hex"), "utf8").toString("base64"),
+        encrypt_type: 1
+      }
+    };
   }
 
   private async pollOnce(): Promise<void> {
@@ -217,6 +426,69 @@ export class WeixinClient {
   }
 }
 
+function mapArtifactKindToMediaType(kind: MediaArtifactKind): WeixinMediaType {
+  switch (kind) {
+    case MediaArtifactKind.Image:
+      return 1;
+    case MediaArtifactKind.Video:
+      return 2;
+    case MediaArtifactKind.File:
+    default:
+      return 3;
+  }
+}
+
+async function readArtifactData(fetchFn: FetchLike, artifact: MediaArtifact): Promise<Buffer> {
+  const localPath = sanitizeText(artifact.localPath);
+  if (localPath) {
+    try {
+      return await fs.readFile(localPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  const sourceUrl = sanitizeText(artifact.sourceUrl);
+  if (!/^https?:\/\//.test(sourceUrl)) {
+    throw new Error(`weixin media file not found: ${localPath || sourceUrl || "unknown"}`);
+  }
+
+  const response = await fetchFn(sourceUrl);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`weixin media download failed: ${response.status}${body ? ` ${body}` : ""}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+function encryptAesEcb(plaintext: Buffer, key: Buffer): Buffer {
+  const cipher = createCipheriv("aes-128-ecb", key, null);
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+function inferFileNameFromArtifact(artifact: MediaArtifact): string {
+  const source = sanitizeText(artifact.originalName)
+    || path.basename(sanitizeText(artifact.localPath))
+    || path.basename(sanitizeText(artifact.sourceUrl));
+  return source || "weixin-media";
+}
+
+function isLikelyVideoThumbnail(artifact: MediaArtifact): boolean {
+  const filename = inferFileNameFromArtifact(artifact).toLowerCase();
+  return (
+    artifact.kind === MediaArtifactKind.Image
+    && (
+      filename.includes("thumbnail")
+      || filename.includes("thumb")
+      || filename.includes("poster")
+      || filename.includes("cover")
+    )
+  );
+}
+
 export async function runWeixinLoginFlow(options: LoginFlowOptions): Promise<{
   accountId: string;
   baseUrl: string;
@@ -241,6 +513,7 @@ export async function runWeixinLoginFlow(options: LoginFlowOptions): Promise<{
   if (!qrcode || !qrcodeUrl) {
     throw new Error("weixin qr login failed: qrcode response is incomplete");
   }
+  options.onQrCode?.(qrcodeUrl);
 
   let currentBaseUrl = options.config.loginBaseUrl;
   const deadline = Date.now() + options.config.qrTotalTimeoutMs;

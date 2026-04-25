@@ -1,11 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import type { MediaArtifact } from "../../../packages/domain/src/message.js";
+
 export type WeixinGatewayOutboundMessage = {
   id: string;
   peerId: string;
   chatType: "c2c" | "group";
-  content: string;
+  content?: string;
+  mediaArtifacts?: MediaArtifact[];
   replyToMessageId?: string;
   createdAt: string;
 };

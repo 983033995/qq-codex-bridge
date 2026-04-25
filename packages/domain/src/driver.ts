@@ -13,6 +13,10 @@ export type CodexThreadSummary = {
 };
 
 export type CodexControlState = {
+  threadRef?: string | null;
+  threadTitle?: string | null;
+  threadProjectName?: string | null;
+  threadRelativeTime?: string | null;
   model: string | null;
   reasoningEffort: string | null;
   workspace: string | null;

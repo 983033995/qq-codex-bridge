@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { InboundMessage } from "../../packages/domain/src/message.js";
-import { createIngressMessageHandler } from "../../apps/bridge-daemon/src/main.js";
+import type { InboundMessage, TurnEvent } from "../../packages/domain/src/message.js";
+import { createIngressMessageHandler, resolveTurnEventOrchestrator } from "../../apps/bridge-daemon/src/main.js";
 
 function createMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
@@ -64,5 +64,28 @@ describe("bridge daemon main", () => {
         error: "Codex desktop reply did not arrive before timeout"
       })
     );
+  });
+
+  it("routes turn events to the matching channel orchestrator based on session key", () => {
+    const qq = { handleTurnEvent: vi.fn() };
+    const weixin = { handleTurnEvent: vi.fn() };
+    const event: TurnEvent = {
+      sessionKey: "weixin:default::wx:c2c:wxid-1",
+      turnId: "turn-1",
+      sequence: 2,
+      eventType: "turn.completed" as TurnEvent["eventType"],
+      createdAt: "2026-04-15T03:30:00.000Z",
+      isFinal: true,
+      payload: {
+        fullText: "<qqmedia>/tmp/demo.jpg</qqmedia>"
+      }
+    };
+
+    const resolved = resolveTurnEventOrchestrator(event, {
+      qq,
+      weixin
+    });
+
+    expect(resolved).toBe(weixin);
   });
 });

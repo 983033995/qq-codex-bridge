@@ -7,6 +7,10 @@ import {
   type WeixinChannelAdapter
 } from "../../../packages/adapters/weixin/src/weixin-channel-adapter.js";
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
+import { CodexAppServerDriver } from "../../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
+import { CodexDesktopAppUiNotificationForwarder } from "../../../packages/adapters/codex-desktop/src/codex-app-ui-notification-forwarder.js";
+import { CodexLocalRolloutReader } from "../../../packages/adapters/codex-desktop/src/codex-local-rollout-reader.js";
+import { CodexLocalSubmissionReader } from "../../../packages/adapters/codex-desktop/src/codex-local-submission-reader.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
 import type { TurnEvent } from "../../../packages/domain/src/message.js";
@@ -15,8 +19,13 @@ import { buildCodexInboundText } from "../../../packages/orchestrator/src/media-
 import { formatQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-format.js";
 import { enrichQqOutboundDraft } from "../../../packages/orchestrator/src/qq-outbound-draft.js";
 import { shouldInjectQqbotSkillContext } from "../../../packages/orchestrator/src/qqbot-skill-context.js";
-import type { ConversationRunOptions } from "../../../packages/ports/src/conversation.js";
+import { formatWeixinOutboundDraft } from "../../../packages/orchestrator/src/weixin-outbound-format.js";
+import type {
+  ConversationRunOptions,
+  DesktopDriverPort
+} from "../../../packages/ports/src/conversation.js";
 import type { ChatEgressPort } from "../../../packages/ports/src/chat.js";
+import type { DriverBinding } from "../../../packages/domain/src/driver.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
@@ -26,7 +35,7 @@ const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
 
 type BootstrapAdapters = {
   qq: ReturnType<typeof createQqChannelAdapter>;
-  codexDesktop: CodexDesktopDriver;
+  codexDesktop: DesktopDriverPort;
   weixin?: WeixinChannelAdapter;
 };
 
@@ -34,6 +43,14 @@ type BootstrapOrchestrators = {
   qq: BridgeOrchestrator;
   weixin?: BridgeOrchestrator;
 };
+
+function formatDraftForQq(draft: Parameters<typeof formatQqOutboundDraft>[0]) {
+  return formatQqOutboundDraft(enrichQqOutboundDraft(draft));
+}
+
+function formatDraftForWeixin(draft: Parameters<typeof formatWeixinOutboundDraft>[0]) {
+  return formatWeixinOutboundDraft(enrichQqOutboundDraft(draft));
+}
 
 export function bootstrap() {
   const config = loadConfigFromEnv(process.env);
@@ -49,6 +66,28 @@ export function bootstrap() {
     accountKey,
     config.qqBot.appId
   );
+  const useDomTransport = process.env.CODEX_DESKTOP_TRANSPORT === "dom";
+  const forwardAppServerUiEvents = process.env.CODEX_APP_SERVER_FORWARD_UI_EVENTS === "1";
+  const cdpSession = new CdpSession({
+    appName: config.codexDesktop.appName,
+    remoteDebuggingPort: config.codexDesktop.remoteDebuggingPort
+  });
+  const legacyDomDriver = new CodexDesktopDriver(
+    cdpSession,
+    {
+      localRolloutReader: new CodexLocalRolloutReader(),
+      localSubmissionReader: new CodexLocalSubmissionReader()
+    }
+  );
+  const codexDriver =
+    useDomTransport
+      ? legacyDomDriver
+      : new CodexAppServerDriver({
+          controlFallback: legacyDomDriver,
+          notificationForwarder: forwardAppServerUiEvents
+            ? new CodexDesktopAppUiNotificationForwarder(cdpSession)
+            : null
+        });
   const adapters = {
     qq: createQqChannelAdapter({
       accountKey,
@@ -58,93 +97,111 @@ export function bootstrap() {
       mediaDownloadDir: path.join(path.dirname(config.databasePath), "media"),
       stt: config.qqBot.stt
     }),
-    codexDesktop: new CodexDesktopDriver(
-      new CdpSession({
-        appName: config.codexDesktop.appName,
-        remoteDebuggingPort: config.codexDesktop.remoteDebuggingPort
-      })
-    )
+    codexDesktop: codexDriver
   };
+  let desktopTurnTail = Promise.resolve();
+
+  const runWithDesktopTurnLock = async <T>(work: () => Promise<T>): Promise<T> => {
+    const previous = desktopTurnTail;
+    let release!: () => void;
+    desktopTurnTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  };
+
+  const runCodexTurn = async <T>(work: () => Promise<T>): Promise<T> =>
+    useDomTransport ? runWithDesktopTurnLock(work) : work();
 
   const conversationProvider = {
     runTurn: async (
       message: Parameters<BridgeOrchestrator["handleInbound"]>[0],
       options?: ConversationRunOptions
-    ) => {
-      await adapters.codexDesktop.ensureAppReady();
-      const session = await sessionStore.getSession(message.sessionKey);
-      const currentBinding = session
-        && session.status === BridgeSessionStatus.Active
-        ? {
-            sessionKey: session.sessionKey,
-            codexThreadRef: session.codexThreadRef
-          }
-        : null;
-      const binding = await adapters.codexDesktop.openOrBindSession(
-        message.sessionKey,
-        currentBinding
-      );
-      const skillContextKey = shouldInjectQqbotSkillContext(message)
-        ? `${binding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
-        : null;
-      const shouldIncludeSkillContext =
-        skillContextKey !== null && session?.skillContextKey !== skillContextKey;
-      await adapters.codexDesktop.sendUserMessage(binding, {
-        ...message,
-        text: buildCodexInboundText(message, {
-          includeSkillContext: shouldIncludeSkillContext
-        })
-      });
-      if (session?.codexThreadRef !== binding.codexThreadRef) {
-        await sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
-      }
-      if (shouldIncludeSkillContext) {
-        await sessionStore.updateSkillContextKey(message.sessionKey, skillContextKey);
-      }
-      const drafts = await adapters.codexDesktop.collectAssistantReply(binding, {
-        onDraft: options?.onDraft
-          ? async (draft) => {
-              await options.onDraft!(
-                formatQqOutboundDraft(
-                  enrichQqOutboundDraft({
-                    ...draft,
-                    replyToMessageId: message.messageId
-                  })
-                )
-              );
+    ) =>
+      runCodexTurn(async () => {
+        await adapters.codexDesktop.ensureAppReady();
+        const session = await sessionStore.getSession(message.sessionKey);
+        const currentBinding = session
+          && session.status === BridgeSessionStatus.Active
+          ? {
+              sessionKey: session.sessionKey,
+              codexThreadRef: session.codexThreadRef
             }
-          : undefined,
-        onTurnEvent: async (event) => {
-          await postTurnEvent(config.runtime.listenPort, {
-            ...event,
-            payload: {
-              ...event.payload,
-              replyToMessageId: message.messageId
-            }
-          });
-        }
-      });
-      return drafts.map((draft) =>
-        formatQqOutboundDraft(
-          enrichQqOutboundDraft({
-            ...draft,
-            replyToMessageId: message.messageId
+          : null;
+        const binding = await adapters.codexDesktop.openOrBindSession(
+          message.sessionKey,
+          currentBinding
+        );
+        const skillContextKey = shouldInjectQqbotSkillContext(message)
+          ? `${binding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
+          : null;
+        const shouldIncludeSkillContext =
+          skillContextKey !== null && session?.skillContextKey !== skillContextKey;
+        await adapters.codexDesktop.sendUserMessage(binding, {
+          ...message,
+          text: buildCodexInboundText(message, {
+            includeSkillContext: shouldIncludeSkillContext
           })
-        )
-      );
-    }
+        });
+        const stableBinding = await resolveStableBinding(adapters.codexDesktop, binding);
+        if (session?.codexThreadRef !== stableBinding.codexThreadRef) {
+          await sessionStore.updateBinding(message.sessionKey, stableBinding.codexThreadRef);
+        }
+        if (shouldIncludeSkillContext) {
+          const stableSkillContextKey =
+            skillContextKey !== null
+              ? `${stableBinding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
+              : null;
+          await sessionStore.updateSkillContextKey(message.sessionKey, stableSkillContextKey);
+        }
+        const drafts = await adapters.codexDesktop.collectAssistantReply(stableBinding, {
+          onDraft: options?.onDraft
+            ? async (draft) => {
+                await options.onDraft!({
+                  ...draft,
+                  replyToMessageId: message.messageId
+                });
+              }
+            : undefined,
+          onTurnEvent: async (event) => {
+            await postTurnEvent(config.runtime.listenPort, {
+              ...event,
+              payload: {
+                ...event.payload,
+                replyToMessageId: message.messageId
+              }
+            });
+          }
+        });
+        return drafts.map((draft) => ({
+          ...draft,
+          replyToMessageId: message.messageId
+        }));
+      })
   };
 
-  const createChannelOrchestrator = (egress: ChatEgressPort) =>
+  const createChannelOrchestrator = (
+    egress: ChatEgressPort,
+    draftFormatter?: (
+      draft: Parameters<typeof formatDraftForQq>[0]
+    ) => ReturnType<typeof formatDraftForQq>
+  ) =>
     new BridgeOrchestrator({
       sessionStore,
       transcriptStore,
       conversationProvider,
-      qqEgress: egress
+      qqEgress: egress,
+      draftFormatter
     });
 
   const channelOrchestrators: BootstrapOrchestrators = {
-    qq: createChannelOrchestrator(adapters.qq.egress)
+    qq: createChannelOrchestrator(adapters.qq.egress, formatDraftForQq)
   };
 
   const weixinAdapter =
@@ -157,7 +214,10 @@ export function bootstrap() {
         })
       : null;
   if (weixinAdapter) {
-    channelOrchestrators.weixin = createChannelOrchestrator(weixinAdapter.egress);
+    channelOrchestrators.weixin = createChannelOrchestrator(
+      weixinAdapter.egress,
+      formatDraftForWeixin
+    );
   }
 
   const allAdapters: BootstrapAdapters = {
@@ -174,6 +234,27 @@ export function bootstrap() {
     orchestrator: channelOrchestrators.qq,
     orchestrators: channelOrchestrators,
     qqGatewaySessionStore
+  };
+}
+
+async function resolveStableBinding(
+  desktopDriver: Pick<DesktopDriverPort, "listRecentThreads">,
+  binding: DriverBinding
+): Promise<DriverBinding> {
+  if (!binding.codexThreadRef?.startsWith("cdp-target:")) {
+    return binding;
+  }
+
+  const currentThread = (await desktopDriver.listRecentThreads(200)).find(
+    (thread) => thread.isCurrent
+  );
+  if (!currentThread) {
+    return binding;
+  }
+
+  return {
+    sessionKey: binding.sessionKey,
+    codexThreadRef: currentThread.threadRef
   };
 }
 

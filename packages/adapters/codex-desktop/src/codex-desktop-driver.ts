@@ -18,6 +18,15 @@ import type {
   DesktopDriverPort
 } from "../../../ports/src/conversation.js";
 import { CdpSession } from "./cdp-session.js";
+import {
+  CodexLocalRolloutReader,
+  type CodexLocalRolloutCursor,
+  type CodexLocalRolloutTurnResult
+} from "./codex-local-rollout-reader.js";
+import {
+  type CodexLocalSubmissionCursor,
+  type CodexLocalSubmissionResult
+} from "./codex-local-submission-reader.js";
 import { isLikelyComposerSubmitButton } from "./composer-heuristics.js";
 import { parseAssistantReply } from "./reply-parser.js";
 
@@ -44,13 +53,34 @@ type AssistantReplySnapshot = {
   isStreaming: boolean;
 };
 
+type ConversationViewportFingerprint = {
+  latestUnitKey: string | null;
+  latestSnippet: string | null;
+  unitCount: number;
+};
+
 type CodexDesktopDriverOptions = {
   replyPollAttempts?: number;
   maxReplyPollAttempts?: number;
   replyPollIntervalMs?: number;
   replyStablePolls?: number;
   partialReplyStablePolls?: number;
+  composerSubmitPollIntervalMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  localRolloutReader?: {
+    captureCursorForThreadTitle(title: string): CodexLocalRolloutCursor | null;
+    waitForTurnCompletion(
+      cursor: CodexLocalRolloutCursor,
+      options: { pollAttempts: number; pollIntervalMs: number }
+    ): Promise<CodexLocalRolloutTurnResult | null>;
+  } | null;
+  localSubmissionReader?: {
+    captureCursorForThreadId(threadId: string): CodexLocalSubmissionCursor | null;
+    waitForTurnSubmission(
+      cursor: CodexLocalSubmissionCursor,
+      options: { pollAttempts: number; pollIntervalMs: number }
+    ): Promise<CodexLocalSubmissionResult>;
+  } | null;
 };
 
 export class CodexDesktopDriver implements DesktopDriverPort {
@@ -59,8 +89,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   private readonly replyPollIntervalMs: number;
   private readonly replyStablePolls: number;
   private readonly partialReplyStablePolls: number;
+  private readonly composerSubmitPollIntervalMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly localRolloutReader: CodexDesktopDriverOptions["localRolloutReader"];
+  private readonly localSubmissionReader: CodexDesktopDriverOptions["localSubmissionReader"];
   private readonly pendingReplyBaselines = new Map<string, AssistantReplySnapshot>();
+  private readonly pendingLocalRolloutCursors = new Map<string, CodexLocalRolloutCursor>();
 
   constructor(
     private readonly cdp: CdpSession,
@@ -74,9 +108,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     this.replyPollIntervalMs = options.replyPollIntervalMs ?? 500;
     this.replyStablePolls = Math.max(1, options.replyStablePolls ?? 3);
     this.partialReplyStablePolls = Math.max(1, options.partialReplyStablePolls ?? 2);
+    this.composerSubmitPollIntervalMs = Math.max(50, options.composerSubmitPollIntervalMs ?? 300);
     this.sleep =
       options.sleep ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this.localRolloutReader = options.localRolloutReader ?? null;
+    this.localSubmissionReader = options.localSubmissionReader ?? null;
   }
 
   async ensureAppReady(): Promise<void> {
@@ -268,6 +305,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = await this.readLatestAssistantSnapshot(targetId);
     this.pendingReplyBaselines.set(binding.sessionKey, baselineReply);
+    await this.capturePendingLocalRolloutCursor(binding);
+    const submissionCursor = this.capturePendingLocalSubmissionCursor(binding);
 
     const focusResult = (await this.cdp.evaluateOnPage(
       this.buildFocusComposerScript(),
@@ -276,6 +315,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     if (!focusResult?.ok) {
       this.pendingReplyBaselines.delete(binding.sessionKey);
+      this.pendingLocalRolloutCursors.delete(binding.sessionKey);
       throw new DesktopDriverError(
         `Codex desktop input box not found: ${focusResult?.reason ?? "unknown"}`,
         "input_not_found"
@@ -316,9 +356,27 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       targetId
     )) as { ok?: boolean; reason?: string } | undefined;
 
-    if (result?.ok) {
+    if (result?.ok && !submissionCursor) {
       return;
     }
+
+    const confirmedAfterInitialSubmit = await this.waitForSubmissionConfirmation(
+      binding.sessionKey,
+      targetId,
+      submissionCursor,
+      4
+    );
+    if (confirmedAfterInitialSubmit.submitted) {
+      return;
+    }
+
+    console.warn("[qq-codex-bridge] codex composer submit not yet confirmed", {
+      sessionKey: binding.sessionKey,
+      messageId: message.messageId,
+      targetId,
+      initialResult: result ?? null,
+      confirmedAfterInitialSubmit
+    });
 
     await this.cdp.dispatchKeyEvent(
       {
@@ -341,26 +399,96 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       targetId
     );
 
-    const retryResult = (await this.cdp.evaluateOnPage(
-      this.buildComposerSubmissionStateScript(),
-      targetId
-    )) as { submitted?: boolean; reason?: string } | undefined;
+    const retryResult = await this.waitForSubmissionConfirmation(
+      binding.sessionKey,
+      targetId,
+      submissionCursor,
+      4
+    );
 
     if (retryResult?.submitted) {
       return;
     }
 
     this.pendingReplyBaselines.delete(binding.sessionKey);
+    this.pendingLocalRolloutCursors.delete(binding.sessionKey);
+    console.error("[qq-codex-bridge] codex composer submit failed", {
+      sessionKey: binding.sessionKey,
+      messageId: message.messageId,
+      targetId,
+      initialResult: result ?? null,
+      confirmedAfterInitialSubmit,
+      retryResult
+    });
     throw new DesktopDriverError(
       `Codex desktop composer submit failed: ${retryResult?.reason ?? result?.reason ?? "unknown"}`,
       "submit_failed"
     );
   }
 
+  private async waitForSubmissionConfirmation(
+    sessionKey: string,
+    targetId: string,
+    submissionCursor: CodexLocalSubmissionCursor | null,
+    attempts: number
+  ): Promise<{ submitted?: boolean; reason?: string; turnId?: string | null }> {
+    if (submissionCursor && this.localSubmissionReader) {
+      const result = await this.localSubmissionReader.waitForTurnSubmission(submissionCursor, {
+        pollAttempts: attempts,
+        pollIntervalMs: this.composerSubmitPollIntervalMs
+      });
+      if (result.submitted) {
+        this.attachPendingTurnId(sessionKey, result.turnId);
+      }
+      return result;
+    }
+
+    return this.waitForComposerSubmission(targetId, attempts);
+  }
+
+  private async waitForComposerSubmission(
+    targetId: string,
+    attempts: number
+  ): Promise<{ submitted?: boolean; reason?: string }> {
+    let lastResult: { submitted?: boolean; reason?: string } | undefined;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      lastResult = (await this.cdp.evaluateOnPage(
+        this.buildComposerSubmissionStateScript(),
+        targetId
+      )) as { submitted?: boolean; reason?: string } | undefined;
+
+      if (lastResult?.submitted) {
+        return lastResult;
+      }
+
+      if (attempt + 1 < attempts) {
+        await this.sleep(this.composerSubmitPollIntervalMs);
+      }
+    }
+
+    return lastResult ?? { submitted: false, reason: "submit_not_confirmed" };
+  }
+
   async collectAssistantReply(
     binding: DriverBinding,
     options: ConversationRunOptions = {}
   ): Promise<OutboundDraft[]> {
+    const localCursor =
+      this.pendingLocalRolloutCursors.get(binding.sessionKey)
+      ?? this.captureAdHocLocalRolloutCursor(binding);
+    if (localCursor) {
+      const localReply = await this.localRolloutReader?.waitForTurnCompletion(localCursor, {
+        pollAttempts: this.maxReplyPollAttempts,
+        pollIntervalMs: this.replyPollIntervalMs
+      });
+      this.pendingLocalRolloutCursors.delete(binding.sessionKey);
+      if (localReply) {
+        this.pendingReplyBaselines.delete(binding.sessionKey);
+        return this.collectAssistantReplyFromLocalRollout(binding, localReply, options);
+      }
+    }
+
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = this.pendingReplyBaselines.get(binding.sessionKey);
     let candidateReply: AssistantReplySnapshot | null = null;
@@ -585,6 +713,28 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     };
   }
 
+  private buildOutboundDraftFromText(
+    sessionKey: string,
+    text: string,
+    mediaReferences: string[],
+    turnId?: string
+  ): OutboundDraft {
+    return {
+      draftId: randomUUID(),
+      ...(turnId ? { turnId } : {}),
+      sessionKey,
+      text,
+      ...(mediaReferences.length > 0
+        ? {
+            mediaArtifacts: mediaReferences.map((reference) =>
+              buildMediaArtifactFromReference(reference)
+            )
+          }
+        : {}),
+      createdAt: new Date().toISOString()
+    };
+  }
+
   private buildIncrementalDraftFromSnapshot(
     sessionKey: string,
     snapshot: AssistantReplySnapshot,
@@ -655,15 +805,170 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return Boolean(snapshot.reply && snapshot.reply.trim()) || snapshot.mediaReferences.length > 0;
   }
 
+  private async collectAssistantReplyFromLocalRollout(
+    binding: DriverBinding,
+    localReply: CodexLocalRolloutTurnResult,
+    options: ConversationRunOptions
+  ): Promise<OutboundDraft[]> {
+    const turnId = localReply.turnId ?? randomUUID();
+    let turnSequence = 0;
+    const emitTurnEvent = async (
+      eventType: TurnEventType,
+      payload: TurnEventPayload,
+      isFinal: boolean
+    ): Promise<void> => {
+      if (!options.onTurnEvent) {
+        return;
+      }
+
+      turnSequence += 1;
+      await options.onTurnEvent({
+        sessionKey: binding.sessionKey,
+        turnId,
+        sequence: turnSequence,
+        eventType,
+        createdAt: new Date().toISOString(),
+        isFinal,
+        payload
+      });
+    };
+
+    if (options.onDraft) {
+      let assembledText = "";
+      for (const commentary of localReply.commentaryMessages) {
+        const draft = this.buildOutboundDraftFromText(binding.sessionKey, commentary, [], turnId);
+        assembledText = assembledText ? `${assembledText}\n${commentary}` : commentary;
+        await emitTurnEvent(
+          TurnEventType.Delta,
+          {
+            text: commentary,
+            fullText: assembledText,
+            mediaReferences: []
+          },
+          false
+        );
+        await options.onDraft(draft);
+      }
+
+      await emitTurnEvent(
+        TurnEventType.Completed,
+        {
+          fullText: localReply.fullText,
+          mediaReferences: localReply.mediaReferences,
+          completionReason: "stable"
+        },
+        true
+      );
+      return [];
+    }
+
+    await emitTurnEvent(
+      TurnEventType.Delta,
+      {
+        fullText: localReply.finalText,
+        mediaReferences: localReply.mediaReferences
+      },
+      false
+    );
+    await emitTurnEvent(
+      TurnEventType.Completed,
+      {
+        fullText: localReply.finalText,
+        mediaReferences: localReply.mediaReferences,
+        completionReason: "stable"
+      },
+      true
+    );
+    return [
+      this.buildOutboundDraftFromText(
+        binding.sessionKey,
+        localReply.finalText,
+        localReply.mediaReferences,
+        turnId
+      )
+    ];
+  }
+
   async markSessionBroken(_sessionKey: string, _reason: string): Promise<void> {
     return;
   }
 
+  private async capturePendingLocalRolloutCursor(binding: DriverBinding): Promise<void> {
+    if (!this.localRolloutReader) {
+      return;
+    }
+
+    const locator =
+      typeof binding.codexThreadRef === "string" && binding.codexThreadRef.startsWith(THREAD_REF_PREFIX)
+        ? this.decodeThreadRef(binding.codexThreadRef)
+        : null;
+    if (!locator?.title) {
+      this.pendingLocalRolloutCursors.delete(binding.sessionKey);
+      return;
+    }
+
+    const cursor = this.localRolloutReader.captureCursorForThreadTitle(locator.title);
+    if (!cursor) {
+      this.pendingLocalRolloutCursors.delete(binding.sessionKey);
+      return;
+    }
+
+    this.pendingLocalRolloutCursors.set(binding.sessionKey, cursor);
+  }
+
+  private capturePendingLocalSubmissionCursor(
+    binding: DriverBinding
+  ): CodexLocalSubmissionCursor | null {
+    if (!this.localSubmissionReader) {
+      return null;
+    }
+
+    const rolloutCursor = this.pendingLocalRolloutCursors.get(binding.sessionKey);
+    if (!rolloutCursor?.threadId) {
+      return null;
+    }
+
+    return this.localSubmissionReader.captureCursorForThreadId(rolloutCursor.threadId);
+  }
+
+  private attachPendingTurnId(sessionKey: string, turnId: string | null | undefined): void {
+    if (!turnId) {
+      return;
+    }
+
+    const cursor = this.pendingLocalRolloutCursors.get(sessionKey);
+    if (!cursor) {
+      return;
+    }
+
+    cursor.targetTurnId = turnId;
+    cursor.competingTurnStarted = false;
+  }
+
+  private captureAdHocLocalRolloutCursor(binding: DriverBinding): CodexLocalRolloutCursor | null {
+    if (!this.localRolloutReader) {
+      return null;
+    }
+
+    const locator =
+      typeof binding.codexThreadRef === "string" && binding.codexThreadRef.startsWith(THREAD_REF_PREFIX)
+        ? this.decodeThreadRef(binding.codexThreadRef)
+        : null;
+    if (!locator?.title) {
+      return null;
+    }
+
+    return this.localRolloutReader.captureCursorForThreadTitle(locator.title);
+  }
+
   private async ensureThreadSelected(binding: DriverBinding): Promise<string> {
     const targetId = await this.resolveTargetId(binding);
-    const locator = binding.codexThreadRef
-      ? this.decodeThreadRef(binding.codexThreadRef)
-      : null;
+    const boundThreadRef = binding.codexThreadRef;
+    if (!boundThreadRef) {
+      return targetId;
+    }
+
+    const locator = this.decodeThreadRef(boundThreadRef);
 
     if (!locator) {
       return targetId;
@@ -671,9 +976,11 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     const threads = await this.listRecentThreads(200);
     const currentThread = threads.find((thread) => thread.isCurrent);
-    if (currentThread?.threadRef === binding.codexThreadRef) {
+    if (currentThread?.threadRef === boundThreadRef) {
       return targetId;
     }
+
+    const previousFingerprint = await this.readConversationViewportFingerprint(targetId);
 
     const switchResult = (await this.cdp.evaluateOnPage(
       this.buildSelectThreadScript(locator),
@@ -687,8 +994,94 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       );
     }
 
-    await this.sleep(100);
+    await this.waitForThreadActivation(boundThreadRef, targetId, previousFingerprint);
     return targetId;
+  }
+
+  private async waitForThreadActivation(
+    threadRef: string,
+    targetId: string,
+    previousFingerprint: ConversationViewportFingerprint | null
+  ): Promise<void> {
+    let currentThreadStablePolls = 0;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const currentThread = (await this.listRecentThreads(200)).find((thread) => thread.isCurrent);
+      const currentMatches = currentThread?.threadRef === threadRef;
+
+      if (currentMatches) {
+        currentThreadStablePolls += 1;
+        const currentFingerprint = await this.readConversationViewportFingerprint(targetId);
+        if (
+          !this.isSameConversationViewportFingerprint(currentFingerprint, previousFingerprint)
+          || currentThreadStablePolls >= 4
+        ) {
+          return;
+        }
+      } else {
+        currentThreadStablePolls = 0;
+      }
+
+      if (attempt + 1 < 20) {
+        await this.sleep(100);
+      }
+    }
+
+    throw new DesktopDriverError(
+      "Codex desktop thread switch failed: thread_activation_timeout",
+      "session_not_found"
+    );
+  }
+
+  private async readConversationViewportFingerprint(
+    targetId: string
+  ): Promise<ConversationViewportFingerprint | null> {
+    const fingerprint = await this.cdp.evaluateOnPage(
+      this.buildConversationViewportFingerprintProbeScript(),
+      targetId
+    );
+    if (
+      !fingerprint ||
+      typeof fingerprint !== "object" ||
+      !("latestUnitKey" in fingerprint) ||
+      !("latestSnippet" in fingerprint) ||
+      !("unitCount" in fingerprint)
+    ) {
+      return null;
+    }
+
+    return {
+      latestUnitKey:
+        typeof fingerprint.latestUnitKey === "string" && fingerprint.latestUnitKey.trim()
+          ? fingerprint.latestUnitKey
+          : null,
+      latestSnippet:
+        typeof fingerprint.latestSnippet === "string" && fingerprint.latestSnippet.trim()
+          ? fingerprint.latestSnippet
+          : null,
+      unitCount:
+        typeof fingerprint.unitCount === "number" && Number.isFinite(fingerprint.unitCount)
+          ? fingerprint.unitCount
+          : 0
+    };
+  }
+
+  private isSameConversationViewportFingerprint(
+    left: ConversationViewportFingerprint | null,
+    right: ConversationViewportFingerprint | null
+  ): boolean {
+    if (!left && !right) {
+      return true;
+    }
+
+    if (!left || !right) {
+      return false;
+    }
+
+    return (
+      left.latestUnitKey === right.latestUnitKey
+      && left.latestSnippet === right.latestSnippet
+      && left.unitCount === right.unitCount
+    );
   }
 
   private async readLatestAssistantSnapshot(targetId: string): Promise<AssistantReplySnapshot> {
@@ -1153,6 +1546,38 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     return `(() => {
       ${submitButtonMatcher}
+      const readConversationFingerprint = () => {
+        const units = Array.from(document.querySelectorAll('[data-content-search-unit-key]'))
+          .filter((node) => node instanceof HTMLElement)
+          .map((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return null;
+            }
+            const rect = node.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+              return null;
+            }
+            return node;
+          })
+          .filter((node) => node instanceof HTMLElement);
+        const latestUnit = units.at(-1);
+        return {
+          latestUnitKey:
+            latestUnit instanceof HTMLElement
+              ? latestUnit.getAttribute('data-content-search-unit-key')
+              : null,
+          latestSnippet:
+            latestUnit instanceof HTMLElement
+              ? (latestUnit.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 200)
+              : null,
+          unitCount: units.length
+        };
+      };
+      const isSameConversationFingerprint = (left, right) =>
+        Boolean(left && right)
+        && left.latestUnitKey === right.latestUnitKey
+        && left.latestSnippet === right.latestSnippet
+        && left.unitCount === right.unitCount;
       const resolveComposer = () => {
         const selectors = [
           '[data-codex-composer="true"]',
@@ -1190,6 +1615,67 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         }
         return node.textContent || '';
       };
+      const resolveComposerSubmitButton = (allowDisabled, strictMatch) =>
+        Array.from(document.querySelectorAll('button, [role="button"]'))
+          .filter((candidate) => {
+            if (!(candidate instanceof HTMLElement)) {
+              return false;
+            }
+            const rect = candidate.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+              return false;
+            }
+            if (
+              !allowDisabled
+              && (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true')
+            ) {
+              return false;
+            }
+            const centerX = rect.x + rect.width / 2;
+            const centerY = rect.y + rect.height / 2;
+            const nearComposerBottomRight =
+              centerX >= inputRect.right - 140
+              && centerY >= inputRect.y - 24
+              && centerY <= inputRect.bottom + 40;
+            if (!nearComposerBottomRight) {
+              return false;
+            }
+            if (!strictMatch) {
+              return true;
+            }
+            return isLikelyComposerSubmitButton({
+              text: candidate.textContent ?? '',
+              aria: candidate.getAttribute('aria-label'),
+              title: candidate.getAttribute('title'),
+              className: candidate.className ?? ''
+            });
+          })
+          .sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            const leftLabel = {
+              text: left.textContent ?? '',
+              aria: left.getAttribute('aria-label'),
+              title: left.getAttribute('title'),
+              className: left.className ?? ''
+            };
+            const rightLabel = {
+              text: right.textContent ?? '',
+              aria: right.getAttribute('aria-label'),
+              title: right.getAttribute('title'),
+              className: right.className ?? ''
+            };
+            const leftStrictScore = isLikelyComposerSubmitButton(leftLabel) ? 1000 : 0;
+            const rightStrictScore = isLikelyComposerSubmitButton(rightLabel) ? 1000 : 0;
+            const leftPrimaryScore = /\bsize-token-button-composer\b/i.test(leftLabel.className) ? 100 : 0;
+            const rightPrimaryScore = /\bsize-token-button-composer\b/i.test(rightLabel.className) ? 100 : 0;
+            const leftScore =
+              leftStrictScore + leftPrimaryScore + leftRect.x - Math.abs(leftRect.y - inputRect.bottom);
+            const rightScore =
+              rightStrictScore + rightPrimaryScore + rightRect.x - Math.abs(rightRect.y - inputRect.bottom);
+            return rightScore - leftScore;
+          })
+          .at(0) ?? null;
       const input = resolveComposer();
       if (!(input instanceof HTMLElement)) {
         return { ok: false, reason: 'input_not_found' };
@@ -1199,47 +1685,32 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       if (!currentText) {
         return { ok: false, reason: 'empty_input' };
       }
-      const sendButton = Array.from(document.querySelectorAll('button, [role="button"]'))
-        .filter((candidate) => {
-          if (!(candidate instanceof HTMLElement)) {
-            return false;
-          }
-          const rect = candidate.getBoundingClientRect();
-          if (rect.width <= 0 || rect.height <= 0) {
-            return false;
-          }
-          if (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true') {
-            return false;
-          }
-          return isLikelyComposerSubmitButton({
-            text: candidate.textContent ?? '',
-            aria: candidate.getAttribute('aria-label'),
-            title: candidate.getAttribute('title'),
-            className: candidate.className ?? ''
-          });
-        })
-        .sort((left, right) => {
-          const leftRect = left.getBoundingClientRect();
-          const rightRect = right.getBoundingClientRect();
-          const leftDistance = Math.abs(leftRect.y - inputRect.y) + Math.max(0, inputRect.x - leftRect.x);
-          const rightDistance = Math.abs(rightRect.y - inputRect.y) + Math.max(0, inputRect.x - rightRect.x);
-          return leftDistance - rightDistance;
-        })
-        .find((candidate) => {
-          const rect = candidate.getBoundingClientRect();
-          return rect.x >= inputRect.x - 24 && Math.abs(rect.y - inputRect.y) <= 120;
-        });
+      const beforeConversationFingerprint = readConversationFingerprint();
+      window.__qqCodexLastSubmitConversationFingerprint = beforeConversationFingerprint;
+      const sendButton = resolveComposerSubmitButton(false, true);
       const beforeButtonHtml = sendButton instanceof HTMLElement ? sendButton.innerHTML : '';
+      window.__qqCodexLastSubmitButtonHtml = beforeButtonHtml;
       const confirmSubmission = (reason) => new Promise((resolve) => {
         window.setTimeout(() => {
           const afterText = readComposerText(input).trim();
-          const afterButtonHtml = sendButton instanceof HTMLElement ? sendButton.innerHTML : '';
+          const currentSendButton = resolveComposerSubmitButton(true, false);
+          const afterButtonHtml =
+            currentSendButton instanceof HTMLElement ? currentSendButton.innerHTML : '';
           const buttonChanged = beforeButtonHtml !== '' && beforeButtonHtml !== afterButtonHtml;
+          const afterConversationFingerprint = readConversationFingerprint();
+          const conversationAdvanced = !isSameConversationFingerprint(
+            beforeConversationFingerprint,
+            afterConversationFingerprint
+          );
           resolve({
-            ok: afterText.length === 0 || buttonChanged,
+            ok: afterText.length === 0 || buttonChanged || conversationAdvanced,
             reason: afterText.length === 0
               ? reason
-              : (buttonChanged ? 'entered_streaming_state' : 'submit_not_confirmed')
+              : (
+                  buttonChanged
+                    ? 'entered_streaming_state'
+                    : (conversationAdvanced ? 'conversation_advanced' : 'submit_not_confirmed')
+                )
           });
         }, 300);
       });
@@ -1251,10 +1722,9 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       if (sendButton instanceof HTMLElement) {
         if (typeof sendButton.click === 'function') {
           sendButton.click();
-        }
-        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        } else {
           sendButton.dispatchEvent(
-            new MouseEvent(type, {
+            new MouseEvent('click', {
               bubbles: true,
               cancelable: true,
               view: window
@@ -1280,7 +1750,44 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   }
 
   private buildComposerSubmissionStateScript(): string {
+    const submitButtonMatcher = isLikelyComposerSubmitButton
+      .toString()
+      .replace(/^function\s+isLikelyComposerSubmitButton/, "function isLikelyComposerSubmitButton");
+
     return `(() => {
+      ${submitButtonMatcher}
+      const readConversationFingerprint = () => {
+        const units = Array.from(document.querySelectorAll('[data-content-search-unit-key]'))
+          .filter((node) => node instanceof HTMLElement)
+          .map((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return null;
+            }
+            const rect = node.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+              return null;
+            }
+            return node;
+          })
+          .filter((node) => node instanceof HTMLElement);
+        const latestUnit = units.at(-1);
+        return {
+          latestUnitKey:
+            latestUnit instanceof HTMLElement
+              ? latestUnit.getAttribute('data-content-search-unit-key')
+              : null,
+          latestSnippet:
+            latestUnit instanceof HTMLElement
+              ? (latestUnit.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 200)
+              : null,
+          unitCount: units.length
+        };
+      };
+      const isSameConversationFingerprint = (left, right) =>
+        Boolean(left && right)
+        && left.latestUnitKey === right.latestUnitKey
+        && left.latestSnippet === right.latestSnippet
+        && left.unitCount === right.unitCount;
       const selectors = [
         '[data-codex-composer="true"]',
         'textarea',
@@ -1288,9 +1795,9 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         '[contenteditable="true"]',
         '[role="textbox"]'
       ];
-      const input = selectors
+      const inputCandidates = selectors
         .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
-        .find((candidate) => {
+        .filter((candidate) => {
           if (!(candidate instanceof HTMLElement)) {
             return false;
           }
@@ -1300,25 +1807,112 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           const rect = candidate.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0;
         });
+      const activeElement = document.activeElement;
+      const input =
+        activeElement instanceof HTMLElement && inputCandidates.includes(activeElement)
+          ? activeElement
+          : (inputCandidates
+              .sort((left, right) => right.getBoundingClientRect().y - left.getBoundingClientRect().y)
+              .at(0) ?? null);
       if (!(input instanceof HTMLElement)) {
         return { submitted: false, reason: 'input_not_found' };
       }
+      const inputRect = input.getBoundingClientRect();
+      const resolveComposerSubmitButton = (allowDisabled) =>
+        Array.from(document.querySelectorAll('button, [role="button"]'))
+          .filter((candidate) => {
+            if (!(candidate instanceof HTMLElement)) {
+              return false;
+            }
+            const rect = candidate.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+              return false;
+            }
+            if (
+              !allowDisabled
+              && (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true')
+            ) {
+              return false;
+            }
+            const centerX = rect.x + rect.width / 2;
+            const centerY = rect.y + rect.height / 2;
+            return (
+              centerX >= inputRect.right - 140
+              && centerY >= inputRect.y - 24
+              && centerY <= inputRect.bottom + 40
+            );
+          })
+          .sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            const leftLabel = {
+              text: left.textContent ?? '',
+              aria: left.getAttribute('aria-label'),
+              title: left.getAttribute('title'),
+              className: left.className ?? ''
+            };
+            const rightLabel = {
+              text: right.textContent ?? '',
+              aria: right.getAttribute('aria-label'),
+              title: right.getAttribute('title'),
+              className: right.className ?? ''
+            };
+            const leftStrictScore = isLikelyComposerSubmitButton(leftLabel) ? 1000 : 0;
+            const rightStrictScore = isLikelyComposerSubmitButton(rightLabel) ? 1000 : 0;
+            const leftPrimaryScore = /\bsize-token-button-composer\b/i.test(leftLabel.className) ? 100 : 0;
+            const rightPrimaryScore = /\bsize-token-button-composer\b/i.test(rightLabel.className) ? 100 : 0;
+            const leftScore =
+              leftStrictScore + leftPrimaryScore + leftRect.x - Math.abs(leftRect.y - inputRect.bottom);
+            const rightScore =
+              rightStrictScore + rightPrimaryScore + rightRect.x - Math.abs(rightRect.y - inputRect.bottom);
+            return rightScore - leftScore;
+          })
+          .at(0) ?? null;
       const currentText =
         'value' in input && typeof input.value === 'string'
           ? input.value.trim()
           : (input.textContent || '').trim();
-      const sendButton = Array.from(document.querySelectorAll('button, [role="button"]')).find((candidate) => {
-        if (!(candidate instanceof HTMLElement)) {
-          return false;
-        }
-        const className = typeof candidate.className === 'string' ? candidate.className : '';
-        return className.includes('size-token-button-composer') && className.includes('bg-token-foreground');
-      });
+      const sendButton = resolveComposerSubmitButton(true);
       const buttonHtml = sendButton instanceof HTMLElement ? sendButton.innerHTML : '';
-      const isStreamingButton = buttonHtml.includes('M4.5 5.75C4.5 5.05964');
+      const buttonClassName = sendButton instanceof HTMLElement ? String(sendButton.className || '') : '';
+      const baselineButtonHtml =
+        typeof window.__qqCodexLastSubmitButtonHtml === 'string'
+          ? window.__qqCodexLastSubmitButtonHtml
+          : '';
+      const isStreamingButton = baselineButtonHtml !== '' && buttonHtml !== '' && baselineButtonHtml !== buttonHtml;
+      const baselineConversationFingerprint = window.__qqCodexLastSubmitConversationFingerprint;
+      const currentConversationFingerprint = readConversationFingerprint();
+      const conversationAdvanced =
+        baselineConversationFingerprint
+        && !isSameConversationFingerprint(
+          baselineConversationFingerprint,
+          currentConversationFingerprint
+        );
       return {
-        submitted: currentText.length === 0 || isStreamingButton,
-        reason: currentText.length === 0 ? 'composer_cleared' : (isStreamingButton ? 'entered_streaming_state' : 'submit_not_confirmed')
+        submitted: currentText.length === 0 || isStreamingButton || conversationAdvanced,
+        reason: currentText.length === 0
+          ? 'composer_cleared'
+          : (
+              isStreamingButton
+                ? 'entered_streaming_state'
+                : (conversationAdvanced ? 'conversation_advanced' : 'submit_not_confirmed')
+            ),
+        diagnostics: {
+          currentTextLength: currentText.length,
+          inputRect: {
+            x: inputRect.x,
+            y: inputRect.y,
+            width: inputRect.width,
+            height: inputRect.height,
+            right: inputRect.right,
+            bottom: inputRect.bottom
+          },
+          baselineButtonHtml: baselineButtonHtml.slice(0, 160),
+          buttonHtml: buttonHtml.slice(0, 160),
+          buttonClassName,
+          sendButtonFound: Boolean(sendButton),
+          conversationAdvanced
+        }
       };
     })();`;
   }
@@ -1327,73 +1921,171 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     return `
       (() => {
         const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-        const buttons = Array.from(document.querySelectorAll('button,[role="button"],[aria-label]'))
-          .map((node) => {
-            const rect = node instanceof HTMLElement ? node.getBoundingClientRect() : null;
-            return {
-              text: normalize(node.textContent || ''),
-              aria: normalize(node.getAttribute('aria-label') || ''),
-              title: normalize(node.getAttribute('title') || ''),
-              className: String(node.className || ''),
-              x: rect ? rect.x : 0,
-              y: rect ? rect.y : 0,
-              width: rect ? rect.width : 0,
-              height: rect ? rect.height : 0
-            };
-          })
-          .filter((item) => (item.text || item.aria || item.title) && item.y >= window.innerHeight - 180 && item.x >= 320)
-          .sort((left, right) => (left.y - right.y) || (left.x - right.x));
-
         const modelPattern = /(?:gpt|o1|o3|o4|4\\.1|4\\.5|5\\.4|mini|nano|sonnet|haiku|opus|gemini|claude|qwen|deepseek)/i;
         const effortPattern = /^(?:低|中|高|minimal|low|medium|high)$/i;
         const permissionPattern = /(?:访问权限|permission|sandbox)/i;
-        const quotaPattern = /(?:quota|usage|remaining|allowance|credit|credits|余额|额度|剩余|配额|使用量)/i;
-        const ignoredQuotaPattern = /(?:QQBOT_RUNTIME_CONTEXT|<qqmedia>|<!--|-->|会话类型|bridge|runtime\\/media|内部实现|相对路径)/i;
-
-        let model = null;
-        let reasoningEffort = null;
-        let workspace = null;
-        let branch = null;
-        let permissionMode = null;
-
-        for (const item of buttons) {
-          const text = item.text || item.aria || item.title;
-          if (!model && modelPattern.test(text)) {
-            model = text;
-            continue;
+        const workspacePattern = /^(?:本地工作|在本地处理|本地项目|本地|云端|local|cloud|worktree)$/i;
+        const branchPattern = /^(?:[A-Za-z0-9._-]+\\/[A-Za-z0-9._/-]+|main|master|develop|development|dev|staging|production|release\\/[A-Za-z0-9._/-]+|hotfix\\/[A-Za-z0-9._/-]+|feature\\/[A-Za-z0-9._/-]+|bugfix\\/[A-Za-z0-9._/-]+)$/;
+        const ignoredLinePattern = /(?:QQBOT_RUNTIME_CONTEXT|<qqmedia>|<!--|-->|会话类型|runtime\\/media|内部实现|相对路径)/i;
+        const ignoredBranchPattern = /^(?:https?:\\/\\/|app:\\/\\/|\\/|继续使用|在本地处理|本地工作|本地项目|升级至\\s*Pro|了解更多|移至工作树|剩余额度|remaining usage|quota|usage|额度|配额|GPT-|Claude|Gemini|完全访问权限|听写)$/i;
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) {
+            return false;
           }
-          if (!reasoningEffort && effortPattern.test(text)) {
-            reasoningEffort = text;
-            continue;
-          }
-          if (!permissionMode && permissionPattern.test(text)) {
-            permissionMode = text;
-            continue;
-          }
-          if (!workspace && /^(?:本地|local|worktree)$/i.test(text)) {
-            workspace = text;
-            continue;
-          }
-          if (!branch && /[\\w.-]+\\/[\\w./-]+/.test(text)) {
-            branch = text;
-          }
-        }
-
-        const bodyLines = (document.body ? document.body.innerText : '')
-          .split('\\n')
-          .map((line) => normalize(line))
-          .filter(Boolean);
-        const quotaLine =
-          bodyLines.find((line) => quotaPattern.test(line) && !ignoredQuotaPattern.test(line)) || null;
-
-        return {
-          model,
-          reasoningEffort,
-          workspace,
-          branch,
-          permissionMode,
-          quotaSummary: quotaLine
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
         };
+        const clickNode = (node) => {
+          node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        };
+        const collectControls = () =>
+          Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],[aria-label]'))
+            .filter(isVisible)
+            .map((node) => {
+              const rect = node instanceof HTMLElement ? node.getBoundingClientRect() : null;
+              return {
+                node,
+                text: normalize(node.textContent || ''),
+                aria: normalize(node.getAttribute('aria-label') || ''),
+                title: normalize(node.getAttribute('title') || ''),
+                className: String(node.className || ''),
+                x: rect ? rect.x : 0,
+                y: rect ? rect.y : 0,
+                width: rect ? rect.width : 0,
+                height: rect ? rect.height : 0
+              };
+            });
+        const collectFooterControls = () =>
+          collectControls()
+            .filter((item) => {
+              const text = item.text || item.aria || item.title;
+              if (!text) {
+                return false;
+              }
+
+              if (item.y < window.innerHeight - 120 || item.y > window.innerHeight || item.x < 380) {
+                return false;
+              }
+
+              return /(?:h-token-button-composer|size-token-button-composer)/.test(item.className);
+            })
+            .sort((left, right) => (left.y - right.y) || (left.x - right.x));
+        const getBodyLines = () =>
+          (document.body ? document.body.innerText : '')
+            .split('\\n')
+            .map((line) => normalize(line))
+            .filter((line) => line && !ignoredLinePattern.test(line));
+        const isQuotaHeader = (line) => line === '剩余额度' || /^remaining usage$/i.test(line);
+        const parseQuotaEntries = (lines) => {
+          const entries = [];
+          for (let index = 0; index < lines.length; index += 1) {
+            const line = lines[index];
+            if (
+              !line ||
+              isQuotaHeader(line) ||
+              /^\\d+%$/.test(line) ||
+              /^(?:继续使用|本地项目|本地工作|在本地处理|云端|升级至\\s*Pro|了解更多|移至工作树)$/i.test(line)
+            ) {
+              continue;
+            }
+
+            const combinedMatch = line.match(/^(.+?(?:分钟|小时|天|周|月|minutes?|hours?|days?|weeks?|months?))\\s+(\\d+%)\\s+(.+)$/i);
+            if (combinedMatch) {
+              entries.push(\`\${combinedMatch[1]} \${combinedMatch[2]}（\${combinedMatch[3]} 重置）\`);
+              continue;
+            }
+
+            const timeframeMatch = line.match(/^(.+?(?:分钟|小时|天|周|月|minutes?|hours?|days?|weeks?|months?))$/i);
+            if (timeframeMatch && index + 2 < lines.length) {
+              const percentLine = lines[index + 1];
+              const resetLine = lines[index + 2];
+              if (/^\\d+%$/.test(percentLine) && resetLine) {
+                entries.push(\`\${timeframeMatch[1]} \${percentLine}（\${resetLine} 重置）\`);
+                index += 2;
+              }
+            }
+          }
+
+          return entries;
+        };
+        const parseBranch = (lines) =>
+          lines.find((line) => branchPattern.test(line) && !ignoredBranchPattern.test(line)) || null;
+        const findWorkspaceButton = (controls) =>
+          controls.find((item) => workspacePattern.test(item.text || item.aria || item.title));
+        const findFooterBranch = (controls) =>
+          controls.find((item) => {
+            const text = item.text || item.aria || item.title;
+            return branchPattern.test(text) && !ignoredBranchPattern.test(text);
+          });
+        const readState = () => {
+          const footerControls = collectFooterControls();
+          const workspaceButton = findWorkspaceButton(footerControls);
+          const footerBranch = findFooterBranch(footerControls);
+          const lines = getBodyLines();
+          const quotaEntries = parseQuotaEntries(lines);
+
+          let model = null;
+          let reasoningEffort = null;
+          let workspace = null;
+          let permissionMode = null;
+
+          for (const item of footerControls) {
+            const text = item.text || item.aria || item.title;
+            if (!model && modelPattern.test(text)) {
+              model = text;
+              continue;
+            }
+            if (!reasoningEffort && effortPattern.test(text)) {
+              reasoningEffort = text;
+              continue;
+            }
+            if (!permissionMode && permissionPattern.test(text)) {
+              permissionMode = text;
+              continue;
+            }
+            if (!workspace && workspacePattern.test(text)) {
+              workspace = text;
+            }
+          }
+
+          return {
+            workspaceButton,
+            state: {
+              model,
+              reasoningEffort,
+              workspace,
+              branch: footerBranch ? (footerBranch.text || footerBranch.aria || footerBranch.title) : parseBranch(lines),
+              permissionMode,
+              quotaSummary: quotaEntries.length > 0 ? quotaEntries.join('\\n') : null
+            }
+          };
+        };
+
+        return new Promise((resolve) => {
+          const initial = readState();
+          if (!initial.workspaceButton) {
+            resolve(initial.state);
+            return;
+          }
+
+          clickNode(initial.workspaceButton.node);
+          setTimeout(() => {
+            const opened = readState();
+            const quotaToggle = collectControls().find((item) => /剩余额度|remaining usage/i.test(item.text || item.aria || item.title));
+            if (!(quotaToggle && quotaToggle.node instanceof HTMLElement)) {
+              resolve(opened.state);
+              return;
+            }
+
+            clickNode(quotaToggle.node);
+            setTimeout(() => {
+              resolve(readState().state);
+            }, 120);
+          }, 120);
+        });
       })()
     `;
   }
@@ -1461,8 +2153,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             return (
               rect.y >= window.innerHeight - 120 &&
               rect.height <= 40 &&
-              rect.width <= 120 &&
-              /^(?:本地|云端|local|cloud)(?:\\d+%)?$/i.test(text)
+              rect.width <= 140 &&
+              /^(?:本地工作|在本地处理|本地项目|本地|云端|local|cloud|worktree)(?:\\d+%)?$/i.test(text)
             );
           });
 
@@ -1542,7 +2234,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             }
             const rect = node.getBoundingClientRect();
             const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
-            return rect.y >= window.innerHeight - 180 && rect.x >= 320 && matchesModelText(text);
+            return rect.y >= window.innerHeight - 200 && matchesModelText(text);
           });
         const clickNode = (node) => {
           node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
@@ -1591,10 +2283,48 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildAssistantReplyProbeScript(): string {
     return `(() => {
-      const assistantUnits = Array.from(
+      const allAssistantUnits = Array.from(
         document.querySelectorAll('[data-content-search-unit-key$=":assistant"]')
       );
-      const latestAssistantUnit = assistantUnits.at(-1);
+      const composer = document.querySelector(
+        '[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"], [role="textbox"]'
+      );
+      const composerRect = composer instanceof HTMLElement
+        ? composer.getBoundingClientRect()
+        : null;
+      const visibleAssistantUnits = allAssistantUnits
+        .filter((node) => node instanceof HTMLElement)
+        .filter((node) => {
+          const rect = node.getBoundingClientRect();
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom >= -120 &&
+            rect.top <= window.innerHeight + 480
+          );
+        });
+      const viewportAnchoredAssistantUnits = visibleAssistantUnits.filter((node) => {
+        if (!(node instanceof HTMLElement) || !composerRect) {
+          return true;
+        }
+        const rect = node.getBoundingClientRect();
+        return (
+          rect.bottom >= composerRect.top - window.innerHeight * 0.75 &&
+          rect.top <= composerRect.bottom + window.innerHeight
+        );
+      });
+      const candidateAssistantUnits =
+        viewportAnchoredAssistantUnits.length > 0
+          ? viewportAnchoredAssistantUnits
+          : (visibleAssistantUnits.length > 0 ? visibleAssistantUnits : allAssistantUnits);
+      const latestAssistantUnit = candidateAssistantUnits
+        .filter((node) => node instanceof HTMLElement)
+        .sort((left, right) => {
+          const leftRect = left.getBoundingClientRect();
+          const rightRect = right.getBoundingClientRect();
+          return rightRect.bottom - leftRect.bottom;
+        })
+        .at(0);
       if (!(latestAssistantUnit instanceof HTMLElement)) {
         return null;
       }
@@ -1797,12 +2527,6 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           return null;
         })
         .filter((value, index, values) => typeof value === 'string' && values.indexOf(value) === index);
-      const composer = document.querySelector(
-        '[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"], [role="textbox"]'
-      );
-      const composerRect = composer instanceof HTMLElement
-        ? composer.getBoundingClientRect()
-        : null;
       const streamingMatcher = /(\\bstop\\b|\\bthinking\\b|\\bworking\\b|\\brunning\\b|停止|中止|取消|思考中|生成中)/i;
       const assistantStatusMatcher = /(Reconnecting\\.{3}|Searching\\.{3}|Running\\.{3}|Working\\.{3}|连接中\\.{0,3}|重新连接中\\.{0,3}|搜索中\\.{0,3}|执行中\\.{0,3}|处理中\\.{0,3})/i;
       const isComposerBusyButton = (node) => {
@@ -1884,6 +2608,40 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             isStreaming: isStreaming || hasAssistantActivity
           }
         : null;
+    })();`;
+  }
+
+  private buildConversationViewportFingerprintProbeScript(): string {
+    return `(() => {
+      const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const units = Array.from(document.querySelectorAll('[data-content-search-unit-key]'))
+        .filter((node) => node instanceof HTMLElement)
+        .map((node) => {
+          if (!(node instanceof HTMLElement)) {
+            return null;
+          }
+          const rect = node.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) {
+            return null;
+          }
+          return node;
+        })
+        .filter((node) => node instanceof HTMLElement);
+      const latestUnit = units.at(-1);
+      if (!(latestUnit instanceof HTMLElement)) {
+        return {
+          latestUnitKey: null,
+          latestSnippet: null,
+          unitCount: 0
+        };
+      }
+      const snippet = normalize(latestUnit.innerText)
+        .slice(0, 200);
+      return {
+        latestUnitKey: latestUnit.getAttribute('data-content-search-unit-key'),
+        latestSnippet: snippet || null,
+        unitCount: units.length
+      };
     })();`;
   }
 }

@@ -47,15 +47,23 @@ export class ThreadCommandHandler {
       }
 
       if (text === "/threads" || text === "/t") {
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
-        await this.deliverControlReply(message, this.formatThreads(threads));
+        await this.deliverControlReply(
+          message,
+          this.formatThreads(threads, session?.codexThreadRef ?? null)
+        );
         return;
       }
 
       if (text === "/thread current" || text === "/tc") {
         const session = await this.deps.sessionStore.getSession(message.sessionKey);
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
-        const current = threads.find((thread) => thread.threadRef === session?.codexThreadRef)
+        const current = threads.find(
+          (thread) =>
+            session?.codexThreadRef
+            && areThreadRefsEquivalent(thread.threadRef, session.codexThreadRef)
+        )
           ?? threads.find((thread) => thread.isCurrent)
           ?? null;
         const reply = current
@@ -84,8 +92,16 @@ export class ThreadCommandHandler {
       const switchModelMatch = text.match(/^(?:\/model\s+use|\/mu)\s+(.+)$/);
       if (switchModelMatch) {
         const targetModel = switchModelMatch[1].trim();
-        const state = await this.deps.desktopDriver.switchModel(targetModel);
-        await this.deliverControlReply(message, this.formatModelSwitchReply(targetModel, state));
+        try {
+          const state = await this.deps.desktopDriver.switchModel(targetModel);
+          await this.deliverControlReply(message, this.formatModelSwitchReply(targetModel, state));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          await this.deliverControlReply(
+            message,
+            `切换模型失败：${reason}\n请检查模型名称是否正确，或当前 Codex Desktop 界面是否可操作。`
+          );
+        }
         return;
       }
 
@@ -97,7 +113,14 @@ export class ThreadCommandHandler {
 
       if (text === "/status" || text === "/st") {
         const session = await this.deps.sessionStore.getSession(message.sessionKey);
-        const state = await this.deps.desktopDriver.getControlState();
+        const state = await this.deps.desktopDriver.getControlState(
+          session
+            ? {
+                sessionKey: session.sessionKey,
+                codexThreadRef: session.codexThreadRef
+              }
+            : null
+        );
         const quotaSummary = await this.deps.desktopDriver.getQuotaSummary();
         await this.deliverControlReply(message, this.formatStatusReply(session, state, quotaSummary));
         return;
@@ -127,9 +150,14 @@ export class ThreadCommandHandler {
           throw error;
         }
         await this.deps.sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
+        await this.deps.sessionStore.updateSkillContextKey(message.sessionKey, null);
         await this.deliverControlReply(
           message,
-          `已切换到线程：${thread.title}${thread.projectName ? `\n项目：${thread.projectName}` : ""}`
+          [
+            `已切换到线程：${thread.title}`,
+            ...(thread.projectName ? [`项目：${thread.projectName}`] : []),
+            `绑定标识：${binding.codexThreadRef ?? "未绑定"}`
+          ].join("\n")
         );
         return;
       }
@@ -184,6 +212,7 @@ export class ThreadCommandHandler {
       chatType: message.chatType,
       peerId: message.senderId,
       codexThreadRef: null,
+      lastCodexTurnId: null,
       skillContextKey: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: message.receivedAt,
@@ -227,7 +256,9 @@ export class ThreadCommandHandler {
       projectName: string | null;
       relativeTime: string | null;
       isCurrent: boolean;
-    }>
+      threadRef?: string;
+    }>,
+    boundThreadRef: string | null = null
   ): string {
     if (threads.length === 0) {
       return "当前没有可用的 Codex 线程。";
@@ -242,7 +273,13 @@ export class ThreadCommandHandler {
       "| 序号 | 项目 | 线程标题 | 最近活动 |",
       "| --- | --- | --- | --- |",
       ...threads.map((thread) => {
-        const index = thread.isCurrent ? `👉🏻 ${thread.index}` : `${thread.index}`;
+        const isBound = Boolean(
+          boundThreadRef
+          && thread.threadRef
+          && areThreadRefsEquivalent(thread.threadRef, boundThreadRef)
+        );
+        const shouldMark = boundThreadRef ? isBound : thread.isCurrent;
+        const index = shouldMark ? `👉🏻 ${thread.index}` : `${thread.index}`;
         const project = escapeCell(thread.projectName) || "-";
         const title = escapeCell(thread.title) || "-";
         const time = escapeCell(thread.relativeTime) || "-";
@@ -322,9 +359,13 @@ export class ThreadCommandHandler {
     state: CodexControlState,
     quotaSummary: string | null
   ): string {
+    const boundThreadRef = state.threadRef ?? session?.codexThreadRef ?? null;
     return [
       "当前运行状态：",
-      `线程绑定：${session?.codexThreadRef ?? "未绑定"}`,
+      `线程绑定：${boundThreadRef ?? "未绑定"}`,
+      ...(state.threadTitle ? [`线程标题：${state.threadTitle}`] : []),
+      ...(state.threadProjectName ? [`线程项目：${state.threadProjectName}`] : []),
+      ...(state.threadRelativeTime ? [`线程最近活动：${state.threadRelativeTime}`] : []),
       `模型：${state.model ?? "未识别"}`,
       `推理强度：${state.reasoningEffort ?? "未识别"}`,
       `工作区：${state.workspace ?? "未识别"}`,
@@ -360,4 +401,26 @@ export class ThreadCommandHandler {
       "请理解上下文，等待我的下一条消息。"
     ].join("\n");
   }
+}
+
+function areThreadRefsEquivalent(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  const leftAppThreadId = extractAppServerThreadId(left);
+  const rightAppThreadId = extractAppServerThreadId(right);
+  return Boolean(leftAppThreadId && rightAppThreadId && leftAppThreadId === rightAppThreadId);
+}
+
+function extractAppServerThreadId(threadRef: string): string | null {
+  const prefix = "codex-app-thread:";
+  if (!threadRef.startsWith(prefix)) {
+    return null;
+  }
+
+  const payload = threadRef.slice(prefix.length);
+  const separatorIndex = payload.indexOf(":");
+  const threadId = separatorIndex >= 0 ? payload.slice(0, separatorIndex) : payload;
+  return threadId.trim() ? threadId : null;
 }

@@ -1,3 +1,5 @@
+import type { MediaArtifact } from "../../../domain/src/message.js";
+
 type FetchLike = typeof fetch;
 
 type WeixinHttpClientOptions = {
@@ -21,6 +23,21 @@ export class WeixinHttpClient {
     replyToMessageId?: string;
     content: string;
   }): Promise<string | null> {
+    return this.sendMessage({
+      peerId: target.peerId,
+      chatType: target.chatType,
+      content: target.content,
+      ...(target.replyToMessageId ? { replyToMessageId: target.replyToMessageId } : {})
+    });
+  }
+
+  async sendMessage(target: {
+    peerId: string;
+    chatType: "c2c" | "group";
+    replyToMessageId?: string;
+    content?: string;
+    mediaArtifacts?: MediaArtifact[];
+  }): Promise<string | null> {
     const response = await this.fetchFn(`${this.baseUrl}/messages`, {
       method: "POST",
       headers: {
@@ -30,7 +47,8 @@ export class WeixinHttpClient {
       body: JSON.stringify({
         peerId: target.peerId,
         chatType: target.chatType,
-        content: target.content,
+        ...(target.content ? { content: target.content } : {}),
+        ...(target.mediaArtifacts?.length ? { mediaArtifacts: target.mediaArtifacts } : {}),
         ...(target.replyToMessageId ? { replyToMessageId: target.replyToMessageId } : {})
       })
     });

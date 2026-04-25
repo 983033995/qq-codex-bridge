@@ -11,6 +11,10 @@ import {
   WeixinGatewayMessageStore,
   type WeixinGatewayOutboundMessage
 } from "./message-store.js";
+import {
+  MediaArtifactKind,
+  type MediaArtifact
+} from "../../../packages/domain/src/message.js";
 
 const inboundTextPayloadSchema = z.object({
   accountKey: z.string().min(1).optional(),
@@ -22,11 +26,32 @@ const inboundTextPayloadSchema = z.object({
   receivedAt: z.string().optional()
 });
 
+const mediaArtifactSchema = z.object({
+  kind: z.nativeEnum(MediaArtifactKind),
+  sourceUrl: z.string().min(1),
+  localPath: z.string().min(1),
+  mimeType: z.string().min(1),
+  fileSize: z.number().nonnegative(),
+  originalName: z.string().min(1),
+  transcript: z.string().nullable().optional(),
+  transcriptSource: z.enum(["stt", "asr", "fallback"]).nullable().optional(),
+  extractedText: z.string().nullable().optional()
+});
+
 const outboundMessagePayloadSchema = z.object({
   peerId: z.string().min(1),
   chatType: z.enum(["c2c", "group"]),
-  content: z.string().min(1),
+  content: z.string().min(1).optional(),
+  mediaArtifacts: z.array(mediaArtifactSchema).min(1).optional(),
   replyToMessageId: z.string().min(1).optional()
+}).superRefine((payload, ctx) => {
+  if (!payload.content && !(payload.mediaArtifacts?.length)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "content or mediaArtifacts is required",
+      path: ["content"]
+    });
+  }
 });
 
 type WeixinGatewayDeps = {
@@ -38,6 +63,13 @@ type WeixinGatewayDeps = {
       peerId: string;
       chatType: "c2c" | "group";
       text: string;
+      replyToMessageId?: string;
+    }): Promise<void>;
+    sendMessage?(target: {
+      peerId: string;
+      chatType: "c2c" | "group";
+      content?: string;
+      mediaArtifacts?: MediaArtifact[];
       replyToMessageId?: string;
     }): Promise<void>;
   };
@@ -110,29 +142,47 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
       if (request.url === "/messages") {
         assertBearerToken(request, deps.config.expectedBearerToken);
         const payload = outboundMessagePayloadSchema.parse(await readJsonBody(request));
+        const duplicate = findRecentDuplicateOutbound(messageStore.listRecent(), payload);
+        if (duplicate) {
+          writeJson(response, 200, { id: duplicate.id, deduped: true });
+          return;
+        }
+
         const message: WeixinGatewayOutboundMessage = {
           id: randomUUID(),
           peerId: payload.peerId,
           chatType: payload.chatType,
-          content: payload.content,
+          ...(payload.content ? { content: payload.content } : {}),
+          ...(payload.mediaArtifacts?.length ? { mediaArtifacts: payload.mediaArtifacts } : {}),
           ...(payload.replyToMessageId ? { replyToMessageId: payload.replyToMessageId } : {}),
           createdAt: new Date().toISOString()
         };
 
         messageStore.append(message);
         if (deps.outboundSender) {
-          await deps.outboundSender.sendTextMessage({
-            peerId: payload.peerId,
-            chatType: payload.chatType,
-            text: payload.content,
-            ...(payload.replyToMessageId ? { replyToMessageId: payload.replyToMessageId } : {})
-          });
+          if (payload.mediaArtifacts?.length && deps.outboundSender.sendMessage) {
+            await deps.outboundSender.sendMessage({
+              peerId: payload.peerId,
+              chatType: payload.chatType,
+              ...(payload.content ? { content: payload.content } : {}),
+              mediaArtifacts: payload.mediaArtifacts,
+              ...(payload.replyToMessageId ? { replyToMessageId: payload.replyToMessageId } : {})
+            });
+          } else {
+            await deps.outboundSender.sendTextMessage({
+              peerId: payload.peerId,
+              chatType: payload.chatType,
+              text: payload.content ?? "",
+              ...(payload.replyToMessageId ? { replyToMessageId: payload.replyToMessageId } : {})
+            });
+          }
         }
-        console.log("[weixin-gateway] outbound text", {
+        console.log("[weixin-gateway] outbound message", {
           id: message.id,
           chatType: message.chatType,
           peerId: message.peerId,
-          preview: clipPreview(message.content)
+          preview: clipPreview(message.content ?? ""),
+          mediaCount: message.mediaArtifacts?.length ?? 0
         });
 
         writeJson(response, 200, { id: message.id });
@@ -174,6 +224,55 @@ function assertBearerToken(request: IncomingMessage, expectedToken: string | nul
 function clipPreview(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+function findRecentDuplicateOutbound(
+  recentMessages: WeixinGatewayOutboundMessage[],
+  payload: z.infer<typeof outboundMessagePayloadSchema>
+): WeixinGatewayOutboundMessage | null {
+  const fingerprint = buildOutboundFingerprint(payload);
+  if (!fingerprint) {
+    return null;
+  }
+
+  const now = Date.now();
+  for (const message of recentMessages) {
+    const createdAtMs = Date.parse(message.createdAt);
+    if (!Number.isFinite(createdAtMs) || now - createdAtMs > 120_000) {
+      continue;
+    }
+
+    if (buildOutboundFingerprint(message) === fingerprint) {
+      return message;
+    }
+  }
+
+  return null;
+}
+
+function buildOutboundFingerprint(message: {
+  peerId: string;
+  chatType: "c2c" | "group";
+  content?: string;
+  mediaArtifacts?: MediaArtifact[];
+  replyToMessageId?: string;
+}): string {
+  const peerId = String(message.peerId ?? "").trim();
+  const chatType = String(message.chatType ?? "").trim();
+  const replyToMessageId = String(message.replyToMessageId ?? "").trim();
+  const content = String(message.content ?? "").replace(/\s+/g, " ").trim();
+  const mediaFingerprint = (message.mediaArtifacts ?? [])
+    .map((artifact) =>
+      [
+        artifact.kind,
+        artifact.localPath || "",
+        artifact.sourceUrl || "",
+        artifact.originalName || ""
+      ].join("::")
+    )
+    .join("|");
+
+  return [peerId, chatType, replyToMessageId, content, mediaFingerprint].join("||");
 }
 
 function writeJson(

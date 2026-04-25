@@ -19,6 +19,7 @@ export class SqliteSessionStore implements SessionStorePort {
                 chat_type AS chatType,
                 peer_id AS peerId,
                 codex_thread_ref AS codexThreadRef,
+                last_codex_turn_id AS lastCodexTurnId,
                 skill_context_key AS skillContextKey,
                 status,
                 last_inbound_at AS lastInboundAt,
@@ -37,8 +38,9 @@ export class SqliteSessionStore implements SessionStorePort {
       .prepare(
         `INSERT INTO bridge_sessions (
           session_key, account_key, peer_key, chat_type, peer_id,
-          codex_thread_ref, skill_context_key, status, last_inbound_at, last_outbound_at, last_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          codex_thread_ref, last_codex_turn_id, skill_context_key, status,
+          last_inbound_at, last_outbound_at, last_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         session.sessionKey,
@@ -47,6 +49,7 @@ export class SqliteSessionStore implements SessionStorePort {
         session.chatType,
         session.peerId,
         session.codexThreadRef,
+        session.lastCodexTurnId,
         session.skillContextKey,
         session.status,
         session.lastInboundAt,
@@ -69,6 +72,12 @@ export class SqliteSessionStore implements SessionStorePort {
     this.db
       .prepare(`UPDATE bridge_sessions SET codex_thread_ref = ? WHERE session_key = ?`)
       .run(codexThreadRef, sessionKey);
+  }
+
+  async updateLastCodexTurnId(sessionKey: string, lastCodexTurnId: string | null): Promise<void> {
+    this.db
+      .prepare(`UPDATE bridge_sessions SET last_codex_turn_id = ? WHERE session_key = ?`)
+      .run(lastCodexTurnId, sessionKey);
   }
 
   async updateSkillContextKey(sessionKey: string, skillContextKey: string | null): Promise<void> {

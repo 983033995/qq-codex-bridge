@@ -15,6 +15,7 @@ export type SessionPeer = {
 export type BridgeSession = SessionPeer & {
   sessionKey: string;
   codexThreadRef: string | null;
+  lastCodexTurnId: string | null;
   skillContextKey: string | null;
   status: BridgeSessionStatus;
   lastInboundAt: string | null;

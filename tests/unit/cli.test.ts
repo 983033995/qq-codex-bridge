@@ -79,7 +79,7 @@ describe("cli", () => {
       env.CODEX_REMOTE_DEBUGGING_PORT = "9229";
     });
     const ensureCodexDesktop = vi.fn().mockResolvedValue({ launched: false });
-    const runBridgeDaemon = vi.fn().mockResolvedValue(undefined);
+    const runBridgeDaemon = vi.fn().mockResolvedValue({ channels: ["qq", "weixin"] });
     const io = collectWrites();
 
     await expect(
@@ -102,6 +102,7 @@ describe("cli", () => {
       })
     );
     expect(runBridgeDaemon).toHaveBeenCalledTimes(1);
+    expect(io.stdout.join("\n")).toContain("channels active: qq, weixin");
   });
 
   it("prints actionable config errors when required env vars are missing", async () => {
