@@ -3,6 +3,7 @@ import { BridgeSessionStatus } from "../../packages/domain/src/session.js";
 import type { BridgeSession } from "../../packages/domain/src/session.js";
 import { DesktopDriverError } from "../../packages/domain/src/driver.js";
 import {
+  MediaArtifactKind,
   TurnEventType,
   type InboundMessage,
   type OutboundDraft
@@ -12,6 +13,8 @@ import type { QqEgressPort } from "../../packages/ports/src/qq.js";
 import type { SessionStorePort, TranscriptStorePort } from "../../packages/ports/src/store.js";
 import { BridgeOrchestrator } from "../../packages/orchestrator/src/bridge-orchestrator.js";
 import { deliverDrafts } from "../../packages/orchestrator/src/job-runner.js";
+import { enrichQqOutboundDraft } from "../../packages/orchestrator/src/qq-outbound-draft.js";
+import { formatWeixinOutboundDraft } from "../../packages/orchestrator/src/weixin-outbound-format.js";
 
 function createMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
@@ -35,7 +38,9 @@ function createSession(message: InboundMessage): BridgeSession {
     chatType: message.chatType,
     peerId: message.senderId,
     codexThreadRef: "thread-1",
+    lastCodexTurnId: null,
     skillContextKey: null,
+    conversationProvider: null,
     status: BridgeSessionStatus.NeedsRebind,
     lastInboundAt: null,
     lastOutboundAt: null,
@@ -92,7 +97,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn()
     };
     const conversationProvider: ConversationProviderPort = {
@@ -118,6 +125,60 @@ describe("BridgeOrchestrator", () => {
     expect(qqEgress.deliver).not.toHaveBeenCalled();
   });
 
+  it("persists the latest codex turn id when a delivered draft carries one", async () => {
+    const message = createMessage();
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(createSession(message)),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn(async (_message, options) => {
+        await options?.onDraft?.({
+          draftId: "draft-turn-1",
+          turnId: "turn-local-123",
+          sessionKey: message.sessionKey,
+          text: "阶段输出",
+          createdAt: "2026-04-19T13:00:01.000Z"
+        });
+        return [];
+      })
+    };
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn(async (draft: OutboundDraft) => ({
+        jobId: `job-${draft.draftId}`,
+        sessionKey: draft.sessionKey,
+        providerMessageId: null,
+        deliveredAt: draft.createdAt
+      }))
+    };
+
+    const orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await orchestrator.handleInbound(message);
+
+    expect(sessionStore.updateLastCodexTurnId).toHaveBeenCalledWith(
+      message.sessionKey,
+      "turn-local-123"
+    );
+  });
+
   it("suppresses duplicate inbound messages with different ids when the content repeats shortly after", async () => {
     const firstMessage = createMessage({
       messageId: "msg-1",
@@ -141,7 +202,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
     const conversationProvider: ConversationProviderPort = {
@@ -176,6 +239,72 @@ describe("BridgeOrchestrator", () => {
       expect.objectContaining({
         messageId: secondMessage.messageId,
         sessionKey: secondMessage.sessionKey
+      })
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("suppresses repeated inbound messages within the window even if another message arrived in between", async () => {
+    const firstMessage = createMessage({
+      messageId: "msg-a1",
+      text: "A",
+      receivedAt: "2026-04-10T21:58:49.000Z"
+    });
+    const secondMessage = createMessage({
+      messageId: "msg-b1",
+      text: "B",
+      receivedAt: "2026-04-10T21:58:59.000Z"
+    });
+    const repeatedFirstMessage = createMessage({
+      messageId: "msg-a2",
+      text: "A",
+      receivedAt: "2026-04-10T21:59:09.000Z"
+    });
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(null),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn().mockResolvedValue([])
+    };
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn()
+    };
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress
+    });
+
+    await orchestrator.handleInbound(firstMessage);
+    await orchestrator.handleInbound(secondMessage);
+    await orchestrator.handleInbound(repeatedFirstMessage);
+
+    expect(transcriptStore.recordInbound).toHaveBeenCalledTimes(2);
+    expect(transcriptStore.recordInbound).toHaveBeenNthCalledWith(1, firstMessage);
+    expect(transcriptStore.recordInbound).toHaveBeenNthCalledWith(2, secondMessage);
+    expect(conversationProvider.runTurn).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[qq-codex-bridge] duplicate inbound suppressed",
+      expect.objectContaining({
+        messageId: repeatedFirstMessage.messageId,
+        sessionKey: repeatedFirstMessage.sessionKey
       })
     );
     warnSpy.mockRestore();
@@ -219,7 +348,9 @@ describe("BridgeOrchestrator", () => {
         events.push(`updateSessionStatus:${status}:${lastError ?? "null"}`);
       }),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => {
         events.push("withSessionLock");
         return work();
@@ -261,7 +392,9 @@ describe("BridgeOrchestrator", () => {
       chatType: message.chatType,
       peerId: message.senderId,
       codexThreadRef: null,
+      lastCodexTurnId: null,
       skillContextKey: null,
+      conversationProvider: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: message.receivedAt,
       lastOutboundAt: null,
@@ -312,7 +445,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -370,7 +505,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -435,7 +572,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -501,7 +640,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -566,7 +707,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -604,7 +747,8 @@ describe("BridgeOrchestrator", () => {
       transcriptStore,
       sessionStore,
       conversationProvider,
-      qqEgress
+      qqEgress,
+      draftFormatter: (draft) => formatWeixinOutboundDraft(enrichQqOutboundDraft(draft))
     });
 
     await orchestrator.handleInbound(message);
@@ -648,7 +792,9 @@ describe("BridgeOrchestrator", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn(),
       updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -700,6 +846,97 @@ describe("BridgeOrchestrator", () => {
     expect(qqEgress.deliver).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ text: "world", turnId: "turn-2" })
+    );
+  });
+
+  it("does not resend media artifacts on completed turn events after a media-only draft already delivered them", async () => {
+    const message = createMessage();
+    const mediaDraft: OutboundDraft = {
+      draftId: "draft-media-1",
+      turnId: "turn-3",
+      sessionKey: message.sessionKey,
+      text: "",
+      mediaArtifacts: [
+        {
+          kind: MediaArtifactKind.Image,
+          sourceUrl: "/tmp/demo.jpg",
+          localPath: "/tmp/demo.jpg",
+          mimeType: "image/jpeg",
+          fileSize: 1024,
+          originalName: "demo.jpg"
+        }
+      ],
+      createdAt: "2026-04-12T12:20:01.000Z"
+    };
+
+    const transcriptStore: TranscriptStorePort = {
+      hasInbound: vi.fn().mockResolvedValue(false),
+      recordInbound: vi.fn(),
+      recordOutbound: vi.fn(),
+      listRecentConversation: vi.fn().mockResolvedValue([])
+    };
+
+    const sessionStore: SessionStorePort = {
+      getSession: vi.fn().mockResolvedValue(createSession(message)),
+      createSession: vi.fn(),
+      updateSessionStatus: vi.fn(),
+      updateBinding: vi.fn(),
+      updateLastCodexTurnId: vi.fn(),
+      updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
+      withSessionLock: vi.fn(async (_sessionKey, work) => work())
+    };
+
+    let orchestrator!: BridgeOrchestrator;
+    const conversationProvider: ConversationProviderPort = {
+      runTurn: vi.fn(async (_message, options) => {
+        await options?.onDraft?.(mediaDraft);
+        await orchestrator.handleTurnEvent({
+          sessionKey: message.sessionKey,
+          turnId: "turn-3",
+          sequence: 2,
+          eventType: TurnEventType.Completed,
+          createdAt: "2026-04-12T12:20:03.000Z",
+          isFinal: true,
+          payload: {
+            fullText: "<qqmedia>/tmp/demo.jpg</qqmedia>",
+            replyToMessageId: message.messageId,
+            completionReason: "stable"
+          }
+        });
+        return [];
+      })
+    };
+
+    const qqEgress: QqEgressPort = {
+      deliver: vi.fn(async (draft: OutboundDraft) => ({
+        jobId: `job-${draft.draftId}`,
+        sessionKey: draft.sessionKey,
+        providerMessageId: null,
+        deliveredAt: draft.createdAt
+      }))
+    };
+
+    orchestrator = new BridgeOrchestrator({
+      transcriptStore,
+      sessionStore,
+      conversationProvider,
+      qqEgress,
+      draftFormatter: (draft) => formatWeixinOutboundDraft(enrichQqOutboundDraft(draft))
+    });
+
+    await orchestrator.handleInbound(message);
+
+    expect(qqEgress.deliver).toHaveBeenCalledTimes(1);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turnId: "turn-3",
+        mediaArtifacts: [
+          expect.objectContaining({
+            localPath: "/tmp/demo.jpg"
+          })
+        ]
+      })
     );
   });
 });

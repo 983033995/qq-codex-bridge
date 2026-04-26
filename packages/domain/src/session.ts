@@ -12,10 +12,14 @@ export type SessionPeer = {
   peerId: string;
 };
 
+export type ConversationProviderKind = "codex-desktop" | "chatgpt-desktop";
+
 export type BridgeSession = SessionPeer & {
   sessionKey: string;
   codexThreadRef: string | null;
+  lastCodexTurnId: string | null;
   skillContextKey: string | null;
+  conversationProvider: ConversationProviderKind | null;
   status: BridgeSessionStatus;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;

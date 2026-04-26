@@ -1,23 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { BridgeSessionStatus, type BridgeSession } from "../../domain/src/session.js";
-import { TurnEventType, type InboundMessage, type OutboundDraft, type TurnEvent } from "../../domain/src/message.js";
+import {
+  TurnEventType,
+  type InboundMessage,
+  type MediaArtifact,
+  type OutboundDraft,
+  type TurnEvent
+} from "../../domain/src/message.js";
 import { DesktopDriverError } from "../../domain/src/driver.js";
 import type { ConversationProviderPort } from "../../ports/src/conversation.js";
 import type { QqEgressPort } from "../../ports/src/qq.js";
 import type { SessionStorePort, TranscriptStorePort } from "../../ports/src/store.js";
-import { formatQqOutboundDraft } from "./qq-outbound-format.js";
 
 type BridgeOrchestratorDeps = {
   sessionStore: SessionStorePort;
   transcriptStore: TranscriptStorePort;
   conversationProvider: ConversationProviderPort;
   qqEgress: QqEgressPort;
+  draftFormatter?: (draft: OutboundDraft) => OutboundDraft;
 };
 
 type TurnState = {
   lastSequence: number;
   assembledText: string;
   sentText: string;
+  sentArtifactKeys: Set<string>;
   lastEventAt: string | null;
   completed: boolean;
   finalFlushed: boolean;
@@ -26,11 +33,14 @@ type TurnState = {
 export class BridgeOrchestrator {
   private readonly recentInboundFingerprints = new Map<
     string,
-    { fingerprint: string; receivedAtMs: number; messageId: string }
+    Array<{ fingerprint: string; receivedAtMs: number; messageId: string }>
   >();
   private readonly turnStates = new Map<string, TurnState>();
+  private readonly draftFormatter: (draft: OutboundDraft) => OutboundDraft;
 
-  constructor(private readonly deps: BridgeOrchestratorDeps) {}
+  constructor(private readonly deps: BridgeOrchestratorDeps) {
+    this.draftFormatter = deps.draftFormatter ?? ((draft) => draft);
+  }
 
   async handleInbound(message: InboundMessage): Promise<void> {
     const alreadySeen = await this.deps.transcriptStore.hasInbound(message.messageId);
@@ -61,7 +71,9 @@ export class BridgeOrchestrator {
           chatType: message.chatType,
           peerId: message.senderId,
           codexThreadRef: null,
+          lastCodexTurnId: null,
           skillContextKey: null,
+          conversationProvider: null,
           status: BridgeSessionStatus.Active,
           lastInboundAt: message.receivedAt,
           lastOutboundAt: null,
@@ -82,17 +94,24 @@ export class BridgeOrchestrator {
             return;
           }
           deliveredDraftIds.add(draft.draftId);
-          await this.deps.transcriptStore.recordOutbound(draft);
+          if (draft.turnId) {
+            await this.deps.sessionStore.updateLastCodexTurnId(message.sessionKey, draft.turnId);
+          }
+          const formattedDraft = this.draftFormatter(draft);
+          if (isEmptyDraft(formattedDraft)) {
+            return;
+          }
+          await this.deps.transcriptStore.recordOutbound(formattedDraft);
           try {
-            await this.deps.qqEgress.deliver(draft);
-            this.recordDeliveredDraft(draft);
+            await this.deps.qqEgress.deliver(formattedDraft);
+            this.recordDeliveredDraft(formattedDraft);
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
-            deliveryErrors.push(`${draft.draftId}: ${reason}`);
+            deliveryErrors.push(`${formattedDraft.draftId}: ${reason}`);
             console.warn("[qq-codex-bridge] draft delivery failed", {
               sessionKey: message.sessionKey,
               messageId: message.messageId,
-              draftId: draft.draftId,
+              draftId: formattedDraft.draftId,
               error: reason
             });
           }
@@ -144,6 +163,8 @@ export class BridgeOrchestrator {
         return;
       }
 
+      await this.deps.sessionStore.updateLastCodexTurnId(event.sessionKey, event.turnId);
+
       state.lastSequence = event.sequence;
       state.lastEventAt = event.createdAt;
       if (typeof event.payload.fullText === "string") {
@@ -163,7 +184,7 @@ export class BridgeOrchestrator {
         return;
       }
 
-      const draft = formatQqOutboundDraft({
+      const draft = this.draftFormatter({
         draftId: randomUUID(),
         turnId: event.turnId,
         sessionKey: event.sessionKey,
@@ -174,15 +195,25 @@ export class BridgeOrchestrator {
           : {})
       });
 
-      if (!draft.text.trim()) {
+      const pendingArtifacts = filterPendingArtifacts(draft.mediaArtifacts ?? [], state.sentArtifactKeys);
+      const normalizedDraft =
+        pendingArtifacts.length === (draft.mediaArtifacts?.length ?? 0)
+          ? draft
+          : {
+              ...draft,
+              mediaArtifacts: pendingArtifacts
+            };
+
+      if (isEmptyDraft(normalizedDraft)) {
         state.sentText = state.assembledText;
         state.completed = true;
         state.finalFlushed = true;
         return;
       }
 
-      await this.deps.transcriptStore.recordOutbound(draft);
-      await this.deps.qqEgress.deliver(draft);
+      await this.deps.transcriptStore.recordOutbound(normalizedDraft);
+      await this.deps.qqEgress.deliver(normalizedDraft);
+      this.recordDeliveredDraft(normalizedDraft);
       state.sentText = state.assembledText;
       state.completed = true;
       state.finalFlushed = true;
@@ -190,20 +221,22 @@ export class BridgeOrchestrator {
   }
 
   private isLikelyDuplicateInbound(message: InboundMessage): boolean {
-    const record = this.recentInboundFingerprints.get(message.sessionKey);
-    if (!record) {
-      return false;
-    }
-
     const receivedAtMs = Date.parse(message.receivedAt);
     if (!Number.isFinite(receivedAtMs)) {
       return false;
     }
 
-    return (
-      record.fingerprint === buildInboundFingerprint(message) &&
-      receivedAtMs - record.receivedAtMs >= 0 &&
-      receivedAtMs - record.receivedAtMs <= 90_000
+    const records = this.getRecentInboundRecords(message.sessionKey, receivedAtMs);
+    if (!records.length) {
+      return false;
+    }
+
+    const fingerprint = buildInboundFingerprint(message);
+    return records.some(
+      (record) =>
+        record.fingerprint === fingerprint
+        && receivedAtMs - record.receivedAtMs >= 0
+        && receivedAtMs - record.receivedAtMs <= 90_000
     );
   }
 
@@ -213,18 +246,29 @@ export class BridgeOrchestrator {
       return;
     }
 
-    const now = receivedAtMs;
-    for (const [sessionKey, record] of this.recentInboundFingerprints.entries()) {
-      if (now - record.receivedAtMs > 120_000) {
-        this.recentInboundFingerprints.delete(sessionKey);
-      }
-    }
-
-    this.recentInboundFingerprints.set(message.sessionKey, {
+    const records = this.getRecentInboundRecords(message.sessionKey, receivedAtMs);
+    records.push({
       fingerprint: buildInboundFingerprint(message),
       receivedAtMs,
       messageId: message.messageId
     });
+    this.recentInboundFingerprints.set(message.sessionKey, records);
+  }
+
+  private getRecentInboundRecords(
+    sessionKey: string,
+    referenceTimeMs: number
+  ): Array<{ fingerprint: string; receivedAtMs: number; messageId: string }> {
+    for (const [key, records] of this.recentInboundFingerprints.entries()) {
+      const retained = records.filter((record) => referenceTimeMs - record.receivedAtMs <= 120_000);
+      if (retained.length > 0) {
+        this.recentInboundFingerprints.set(key, retained);
+      } else {
+        this.recentInboundFingerprints.delete(key);
+      }
+    }
+
+    return [...(this.recentInboundFingerprints.get(sessionKey) ?? [])];
   }
 
   private getOrCreateTurnState(event: TurnEvent): TurnState {
@@ -238,6 +282,7 @@ export class BridgeOrchestrator {
       lastSequence: 0,
       assembledText: "",
       sentText: "",
+      sentArtifactKeys: new Set<string>(),
       lastEventAt: null,
       completed: false,
       finalFlushed: false
@@ -247,7 +292,7 @@ export class BridgeOrchestrator {
   }
 
   private recordDeliveredDraft(draft: OutboundDraft): void {
-    if (!draft.turnId || !draft.text) {
+    if (!draft.turnId) {
       return;
     }
 
@@ -256,11 +301,15 @@ export class BridgeOrchestrator {
       lastSequence: 0,
       assembledText: "",
       sentText: "",
+      sentArtifactKeys: new Set<string>(),
       lastEventAt: null,
       completed: false,
       finalFlushed: false
     };
     state.sentText += draft.text;
+    for (const artifact of draft.mediaArtifacts ?? []) {
+      state.sentArtifactKeys.add(buildArtifactKey(artifact));
+    }
     this.turnStates.set(key, state);
   }
 }
@@ -333,4 +382,24 @@ function findSuffixPrefixOverlap(previous: string, next: string): number {
 
 function stripWhitespace(value: string): string {
   return value.replace(/\s+/g, "");
+}
+
+function filterPendingArtifacts(
+  artifacts: MediaArtifact[],
+  sentArtifactKeys: Set<string>
+): MediaArtifact[] {
+  return artifacts.filter((artifact) => !sentArtifactKeys.has(buildArtifactKey(artifact)));
+}
+
+function buildArtifactKey(artifact: MediaArtifact): string {
+  return [
+    artifact.kind,
+    artifact.localPath || "",
+    artifact.sourceUrl || "",
+    artifact.originalName || ""
+  ].join("::");
+}
+
+function isEmptyDraft(draft: OutboundDraft): boolean {
+  return !draft.text.trim() && !(draft.mediaArtifacts?.length);
 }

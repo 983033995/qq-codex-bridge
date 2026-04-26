@@ -1,4 +1,4 @@
-import type { BridgeSession, BridgeSessionStatus } from "../../domain/src/session.js";
+import type { BridgeSession, BridgeSessionStatus, ConversationProviderKind } from "../../domain/src/session.js";
 import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../domain/src/message.js";
 
 export interface SessionStorePort {
@@ -10,7 +10,9 @@ export interface SessionStorePort {
     lastError?: string | null
   ): Promise<void>;
   updateBinding(sessionKey: string, codexThreadRef: string | null): Promise<void>;
+  updateLastCodexTurnId(sessionKey: string, lastCodexTurnId: string | null): Promise<void>;
   updateSkillContextKey(sessionKey: string, skillContextKey: string | null): Promise<void>;
+  updateConversationProvider(sessionKey: string, provider: ConversationProviderKind | null): Promise<void>;
   withSessionLock<T>(sessionKey: string, work: () => Promise<T>): Promise<T>;
 }
 

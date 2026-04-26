@@ -13,7 +13,7 @@ type CliDeps = {
   packageRoot?: string;
   loadEnvFile?: (filePath: string) => void;
   ensureCodexDesktop?: (config: DevLaunchConfig) => Promise<{ launched: boolean }>;
-  runBridgeDaemon?: () => Promise<void>;
+  runBridgeDaemon?: () => Promise<{ channels: string[] } | void>;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 };
@@ -74,7 +74,11 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
       `[qq-codex-bridge] codex desktop ready { launched: ${String(result.launched)}, remoteDebuggingPort: ${config.codexDesktop.remoteDebuggingPort} }`
     );
 
-    await startBridge();
+    const runtime = await startBridge();
+    const channels = Array.isArray((runtime as { channels?: string[] } | undefined)?.channels)
+      ? (runtime as { channels: string[] }).channels
+      : ["qq"];
+    writeStdout(`[qq-codex-bridge] channels active: ${channels.join(", ")}`);
     return 0;
   } catch (error) {
     if (error instanceof ZodError) {

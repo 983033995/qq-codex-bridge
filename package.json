@@ -21,7 +21,8 @@
     "typescript"
   ],
   "bin": {
-    "qq-codex-bridge": "bin/qq-codex-bridge.js"
+    "qq-codex-bridge": "bin/qq-codex-bridge.js",
+    "qq-codex-weixin-gateway": "bin/qq-codex-weixin-gateway.js"
   },
   "files": [
     "bin",
@@ -37,7 +38,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx --env-file=.env apps/bridge-daemon/src/dev.ts",
+    "gitnexus:detect-changes": "node scripts/gitnexus-detect-changes.mjs",
+    "weixin:login": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login",
+    "weixin:login:force": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login-force",
+    "weixin:logout": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-logout",
     "start": "node dist/apps/bridge-daemon/src/cli.js",
+    "start:weixin-gateway": "node dist/apps/weixin-gateway/src/cli.js",
     "debug:codex-workers": "tsx apps/bridge-daemon/src/debug-codex-workers.ts",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -18,7 +18,9 @@ describe("rebind recovery", () => {
         chatType: "c2c",
         peerId: "abc",
         codexThreadRef: "codex-thread:1",
+        lastCodexTurnId: null,
         skillContextKey: null,
+        conversationProvider: null,
         status: BridgeSessionStatus.Active,
         lastInboundAt: null,
         lastOutboundAt: null,
@@ -27,7 +29,9 @@ describe("rebind recovery", () => {
       createSession: vi.fn(),
       updateSessionStatus: vi.fn().mockResolvedValue(undefined),
       updateBinding: vi.fn().mockResolvedValue(undefined),
+      updateLastCodexTurnId: vi.fn().mockResolvedValue(undefined),
       updateSkillContextKey: vi.fn().mockResolvedValue(undefined),
+      updateConversationProvider: vi.fn().mockResolvedValue(undefined),
       withSessionLock
     };
 

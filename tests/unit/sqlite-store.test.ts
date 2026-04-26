@@ -55,7 +55,9 @@ describe("sqlite store", () => {
       chatType: "c2c",
       peerId: "abc-123",
       codexThreadRef: null,
+      lastCodexTurnId: null,
       skillContextKey: null,
+      conversationProvider: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: null,
       lastOutboundAt: null,
@@ -71,11 +73,47 @@ describe("sqlite store", () => {
       chatType: "c2c",
       peerId: "abc-123",
       codexThreadRef: null,
+      lastCodexTurnId: null,
       skillContextKey: null,
+      conversationProvider: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: null,
       lastOutboundAt: null,
       lastError: null
+    });
+  });
+
+  it("persists and updates the latest codex turn id on the session", async () => {
+    const dbPath = createTempDbPath();
+    const db = createSqliteDatabase(dbPath);
+    const sessionStore = new SqliteSessionStore(db);
+
+    const sessionKey = buildSessionKey({
+      accountKey: "qqbot:default",
+      peerKey: buildPeerKey({ chatType: "c2c", peerId: "abc-456" })
+    });
+
+    await sessionStore.createSession({
+      sessionKey,
+      accountKey: "qqbot:default",
+      peerKey: "qq:c2c:abc-456",
+      chatType: "c2c",
+      peerId: "abc-456",
+      codexThreadRef: "codex-thread:page-1:thread-a",
+      lastCodexTurnId: null,
+      skillContextKey: null,
+      conversationProvider: null,
+      status: BridgeSessionStatus.Active,
+      lastInboundAt: null,
+      lastOutboundAt: null,
+      lastError: null
+    });
+
+    await sessionStore.updateLastCodexTurnId(sessionKey, "turn-local-123");
+
+    await expect(sessionStore.getSession(sessionKey)).resolves.toMatchObject({
+      sessionKey,
+      lastCodexTurnId: "turn-local-123"
     });
   });
 
