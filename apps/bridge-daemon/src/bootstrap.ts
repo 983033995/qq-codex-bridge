@@ -21,6 +21,7 @@ import { enrichQqOutboundDraft } from "../../../packages/orchestrator/src/qq-out
 import { shouldInjectQqbotSkillContext } from "../../../packages/orchestrator/src/qqbot-skill-context.js";
 import { formatWeixinOutboundDraft } from "../../../packages/orchestrator/src/weixin-outbound-format.js";
 import type {
+  ConversationProviderPort,
   ConversationRunOptions,
   DesktopDriverPort
 } from "../../../packages/ports/src/conversation.js";
@@ -30,18 +31,23 @@ import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
 import { loadConfigFromEnv } from "./config.js";
+import { ChatgptDesktopProvider } from "../../../packages/adapters/chatgpt-desktop/src/bridge-provider.js";
+import type { ChatgptDesktopDriver } from "../../../packages/adapters/chatgpt-desktop/src/driver.js";
 
 const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
 
 type BootstrapAdapters = {
   qq: ReturnType<typeof createQqChannelAdapter>;
+  qqByAccountKey: Record<string, ReturnType<typeof createQqChannelAdapter>>;
   codexDesktop: DesktopDriverPort;
   weixin?: WeixinChannelAdapter;
+  weixinByAccountKey: Record<string, WeixinChannelAdapter>;
 };
 
 type BootstrapOrchestrators = {
   qq: BridgeOrchestrator;
   weixin?: BridgeOrchestrator;
+  byAccountKey: Record<string, BridgeOrchestrator>;
 };
 
 function formatDraftForQq(draft: Parameters<typeof formatQqOutboundDraft>[0]) {
@@ -57,15 +63,7 @@ export function bootstrap() {
   const db = createSqliteDatabase(config.databasePath);
   const sessionStore = new SqliteSessionStore(db);
   const transcriptStore = new SqliteTranscriptStore(db);
-  const qqApiClient = new QqApiClient(config.qqBot.appId, config.qqBot.clientSecret, {
-    markdownSupport: config.qqBot.markdownSupport
-  });
-  const accountKey = "qqbot:default";
-  const qqGatewaySessionStore = new FileQqGatewaySessionStore(
-    path.join(path.dirname(config.databasePath), "qq-gateway-session.json"),
-    accountKey,
-    config.qqBot.appId
-  );
+  const runtimeDir = path.dirname(config.databasePath);
   const useDomTransport = process.env.CODEX_DESKTOP_TRANSPORT === "dom";
   const forwardAppServerUiEvents = process.env.CODEX_APP_SERVER_FORWARD_UI_EVENTS === "1";
   const cdpSession = new CdpSession({
@@ -88,15 +86,37 @@ export function bootstrap() {
             ? new CodexDesktopAppUiNotificationForwarder(cdpSession)
             : null
         });
-  const adapters = {
-    qq: createQqChannelAdapter({
+  const qqAdapters = config.qqBots.map((bot) => {
+    const accountKey = `qqbot:${bot.accountId}`;
+    const qqApiClient = new QqApiClient(bot.appId, bot.clientSecret, {
+      markdownSupport: bot.markdownSupport
+    });
+    const qqGatewaySessionStore = new FileQqGatewaySessionStore(
+      path.join(runtimeDir, `qq-gateway-session-${safePathSegment(bot.accountId)}.json`),
       accountKey,
-      appId: config.qqBot.appId,
-      apiClient: qqApiClient,
-      sessionStore: qqGatewaySessionStore,
-      mediaDownloadDir: path.join(path.dirname(config.databasePath), "media"),
-      stt: config.qqBot.stt
-    }),
+      bot.appId
+    );
+    return {
+      accountKey,
+      adapter: createQqChannelAdapter({
+        accountKey,
+        appId: bot.appId,
+        apiClient: qqApiClient,
+        sessionStore: qqGatewaySessionStore,
+        mediaDownloadDir: path.join(runtimeDir, "media", "qq", safePathSegment(bot.accountId)),
+        stt: bot.stt
+      }),
+      sessionStore: qqGatewaySessionStore
+    };
+  });
+  const defaultQqAdapter = qqAdapters[0];
+  if (!defaultQqAdapter) {
+    throw new Error("at least one QQ bot must be configured");
+  }
+
+  const adapters = {
+    qq: defaultQqAdapter.adapter,
+    qqByAccountKey: Object.fromEntries(qqAdapters.map((entry) => [entry.accountKey, entry.adapter])),
     codexDesktop: codexDriver
   };
   let desktopTurnTail = Promise.resolve();
@@ -119,7 +139,7 @@ export function bootstrap() {
   const runCodexTurn = async <T>(work: () => Promise<T>): Promise<T> =>
     useDomTransport ? runWithDesktopTurnLock(work) : work();
 
-  const conversationProvider = {
+  const codexConversationProvider = {
     runTurn: async (
       message: Parameters<BridgeOrchestrator["handleInbound"]>[0],
       options?: ConversationRunOptions
@@ -186,6 +206,19 @@ export function bootstrap() {
       })
   };
 
+  const chatgptProvider = new ChatgptDesktopProvider({ outDir: "runtime/media/chatgpt" });
+
+  const conversationProvider: ConversationProviderPort = {
+    runTurn: async (message, options) => {
+      const session = await sessionStore.getSession(message.sessionKey);
+      const effectiveProvider = session?.conversationProvider ?? config.conversationProvider;
+      if (effectiveProvider === "chatgpt-desktop") {
+        return chatgptProvider.runTurn(message, options);
+      }
+      return codexConversationProvider.runTurn(message, options);
+    }
+  };
+
   const createChannelOrchestrator = (
     egress: ChatEgressPort,
     draftFormatter?: (
@@ -200,29 +233,53 @@ export function bootstrap() {
       draftFormatter
     });
 
-  const channelOrchestrators: BootstrapOrchestrators = {
-    qq: createChannelOrchestrator(adapters.qq.egress, formatDraftForQq)
-  };
+  const qqOrchestrators = Object.fromEntries(
+    qqAdapters.map((entry) => [
+      entry.accountKey,
+      createChannelOrchestrator(entry.adapter.egress, formatDraftForQq)
+    ])
+  );
 
-  const weixinAdapter =
-    config.weixin.enabled && config.weixin.egressBaseUrl && config.weixin.egressToken
-      ? createWeixinChannelAdapter({
-          accountKey: `weixin:${config.weixin.accountId}`,
-          webhookPath: config.weixin.webhookPath,
-          egressBaseUrl: config.weixin.egressBaseUrl,
-          egressToken: config.weixin.egressToken
+  const weixinAdapters = config.weixinAccounts
+    .filter((account) => account.enabled && account.egressBaseUrl && account.egressToken)
+    .map((account) => {
+      const accountKey = `weixin:${account.accountId}`;
+      return {
+        accountKey,
+        adapter: createWeixinChannelAdapter({
+          accountKey,
+          webhookPath: account.webhookPath,
+          egressBaseUrl: account.egressBaseUrl!,
+          egressToken: account.egressToken!
         })
-      : null;
-  if (weixinAdapter) {
-    channelOrchestrators.weixin = createChannelOrchestrator(
-      weixinAdapter.egress,
-      formatDraftForWeixin
-    );
-  }
+      };
+    });
+  const weixinOrchestrators = Object.fromEntries(
+    weixinAdapters.map((entry) => [
+      entry.accountKey,
+      createChannelOrchestrator(entry.adapter.egress, formatDraftForWeixin)
+    ])
+  );
+  const defaultWeixinAdapter = weixinAdapters[0]?.adapter;
+  const defaultWeixinOrchestrator = weixinAdapters[0]
+    ? weixinOrchestrators[weixinAdapters[0].accountKey]
+    : undefined;
+
+  const channelOrchestrators: BootstrapOrchestrators = {
+    qq: qqOrchestrators[defaultQqAdapter.accountKey],
+    ...(defaultWeixinOrchestrator ? { weixin: defaultWeixinOrchestrator } : {}),
+    byAccountKey: {
+      ...qqOrchestrators,
+      ...weixinOrchestrators
+    }
+  };
 
   const allAdapters: BootstrapAdapters = {
     ...adapters,
-    ...(weixinAdapter ? { weixin: weixinAdapter } : {})
+    ...(defaultWeixinAdapter ? { weixin: defaultWeixinAdapter } : {}),
+    weixinByAccountKey: Object.fromEntries(
+      weixinAdapters.map((entry) => [entry.accountKey, entry.adapter])
+    )
   };
 
   return {
@@ -233,7 +290,8 @@ export function bootstrap() {
     adapters: allAdapters,
     orchestrator: channelOrchestrators.qq,
     orchestrators: channelOrchestrators,
-    qqGatewaySessionStore
+    qqGatewaySessionStore: defaultQqAdapter.sessionStore,
+    chatgptDriver: chatgptProvider.desktopDriver
   };
 }
 
@@ -277,3 +335,7 @@ async function postTurnEvent(port: number, event: TurnEvent): Promise<void> {
 }
 
 export { INTERNAL_TURN_EVENT_PATH };
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "default";
+}

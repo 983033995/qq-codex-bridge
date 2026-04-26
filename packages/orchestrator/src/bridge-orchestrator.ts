@@ -73,6 +73,7 @@ export class BridgeOrchestrator {
           codexThreadRef: null,
           lastCodexTurnId: null,
           skillContextKey: null,
+          conversationProvider: null,
           status: BridgeSessionStatus.Active,
           lastInboundAt: message.receivedAt,
           lastOutboundAt: null,

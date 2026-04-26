@@ -23,7 +23,16 @@ function createGatewayConfig() {
     qrFetchTimeoutMs: 10_000,
     qrPollTimeoutMs: 35_000,
     qrTotalTimeoutMs: 480_000,
-    stateWatchIntervalMs: 1_000
+    stateWatchIntervalMs: 1_000,
+    accounts: [
+      {
+        accountId: "default",
+        bridgeWebhookPath: "/webhooks/weixin",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        token: "bot-token",
+        messageStorePath: "runtime/test.ndjson"
+      }
+    ]
   };
 }
 

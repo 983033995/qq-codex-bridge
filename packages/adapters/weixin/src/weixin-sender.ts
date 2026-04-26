@@ -35,6 +35,8 @@ export class WeixinSender implements ChatEgressPort {
     const segments = buildWeixinOutboundSegments({
       peerId: target.peerId,
       chatType: target.chatType,
+      accountKey: target.accountKey,
+      accountId: target.accountId,
       content,
       mediaArtifacts,
       replyToMessageId: draft.replyToMessageId
@@ -52,6 +54,8 @@ export class WeixinSender implements ChatEgressPort {
 function buildWeixinOutboundSegments(input: {
   peerId: string;
   chatType: "c2c" | "group";
+  accountKey: string;
+  accountId: string;
   content: string;
   mediaArtifacts: NonNullable<OutboundDraft["mediaArtifacts"]>;
   replyToMessageId?: string;
@@ -65,6 +69,8 @@ function buildWeixinOutboundSegments(input: {
   const segments: Array<{
     peerId: string;
     chatType: "c2c" | "group";
+    accountKey: string;
+    accountId: string;
     content?: string;
     mediaArtifacts?: NonNullable<OutboundDraft["mediaArtifacts"]>;
     replyToMessageId?: string;
@@ -74,6 +80,8 @@ function buildWeixinOutboundSegments(input: {
     segments.push({
       peerId: input.peerId,
       chatType: input.chatType,
+      accountKey: input.accountKey,
+      accountId: input.accountId,
       content: contentSegment,
       ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {})
     });
@@ -83,6 +91,8 @@ function buildWeixinOutboundSegments(input: {
     segments.push({
       peerId: input.peerId,
       chatType: input.chatType,
+      accountKey: input.accountKey,
+      accountId: input.accountId,
       mediaArtifacts: [artifact],
       ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {})
     });
@@ -231,18 +241,26 @@ function dedupeArtifacts(
   return deduped;
 }
 
-function parseSessionTarget(sessionKey: string): { chatType: "c2c" | "group"; peerId: string } {
+function parseSessionTarget(sessionKey: string): {
+  accountKey: string;
+  accountId: string;
+  chatType: "c2c" | "group";
+  peerId: string;
+} {
   const parts = sessionKey.split("::");
+  const accountKey = parts.at(0) ?? "";
   const scope = parts.at(-1) ?? "";
   const segments = scope.split(":");
   const chatType = segments.at(-2);
   const peerId = segments.at(-1);
 
-  if ((chatType !== "c2c" && chatType !== "group") || !peerId) {
+  if (!accountKey || (chatType !== "c2c" && chatType !== "group") || !peerId) {
     throw new Error(`Unable to parse channel session key: ${sessionKey}`);
   }
 
   return {
+    accountKey,
+    accountId: accountKey.startsWith("weixin:") ? accountKey.slice("weixin:".length) : accountKey,
     chatType,
     peerId
   };

@@ -26,6 +26,8 @@ describe("weixin sender", () => {
     );
 
     expect(apiClient.sendMessage).toHaveBeenCalledWith({
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       content: undefined,
@@ -63,12 +65,16 @@ describe("weixin sender", () => {
     );
 
     expect(apiClient.sendMessage).toHaveBeenNthCalledWith(1, {
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       content: "这是补充说明",
       replyToMessageId: undefined
     });
     expect(apiClient.sendMessage).toHaveBeenNthCalledWith(2, {
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       mediaArtifacts: [
@@ -156,12 +162,16 @@ describe("weixin sender", () => {
 
     expect(apiClient.sendMessage).toHaveBeenCalledTimes(4);
     expect(apiClient.sendMessage).toHaveBeenNthCalledWith(1, {
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       content: "新歌已生成",
       replyToMessageId: "wx-msg-1"
     });
     expect(apiClient.sendMessage).toHaveBeenNthCalledWith(2, {
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       mediaArtifacts: [
@@ -173,6 +183,8 @@ describe("weixin sender", () => {
       replyToMessageId: "wx-msg-1"
     });
     expect(apiClient.sendMessage).toHaveBeenNthCalledWith(3, {
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       mediaArtifacts: [
@@ -184,6 +196,8 @@ describe("weixin sender", () => {
       replyToMessageId: "wx-msg-1"
     });
     expect(apiClient.sendMessage).toHaveBeenNthCalledWith(4, {
+      accountKey: "weixin:default",
+      accountId: "default",
       peerId: "wxid_peer",
       chatType: "c2c",
       mediaArtifacts: [

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runCli } from "../../apps/weixin-gateway/src/cli.js";
+import { runCli, startWeixinGatewayService } from "../../apps/weixin-gateway/src/cli.js";
 
 function createTempDir(prefix: string) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -126,5 +126,83 @@ describe("weixin gateway cli", () => {
     expect(runLoginFlow).toHaveBeenCalledTimes(1);
     expect(io.stdout.join("\n")).toContain("https://example.com/qr.png");
     expect(io.stderr).toHaveLength(0);
+  });
+
+  it("starts multiple weixin long-poll clients in one gateway service", async () => {
+    const cwd = createTempDir("qq-codex-weixin-gateway-");
+    const env: NodeJS.ProcessEnv = {
+      WEIXIN_ENABLED: "true",
+      WEIXIN_GATEWAY_LISTEN_HOST: "127.0.0.1",
+      WEIXIN_GATEWAY_LISTEN_PORT: "3200",
+      WEIXIN_GATEWAY_BRIDGE_BASE_URL: "http://127.0.0.1:3100",
+      WEIXIN_BASE_URL: "https://ilinkai.weixin.qq.com",
+      WEIXIN_GATEWAY_ACCOUNTS_JSON: JSON.stringify([
+        {
+          accountId: "main",
+          bridgeWebhookPath: "/webhooks/weixin/main",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          token: "token-main",
+          messageStorePath: path.join(cwd, "main.ndjson")
+        },
+        {
+          accountId: "shop",
+          bridgeWebhookPath: "/webhooks/weixin/shop",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          token: "token-shop",
+          messageStorePath: path.join(cwd, "shop.ndjson")
+        }
+      ])
+    };
+    const clients: Array<{ accountId: string; connect: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }> = [];
+    const createServer = vi.fn(() => ({
+      once: vi.fn(),
+      off: vi.fn(),
+      listen: vi.fn((_port: number, _host: string, callback: () => void) => callback()),
+      close: vi.fn((callback: () => void) => callback())
+    }));
+    const createWeixinClient = vi.fn((options: { accountId: string }) => {
+      const client = {
+        accountId: options.accountId,
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        token: `token-${options.accountId}`,
+        ready: true,
+        connect: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        sendTextMessage: vi.fn().mockResolvedValue(undefined),
+        sendMessage: vi.fn().mockResolvedValue(undefined)
+      };
+      clients.push(client);
+      return client;
+    });
+    const stateStore = {
+      reload: vi.fn(),
+      getContextToken: vi.fn().mockReturnValue(""),
+      resolveRuntimeAccount: vi.fn((accountId: string, override: { token?: string | null; baseUrl?: string | null }) => ({
+        accountId,
+        baseUrl: override.baseUrl ?? "https://ilinkai.weixin.qq.com",
+        token: override.token ?? `token-${accountId}`
+      })),
+      setStoredAccount: vi.fn(),
+      clearStoredAccount: vi.fn()
+    };
+
+    const service = await startWeixinGatewayService({
+      cwd,
+      env,
+      loadEnvFile: vi.fn(),
+      createStateStore: () => stateStore,
+      createServer: createServer as never,
+      createWeixinClient,
+      watchStateFile: false,
+      writeStdout: vi.fn(),
+      writeStderr: vi.fn()
+    });
+
+    expect(createWeixinClient).toHaveBeenCalledTimes(2);
+    expect(clients.map((client) => client.accountId).sort()).toEqual(["main", "shop"]);
+    expect(service.status.accountIds.sort()).toEqual(["main", "shop"]);
+    expect(service.status.loggedInAccountIds.sort()).toEqual(["main", "shop"]);
+    await service.shutdown();
+    expect(clients.every((client) => client.close.mock.calls.length === 1)).toBe(true);
   });
 });

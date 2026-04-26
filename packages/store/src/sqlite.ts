@@ -70,6 +70,7 @@ export function createSqliteDatabase(filePath: string): SqliteDatabase {
 
   ensureColumn(db, "bridge_sessions", "skill_context_key", "TEXT");
   ensureColumn(db, "bridge_sessions", "last_codex_turn_id", "TEXT");
+  ensureColumn(db, "bridge_sessions", "conversation_provider", "TEXT");
 
   return db;
 }

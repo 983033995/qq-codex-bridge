@@ -62,29 +62,53 @@ type BridgeRuntimeHandle = {
 export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
   const app = bootstrap();
   const managedServices: Array<Pick<WeixinGatewayServiceHandle, "shutdown">> = [];
-  const qqThreadCommandHandler = new ThreadCommandHandler({
-    sessionStore: app.sessionStore,
-    transcriptStore: app.transcriptStore,
-    desktopDriver: app.adapters.codexDesktop,
-    qqEgress: app.adapters.qq.egress
+  const configuredAccountKeys = Object.keys(app.orchestrators.byAccountKey);
+  const qqIngressHandlers = Object.entries(app.adapters.qqByAccountKey).map(([accountKey, adapter]) => {
+    const orchestrator = app.orchestrators.byAccountKey[accountKey];
+    if (!orchestrator) {
+      throw new Error(`missing orchestrator for ${accountKey}`);
+    }
+    const threadCommandHandler = new ThreadCommandHandler({
+      sessionStore: app.sessionStore,
+      transcriptStore: app.transcriptStore,
+      desktopDriver: app.adapters.codexDesktop,
+      qqEgress: adapter.egress,
+      chatgptDriver: app.chatgptDriver,
+      accountKeys: configuredAccountKeys
+    });
+    return {
+      accountKey,
+      adapter,
+      ingressHandler: createIngressMessageHandler({
+        threadCommandHandler,
+        orchestrator,
+        errorEgress: adapter.egress
+      })
+    };
   });
-  const weixinAdapter = app.adapters.weixin;
-  const weixinOrchestrator = app.orchestrators.weixin;
-  const weixinThreadCommandHandler = weixinAdapter && weixinOrchestrator
-    ? new ThreadCommandHandler({
-        sessionStore: app.sessionStore,
-        transcriptStore: app.transcriptStore,
-        desktopDriver: app.adapters.codexDesktop,
-        qqEgress: weixinAdapter.egress
+  const weixinRoutes = Object.entries(app.adapters.weixinByAccountKey).map(([accountKey, adapter]) => {
+    const orchestrator = app.orchestrators.byAccountKey[accountKey];
+    if (!orchestrator) {
+      throw new Error(`missing orchestrator for ${accountKey}`);
+    }
+    const threadCommandHandler = new ThreadCommandHandler({
+      sessionStore: app.sessionStore,
+      transcriptStore: app.transcriptStore,
+      desktopDriver: app.adapters.codexDesktop,
+      qqEgress: adapter.egress,
+      chatgptDriver: app.chatgptDriver,
+      accountKeys: configuredAccountKeys
+    });
+    return {
+      accountKey,
+      adapter,
+      ingressHandler: createIngressMessageHandler({
+        threadCommandHandler,
+        orchestrator,
+        errorEgress: adapter.egress
       })
-    : null;
-  const weixinIngressHandler = weixinThreadCommandHandler && weixinOrchestrator
-    ? createIngressMessageHandler({
-        threadCommandHandler: weixinThreadCommandHandler,
-        orchestrator: weixinOrchestrator,
-        errorEgress: weixinAdapter!.egress
-      })
-    : null;
+    };
+  });
   const bridgeHttpServer = createBridgeHttpServer([
     {
       routePath: INTERNAL_TURN_EVENT_PATH,
@@ -100,23 +124,20 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
         });
       }
     },
-    ...(weixinAdapter && weixinIngressHandler
-      ? [
-          {
-            routePath: app.config.weixin.webhookPath,
-            dispatchPayload: async (payload: unknown) => {
-              const message = weixinAdapter.webhook.toInboundMessage(payload);
-              await weixinIngressHandler(message);
-            },
-            onDispatchError: (error: Error, payload: unknown) => {
-              console.warn("[qq-codex-bridge] weixin webhook dispatch failed", {
-                error: error.message,
-                payload
-              });
-            }
-          }
-        ]
-      : [])
+    ...weixinRoutes.map((route) => ({
+      routePath: route.adapter.webhook.routePath,
+      dispatchPayload: async (payload: unknown) => {
+        const message = route.adapter.webhook.toInboundMessage(payload);
+        await route.ingressHandler(message);
+      },
+      onDispatchError: (error: Error, payload: unknown) => {
+        console.warn("[qq-codex-bridge] weixin webhook dispatch failed", {
+          accountKey: route.accountKey,
+          error: error.message,
+          payload
+        });
+      }
+    }))
   ]);
 
   await new Promise<void>((resolve, reject) => {
@@ -127,21 +148,16 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     });
   });
 
-  await app.adapters.qq.ingress.onMessage(
-    createIngressMessageHandler({
-      threadCommandHandler: qqThreadCommandHandler,
-      orchestrator: app.orchestrators.qq,
-      errorEgress: app.adapters.qq.egress
-    })
-  );
+  for (const entry of qqIngressHandlers) {
+    await entry.adapter.ingress.onMessage(entry.ingressHandler);
+    await entry.adapter.ingress.start();
+  }
 
-  await app.adapters.qq.ingress.start();
-
-  const channels = ["qq"];
+  const channelSet = new Set(qqIngressHandlers.map((entry) => entry.accountKey));
   if (app.config.weixin.enabled) {
     const weixinService = await startWeixinGatewayService();
     managedServices.push(weixinService);
-    channels.push("weixin");
+    channelSet.add(`weixin:${weixinService.status.accountId}`);
     console.log("[qq-codex-bridge] channel ready", {
       channel: "weixin",
       listenHost: weixinService.status.listenHost,
@@ -150,16 +166,21 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       accountId: weixinService.status.accountId
     });
   }
+  for (const route of weixinRoutes) {
+    channelSet.add(route.accountKey);
+  }
+  const channels = [...channelSet];
 
   console.log("[qq-codex-bridge] ready", {
     transport: "qq-gateway-websocket",
-    accountKey: "qqbot:default",
+    accountKeys: channels,
+    conversationProvider: app.config.conversationProvider,
     listenHost: app.config.runtime.listenHost,
     listenPort: app.config.runtime.listenPort,
     internalTurnEventPath: INTERNAL_TURN_EVENT_PATH,
-    ...(weixinThreadCommandHandler
+    ...(weixinRoutes.length > 0
       ? {
-          weixinWebhookPath: app.config.weixin.webhookPath
+          weixinWebhookPaths: weixinRoutes.map((route) => route.adapter.webhook.routePath)
         }
       : {}),
     channels
@@ -169,10 +190,12 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     channels,
     shutdown: async () => {
       await Promise.allSettled([
-        new Promise<void>((resolve) => {
-          const maybeClose = app.adapters.qq.ingress as { stop?: () => Promise<void> | void };
-          Promise.resolve(maybeClose.stop?.()).finally(() => resolve());
-        }),
+        ...qqIngressHandlers.map((entry) =>
+          new Promise<void>((resolve) => {
+            const maybeClose = entry.adapter.ingress as { stop?: () => Promise<void> | void };
+            Promise.resolve(maybeClose.stop?.()).finally(() => resolve());
+          })
+        ),
         ...managedServices.map((service) => service.shutdown())
       ]);
       await new Promise<void>((resolve) => bridgeHttpServer.close(() => resolve()));
@@ -185,13 +208,28 @@ export function resolveTurnEventOrchestrator(
   orchestrators: {
     qq: { handleTurnEvent: (event: TurnEvent) => Promise<void> | void };
     weixin?: { handleTurnEvent: (event: TurnEvent) => Promise<void> | void };
+    byAccountKey?: Record<string, { handleTurnEvent: (event: TurnEvent) => Promise<void> | void }>;
   }
 ) {
+  const accountKey = extractAccountKey(event.sessionKey);
+  if (accountKey && orchestrators.byAccountKey?.[accountKey]) {
+    return orchestrators.byAccountKey[accountKey];
+  }
+
   if (event.sessionKey.startsWith("weixin:") && orchestrators.weixin) {
     return orchestrators.weixin;
   }
 
   return orchestrators.qq;
+}
+
+function extractAccountKey(sessionKey: string): string | null {
+  const separatorIndex = sessionKey.indexOf("::");
+  if (separatorIndex < 0) {
+    return null;
+  }
+  const accountKey = sessionKey.slice(0, separatorIndex).trim();
+  return accountKey || null;
 }
 
 function handleFatal(error: unknown) {

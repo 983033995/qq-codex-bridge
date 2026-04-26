@@ -40,6 +40,7 @@ function createSession(message: InboundMessage): BridgeSession {
     codexThreadRef: "thread-1",
     lastCodexTurnId: null,
     skillContextKey: null,
+    conversationProvider: null,
     status: BridgeSessionStatus.NeedsRebind,
     lastInboundAt: null,
     lastOutboundAt: null,
@@ -98,6 +99,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn()
     };
     const conversationProvider: ConversationProviderPort = {
@@ -138,6 +140,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
     const conversationProvider: ConversationProviderPort = {
@@ -201,6 +204,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
     const conversationProvider: ConversationProviderPort = {
@@ -270,6 +274,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
     const conversationProvider: ConversationProviderPort = {
@@ -345,6 +350,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => {
         events.push("withSessionLock");
         return work();
@@ -388,6 +394,7 @@ describe("BridgeOrchestrator", () => {
       codexThreadRef: null,
       lastCodexTurnId: null,
       skillContextKey: null,
+      conversationProvider: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: message.receivedAt,
       lastOutboundAt: null,
@@ -440,6 +447,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -499,6 +507,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -565,6 +574,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -632,6 +642,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -698,6 +709,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -782,6 +794,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 
@@ -870,6 +883,7 @@ describe("BridgeOrchestrator", () => {
       updateBinding: vi.fn(),
       updateLastCodexTurnId: vi.fn(),
       updateSkillContextKey: vi.fn(),
+      updateConversationProvider: vi.fn(),
       withSessionLock: vi.fn(async (_sessionKey, work) => work())
     };
 

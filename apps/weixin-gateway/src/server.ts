@@ -39,6 +39,8 @@ const mediaArtifactSchema = z.object({
 });
 
 const outboundMessagePayloadSchema = z.object({
+  accountKey: z.string().min(1).optional(),
+  accountId: z.string().min(1).optional(),
   peerId: z.string().min(1),
   chatType: z.enum(["c2c", "group"]),
   content: z.string().min(1).optional(),
@@ -60,12 +62,16 @@ type WeixinGatewayDeps = {
   fetchFn?: typeof fetch;
   outboundSender?: {
     sendTextMessage(target: {
+      accountKey?: string;
+      accountId?: string;
       peerId: string;
       chatType: "c2c" | "group";
       text: string;
       replyToMessageId?: string;
     }): Promise<void>;
     sendMessage?(target: {
+      accountKey?: string;
+      accountId?: string;
       peerId: string;
       chatType: "c2c" | "group";
       content?: string;
@@ -150,6 +156,8 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
 
         const message: WeixinGatewayOutboundMessage = {
           id: randomUUID(),
+          ...(payload.accountKey ? { accountKey: payload.accountKey } : {}),
+          ...(payload.accountId ? { accountId: payload.accountId } : {}),
           peerId: payload.peerId,
           chatType: payload.chatType,
           ...(payload.content ? { content: payload.content } : {}),
@@ -162,6 +170,8 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
         if (deps.outboundSender) {
           if (payload.mediaArtifacts?.length && deps.outboundSender.sendMessage) {
             await deps.outboundSender.sendMessage({
+              ...(payload.accountKey ? { accountKey: payload.accountKey } : {}),
+              ...(payload.accountId ? { accountId: payload.accountId } : {}),
               peerId: payload.peerId,
               chatType: payload.chatType,
               ...(payload.content ? { content: payload.content } : {}),
@@ -170,6 +180,8 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
             });
           } else {
             await deps.outboundSender.sendTextMessage({
+              ...(payload.accountKey ? { accountKey: payload.accountKey } : {}),
+              ...(payload.accountId ? { accountId: payload.accountId } : {}),
               peerId: payload.peerId,
               chatType: payload.chatType,
               text: payload.content ?? "",

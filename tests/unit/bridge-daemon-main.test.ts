@@ -88,4 +88,31 @@ describe("bridge daemon main", () => {
 
     expect(resolved).toBe(weixin);
   });
+
+  it("routes turn events to the exact account orchestrator when multiple accounts are registered", () => {
+    const qq = { handleTurnEvent: vi.fn() };
+    const qqShop = { handleTurnEvent: vi.fn() };
+    const weixinMain = { handleTurnEvent: vi.fn() };
+    const event: TurnEvent = {
+      sessionKey: "qqbot:shop::qq:c2c:openid-1",
+      turnId: "turn-accounts-1",
+      sequence: 1,
+      eventType: "turn.completed" as TurnEvent["eventType"],
+      createdAt: "2026-04-26T12:00:00.000Z",
+      isFinal: true,
+      payload: {
+        fullText: "ok"
+      }
+    };
+
+    const resolved = resolveTurnEventOrchestrator(event, {
+      qq,
+      byAccountKey: {
+        "qqbot:shop": qqShop,
+        "weixin:main": weixinMain
+      }
+    });
+
+    expect(resolved).toBe(qqShop);
+  });
 });

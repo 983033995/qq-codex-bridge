@@ -21,6 +21,38 @@ describe("bootstrap integration", () => {
     }
   });
 
+  it("builds account-keyed adapters and orchestrators for multiple configured qq bots", () => {
+    process.env.QQBOTS_JSON = JSON.stringify([
+      {
+        accountId: "main",
+        appId: "app-main",
+        clientSecret: "secret-main",
+        markdownSupport: true
+      },
+      {
+        accountId: "shop",
+        appId: "app-shop",
+        clientSecret: "secret-shop",
+        markdownSupport: false
+      }
+    ]);
+    process.env.QQBOT_APP_ID = "fallback-app";
+    process.env.QQBOT_CLIENT_SECRET = "fallback-secret";
+    process.env.QQ_CODEX_DATABASE_PATH = ":memory:";
+    process.env.CODEX_REMOTE_DEBUGGING_PORT = "9229";
+
+    const app = bootstrap();
+    try {
+      expect(Object.keys(app.adapters.qqByAccountKey).sort()).toEqual(["qqbot:main", "qqbot:shop"]);
+      expect(Object.keys(app.orchestrators.byAccountKey).sort()).toEqual(["qqbot:main", "qqbot:shop"]);
+      expect(app.adapters.qq).toBe(app.adapters.qqByAccountKey["qqbot:main"]);
+      expect(app.orchestrator).toBe(app.orchestrators.byAccountKey["qqbot:main"]);
+    } finally {
+      app.db.close();
+      delete process.env.QQBOTS_JSON;
+    }
+  });
+
   it("upgrades a page-level codex binding to the current stable thread after a successful turn", async () => {
     process.env.QQBOT_APP_ID = "app-id";
     process.env.QQBOT_CLIENT_SECRET = "secret";

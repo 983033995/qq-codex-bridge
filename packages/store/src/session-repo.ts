@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { BridgeSession, BridgeSessionStatus } from "../../domain/src/session.js";
+import type { BridgeSession, BridgeSessionStatus, ConversationProviderKind } from "../../domain/src/session.js";
 import type { SessionStorePort } from "../../ports/src/store.js";
 import type { SqliteDatabase } from "./sqlite.js";
 
@@ -21,6 +21,7 @@ export class SqliteSessionStore implements SessionStorePort {
                 codex_thread_ref AS codexThreadRef,
                 last_codex_turn_id AS lastCodexTurnId,
                 skill_context_key AS skillContextKey,
+                conversation_provider AS conversationProvider,
                 status,
                 last_inbound_at AS lastInboundAt,
                 last_outbound_at AS lastOutboundAt,
@@ -84,6 +85,15 @@ export class SqliteSessionStore implements SessionStorePort {
     this.db
       .prepare(`UPDATE bridge_sessions SET skill_context_key = ? WHERE session_key = ?`)
       .run(skillContextKey, sessionKey);
+  }
+
+  async updateConversationProvider(
+    sessionKey: string,
+    provider: ConversationProviderKind | null
+  ): Promise<void> {
+    this.db
+      .prepare(`UPDATE bridge_sessions SET conversation_provider = ? WHERE session_key = ?`)
+      .run(provider, sessionKey);
   }
 
   async withSessionLock<T>(sessionKey: string, work: () => Promise<T>): Promise<T> {

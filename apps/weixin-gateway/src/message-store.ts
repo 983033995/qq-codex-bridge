@@ -5,6 +5,8 @@ import type { MediaArtifact } from "../../../packages/domain/src/message.js";
 
 export type WeixinGatewayOutboundMessage = {
   id: string;
+  accountKey?: string;
+  accountId?: string;
   peerId: string;
   chatType: "c2c" | "group";
   content?: string;

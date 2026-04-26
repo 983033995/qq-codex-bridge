@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { BridgeSessionStatus, type BridgeSession } from "../../../packages/domain/src/session.js";
+import { BridgeSessionStatus, type BridgeSession, type ConversationProviderKind } from "../../../packages/domain/src/session.js";
+import type { ChatgptDesktopDriver } from "../../../packages/adapters/chatgpt-desktop/src/driver.js";
+import { ensureAppVisible } from "../../../packages/adapters/chatgpt-desktop/src/ax-client.js";
 import { DesktopDriverError, type CodexControlState } from "../../../packages/domain/src/driver.js";
 import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../../packages/domain/src/message.js";
 import type { DesktopDriverPort } from "../../../packages/ports/src/conversation.js";
@@ -11,9 +13,14 @@ type ThreadCommandHandlerDeps = {
   transcriptStore: TranscriptStorePort;
   desktopDriver: DesktopDriverPort;
   qqEgress: QqEgressPort;
+  chatgptDesktopAvailable?: boolean;
+  chatgptDriver?: ChatgptDesktopDriver;
+  accountKeys?: string[];
 };
 
 export class ThreadCommandHandler {
+  private readonly chatgptThreadListRefreshSessionKeys = new Set<string>();
+
   constructor(private readonly deps: ThreadCommandHandlerDeps) {}
 
   async handleIfCommand(message: InboundMessage): Promise<boolean> {
@@ -42,12 +49,20 @@ export class ThreadCommandHandler {
       await this.deps.transcriptStore.recordInbound(message);
 
       if (!supportedCommand) {
-        await this.deliverControlReply(message, this.buildUnknownCommandText(text));
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        await this.deliverControlReply(
+          message,
+          this.buildUnknownCommandText(text, this.currentProvider(session))
+        );
         return;
       }
 
       if (text === "/threads" || text === "/t") {
         const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        if (this.currentProvider(session) === "chatgpt-desktop") {
+          await this.deliverChatgptThreads(message, session);
+          return;
+        }
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
         await this.deliverControlReply(
           message,
@@ -58,6 +73,10 @@ export class ThreadCommandHandler {
 
       if (text === "/thread current" || text === "/tc") {
         const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        if (this.currentProvider(session) === "chatgpt-desktop") {
+          await this.deliverChatgptCurrentThread(message, session);
+          return;
+        }
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
         const current = threads.find(
           (thread) =>
@@ -73,13 +92,79 @@ export class ThreadCommandHandler {
         return;
       }
 
+      const sourceMatch = text.match(/^\/source\s+(codex|chatgpt)$/);
+      if (sourceMatch) {
+        const target = sourceMatch[1] === "chatgpt" ? "chatgpt-desktop" : "codex-desktop";
+        await this.deps.sessionStore.updateConversationProvider(message.sessionKey, target);
+        if (target === "chatgpt-desktop") {
+          this.chatgptThreadListRefreshSessionKeys.add(message.sessionKey);
+        } else {
+          this.chatgptThreadListRefreshSessionKeys.delete(message.sessionKey);
+        }
+        const label = target === "chatgpt-desktop" ? "ChatGPT Desktop" : "Codex Desktop";
+        await this.deliverControlReply(message, `已切换对话源：${label}\n后续消息将通过 ${label} 回复。`);
+        return;
+      }
+
+      if (text === "/source") {
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        const current = session?.conversationProvider ?? "codex-desktop（全局默认）";
+        await this.deliverControlReply(message, `当前对话源：${current}\n切换：/source codex 或 /source chatgpt`);
+        return;
+      }
+
+      if (text === "/accounts") {
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        await this.deliverControlReply(message, this.buildAccountsText(message, session));
+        return;
+      }
+
+      if (text === "/cgpt" || text === "/cgpt threads") {
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        await this.deliverChatgptThreads(message, session);
+        return;
+      }
+
+      const cgptUseMatch = text.match(/^\/cgpt\s+use\s+(\d+)$/);
+      if (cgptUseMatch) {
+        const cgDriver = this.deps.chatgptDriver;
+        if (!cgDriver) {
+          await this.deliverControlReply(message, "ChatGPT Desktop 未启用。");
+          return;
+        }
+        const index = Number(cgptUseMatch[1]);
+        const chats = cgDriver.listChats(20);
+        const target = chats[index - 1];
+        if (!target) {
+          await this.deliverControlReply(message, `没有第 ${index} 条对话，请先发 /cgpt 查看列表。`);
+          return;
+        }
+        const switched = cgDriver.switchToChat(target.title);
+        if (!switched) {
+          await this.deliverControlReply(message, `切换失败：在侧边栏未找到「${target.title}」，请重试或刷新列表。`);
+          return;
+        }
+        // 写入当前对话标题，下次 run() 检测到后跳过 clickNewChat
+        cgDriver.markSwitched(message.sessionKey, target.title);
+        await this.deliverControlReply(message, `已切换到 ChatGPT 对话：${target.title}\n下次消息将继续该对话。`);
+        return;
+      }
+
+      if (text === "/cgpt new") {
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        await this.createChatgptThread(message, session);
+        return;
+      }
+
       if (text === "/help") {
-        await this.deliverControlReply(message, this.buildHelpText());
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        await this.deliverControlReply(message, this.buildHelpText(this.currentProvider(session)));
         return;
       }
 
       if (text === "/h") {
-        await this.deliverControlReply(message, this.buildHelpText());
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        await this.deliverControlReply(message, this.buildHelpText(this.currentProvider(session)));
         return;
       }
 
@@ -129,6 +214,11 @@ export class ThreadCommandHandler {
       const useMatch = text.match(/^(?:\/thread\s+use|\/tu)\s+(\d+)$/);
       if (useMatch) {
         const index = Number(useMatch[1]);
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        if (this.currentProvider(session) === "chatgpt-desktop") {
+          await this.useChatgptThread(message, index);
+          return;
+        }
         const threads = await this.deps.desktopDriver.listRecentThreads(20);
         const thread = threads[index - 1];
         if (!thread) {
@@ -165,6 +255,11 @@ export class ThreadCommandHandler {
       const newMatch = text.match(/^(?:\/thread\s+new|\/tn)\s+(.+)$/);
       if (newMatch) {
         const title = newMatch[1].trim();
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        if (this.currentProvider(session) === "chatgpt-desktop") {
+          await this.createChatgptThread(message, session);
+          return;
+        }
         const binding = await this.deps.desktopDriver.createThread(
           message.sessionKey,
           this.buildNewThreadSeedPrompt(title)
@@ -177,6 +272,11 @@ export class ThreadCommandHandler {
       const forkMatch = text.match(/^(?:\/thread\s+fork|\/tf)\s+(.+)$/);
       if (forkMatch) {
         const title = forkMatch[1].trim();
+        const session = await this.deps.sessionStore.getSession(message.sessionKey);
+        if (this.currentProvider(session) === "chatgpt-desktop") {
+          await this.createChatgptThread(message, session);
+          return;
+        }
         const recentConversation = await this.deps.transcriptStore.listRecentConversation(
           message.sessionKey,
           8
@@ -192,7 +292,7 @@ export class ThreadCommandHandler {
 
       await this.deliverControlReply(
         message,
-        this.buildHelpText()
+        this.buildHelpText(this.currentProvider(await this.deps.sessionStore.getSession(message.sessionKey)))
       );
     });
 
@@ -214,6 +314,7 @@ export class ThreadCommandHandler {
       codexThreadRef: null,
       lastCodexTurnId: null,
       skillContextKey: null,
+      conversationProvider: null,
       status: BridgeSessionStatus.Active,
       lastInboundAt: message.receivedAt,
       lastOutboundAt: null,
@@ -231,6 +332,7 @@ export class ThreadCommandHandler {
       text === "/tc" ||
       text === "/help" ||
       text === "/h" ||
+      text === "/accounts" ||
       text === "/model" ||
       text === "/m" ||
       text === "/quota" ||
@@ -245,7 +347,13 @@ export class ThreadCommandHandler {
       /^\/tn\s+.+$/.test(text) ||
       /^\/thread\s+fork\s+.+$/.test(text) ||
       /^\/tf\s+.+$/.test(text) ||
-      text === "/thread"
+      text === "/thread" ||
+      text === "/cgpt" ||
+      text === "/cgpt threads" ||
+      text === "/cgpt new" ||
+      /^\/cgpt\s+use\s+\d+$/.test(text) ||
+      text === "/source" ||
+      /^\/source\s+(codex|chatgpt)$/.test(text)
     );
   }
 
@@ -288,6 +396,126 @@ export class ThreadCommandHandler {
     ].join("\n");
   }
 
+  private currentProvider(session: BridgeSession | null): ConversationProviderKind {
+    return session?.conversationProvider ?? "codex-desktop";
+  }
+
+  private async deliverChatgptThreads(
+    message: InboundMessage,
+    session: BridgeSession | null
+  ): Promise<void> {
+    const cgDriver = this.deps.chatgptDriver;
+    if (!cgDriver) {
+      await this.deliverControlReply(message, "ChatGPT Desktop 未启用，请先 /source chatgpt 切换。");
+      return;
+    }
+    const shouldRefresh = this.chatgptThreadListRefreshSessionKeys.delete(message.sessionKey);
+    try { ensureAppVisible(); } catch { /* non-fatal */ }
+    const currentRef = session ? cgDriver.getSessionThreadRef(session.sessionKey) : null;
+    const currentWindowTitle = cgDriver.getCurrentThreadTitle();
+    const chats = this.listChatgptChats(cgDriver, shouldRefresh);
+    if (chats.length === 0) {
+      await this.deliverControlReply(message, "ChatGPT 侧边栏未读取到对话列表。请确保 ChatGPT Desktop 已启动且有历史对话。");
+      return;
+    }
+    const escapeCell = (v: string) => v.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+    const lines = [
+      "最近 20 条 ChatGPT 对话：",
+      "",
+      "| 序号 | 对话标题 |",
+      "| --- | --- |",
+      ...chats.map((c) => {
+        const mark = this.isCurrentChatgptChat(c.title, currentRef, currentWindowTitle) ? "👉🏻 " : "";
+        return `| ${mark}${c.index} | ${escapeCell(c.title)} |`;
+      })
+    ];
+    await this.deliverControlReply(message, lines.join("\n"));
+  }
+
+  private listChatgptChats(cgDriver: ChatgptDesktopDriver, shouldRefresh: boolean) {
+    const chats = cgDriver.listChats(20);
+    if (!shouldRefresh && chats.length > 0) {
+      return chats;
+    }
+
+    const refreshedChats = cgDriver.listChats(20);
+    return refreshedChats.length > 0 ? refreshedChats : chats;
+  }
+
+  private async deliverChatgptCurrentThread(
+    message: InboundMessage,
+    session: BridgeSession | null
+  ): Promise<void> {
+    const cgDriver = this.deps.chatgptDriver;
+    if (!cgDriver) {
+      await this.deliverControlReply(message, "ChatGPT Desktop 未启用，请先 /source chatgpt 切换。");
+      return;
+    }
+    const currentRef = session ? cgDriver.getSessionThreadRef(session.sessionKey) : null;
+    await this.deliverControlReply(
+      message,
+      currentRef ? `当前绑定 ChatGPT 对话：${currentRef}` : "当前私聊还没有绑定 ChatGPT 对话。"
+    );
+  }
+
+  private async useChatgptThread(message: InboundMessage, index: number): Promise<void> {
+    const cgDriver = this.deps.chatgptDriver;
+    if (!cgDriver) {
+      await this.deliverControlReply(message, "ChatGPT Desktop 未启用。");
+      return;
+    }
+    const chats = cgDriver.listChats(20);
+    const target = chats[index - 1];
+    if (!target) {
+      await this.deliverControlReply(message, `没有第 ${index} 条 ChatGPT 对话，请先发 /threads 查看列表。`);
+      return;
+    }
+    const switched = cgDriver.switchToChat(target.title);
+    if (!switched) {
+      await this.deliverControlReply(message, `切换失败：在 ChatGPT 侧边栏未找到「${target.title}」，请重试或刷新列表。`);
+      return;
+    }
+    cgDriver.markSwitched(message.sessionKey, target.title);
+    await this.deliverControlReply(message, `已切换到 ChatGPT 对话：${target.title}\n下次消息将继续该对话。`);
+  }
+
+  private isCurrentChatgptChat(
+    title: string,
+    currentRef: string | null,
+    currentWindowTitle: string | null
+  ): boolean {
+    const normalizedTitle = normalizeChatgptTitle(title);
+    const normalizedRef = currentRef && currentRef !== "__switched__"
+      ? normalizeChatgptTitle(currentRef)
+      : "";
+    if (normalizedRef && normalizedTitle === normalizedRef) {
+      return true;
+    }
+
+    const normalizedWindowTitle = currentWindowTitle ? normalizeChatgptTitle(currentWindowTitle) : "";
+    return Boolean(
+      normalizedWindowTitle
+      && normalizedTitle
+      && (
+        normalizedWindowTitle === normalizedTitle
+        || normalizedWindowTitle.includes(normalizedTitle)
+      )
+    );
+  }
+
+  private async createChatgptThread(
+    message: InboundMessage,
+    session: BridgeSession | null
+  ): Promise<void> {
+    const cgDriver = this.deps.chatgptDriver;
+    if (!cgDriver) {
+      await this.deliverControlReply(message, "ChatGPT Desktop 未启用。");
+      return;
+    }
+    cgDriver.newChat(session?.sessionKey ?? message.sessionKey);
+    await this.deliverControlReply(message, "已为本会话新建 ChatGPT 对话，下条消息将从新对话开始。");
+  }
+
   private async deliverControlReply(message: InboundMessage, text: string): Promise<void> {
     const draft: OutboundDraft = {
       draftId: randomUUID(),
@@ -301,35 +529,75 @@ export class ThreadCommandHandler {
     await this.deps.qqEgress.deliver(draft);
   }
 
-  private buildHelpText(): string {
+  private buildHelpText(provider: ConversationProviderKind = "codex-desktop"): string {
+    if (provider === "chatgpt-desktop") {
+      return [
+        "快捷命令（当前源：ChatGPT Desktop）：",
+        "",
+        "| 用途 | 完整命令 | 简写 |",
+        "| --- | --- | --- |",
+        "| 查看 ChatGPT 最近对话 | `/threads` | `/t` |",
+        "| 查看当前绑定 ChatGPT 对话 | `/thread current` | `/tc` |",
+        "| 切换 ChatGPT 对话 | `/thread use <序号>` | `/tu <序号>` |",
+        "| 新建 ChatGPT 对话 | `/thread new <标题>` | `/tn <标题>` |",
+        "| 查看当前对话源 | `/source` | - |",
+        "| 查看账号状态 | `/accounts` | - |",
+        "| 切换到 Codex Desktop | `/source codex` | - |",
+        "| 查看帮助 | `/help` | `/h` |",
+        "",
+        "建议先发 `/t` 刷新并查看 ChatGPT 对话列表，再用 `/tu 2` 切换。",
+        "模型、额度、状态和真正的 fork 命令目前只适用于 Codex Desktop。"
+      ].join("\n");
+    }
+
     return [
-      "快捷命令：",
+      "快捷命令（当前源：Codex Desktop）：",
       "",
       "| 用途 | 完整命令 | 简写 |",
       "| --- | --- | --- |",
-      "| 查看最近活跃线程 | `/threads` | `/t` |",
-      "| 查看当前绑定线程 | `/thread current` | `/tc` |",
-      "| 切换到指定线程 | `/thread use <序号>` | `/tu <序号>` |",
-      "| 新建线程 | `/thread new <标题>` | `/tn <标题>` |",
-      "| 基于最近对话 fork 线程 | `/thread fork <标题>` | `/tf <标题>` |",
+      "| 查看 Codex 最近线程 | `/threads` | `/t` |",
+      "| 查看当前绑定 Codex 线程 | `/thread current` | `/tc` |",
+      "| 切换 Codex 线程 | `/thread use <序号>` | `/tu <序号>` |",
+      "| 新建 Codex 线程 | `/thread new <标题>` | `/tn <标题>` |",
+      "| 基于最近对话 fork Codex 线程 | `/thread fork <标题>` | `/tf <标题>` |",
       "| 查看当前模型 | `/model` | `/m` |",
       "| 切换模型 | `/model use <名称>` | `/mu <名称>` |",
       "| 查看额度信息 | `/quota` | `/q` |",
       "| 查看当前运行状态 | `/status` | `/st` |",
       "| 查看帮助 | `/help` | `/h` |",
+      "| 查看当前对话源 | `/source` | - |",
+      "| 查看账号状态 | `/accounts` | - |",
+      "| 切换到 ChatGPT Desktop | `/source chatgpt` | - |",
+      "| 切换到 Codex Desktop | `/source codex` | - |",
       "",
       "所有 `/` 开头的桥接快捷指令都会先由桥接层处理，不会直接发给 Codex。",
-      "建议先发 `/t` 看列表，再用 `/tu 2` 这种方式切换。",
-      "模型和额度信息来自当前 Codex Desktop 界面，可见性取决于 UI 是否暴露对应信息。"
+      "建议先用 `/source` 确认当前对话源，再发 `/t` 看列表，用 `/tu 2` 切换。",
+      "切到 ChatGPT 后，这套 `/t`、`/tu`、`/tn` 会自动操作 ChatGPT 对话。"
     ].join("\n");
   }
 
-  private buildUnknownCommandText(text: string): string {
+  private buildUnknownCommandText(text: string, provider: ConversationProviderKind): string {
     return [
       `未识别的桥接快捷指令：\`${text}\``,
-      "这条 `/` 指令不会转发给 Codex。",
+      "这条 `/` 指令不会转发给当前对话源。",
       "",
-      this.buildHelpText()
+      this.buildHelpText(provider)
+    ].join("\n");
+  }
+
+  private buildAccountsText(message: InboundMessage, session: BridgeSession | null): string {
+    const currentProvider = this.currentProvider(session);
+    const accountKeys = [...new Set(this.deps.accountKeys ?? [message.accountKey])].sort();
+    return [
+      "账号状态：",
+      "",
+      "| 项目 | 值 |",
+      "| --- | --- |",
+      `| 当前账号 | ${escapeMarkdownCell(message.accountKey)} |`,
+      `| 当前来源 | ${message.accountKey.startsWith("weixin:") ? "微信" : "QQ"} |`,
+      `| 当前会话 | ${escapeMarkdownCell(message.sessionKey)} |`,
+      `| 当前对话源 | ${currentProvider} |`,
+      `| 已接入账号 | ${accountKeys.map(escapeMarkdownCell).join(", ")} |`
     ].join("\n");
   }
 
@@ -423,4 +691,17 @@ function extractAppServerThreadId(threadRef: string): string | null {
   const separatorIndex = payload.indexOf(":");
   const threadId = separatorIndex >= 0 ? payload.slice(0, separatorIndex) : payload;
   return threadId.trim() ? threadId : null;
+}
+
+function normalizeChatgptTitle(value: string): string {
+  return value
+    .replace(/^chatgpt\s*[-–—:|]?\s*/i, "")
+    .replace(/\s*[-–—:|]?\s*chatgpt$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function escapeMarkdownCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
 }

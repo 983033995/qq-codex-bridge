@@ -108,6 +108,8 @@ export type WeixinGatewayServiceHandle = {
     listenPort: number;
     loggedIn: boolean;
     accountId: string;
+    accountIds: string[];
+    loggedInAccountIds: string[];
   };
 };
 
@@ -249,33 +251,51 @@ export async function startWeixinGatewayService(
   const createMessageStore =
     options.createMessageStore
     ?? ((filePath: string, limit: number) => new WeixinGatewayMessageStore(filePath, limit));
-  const messageStore = createMessageStore(
-    config.messageStorePath,
-    config.recentMessageLimit
+  const messageStores = Object.fromEntries(
+    config.accounts.map((account) => [
+      account.accountId,
+      createMessageStore(account.messageStorePath, config.recentMessageLimit)
+    ])
   );
+  const messageStore = {
+    append: (message: Parameters<WeixinGatewayMessageStore["append"]>[0]) => {
+      const accountId = resolveOutboundAccountId({
+        accountId: message.accountId,
+        accountKey: message.accountKey
+      }, config.accountId);
+      const store = messageStores[accountId] ?? messageStores[config.accountId] ?? Object.values(messageStores)[0];
+      store?.append(message);
+    },
+    listRecent: () =>
+      Object.values(messageStores)
+        .flatMap((store) => store.listRecent())
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+        .slice(0, config.recentMessageLimit)
+  };
   const stateStore =
     options.createStateStore?.(config.stateFilePath)
     ?? new WeixinGatewayStateStore(config.stateFilePath);
 
-  const bridgeAccountKey = `weixin:${config.accountId}`;
-  let activeClient: WeixinClientLike | null = null;
-  let activeClientKey = "";
+  const activeClients = new Map<string, WeixinClientLike>();
+  const activeClientKeys = new Map<string, string>();
 
-  const closeActiveClient = async () => {
+  const closeActiveClient = async (accountId: string) => {
+    const activeClient = activeClients.get(accountId);
     if (!activeClient) {
-      activeClientKey = "";
+      activeClientKeys.delete(accountId);
       return;
     }
-    const previousClient = activeClient;
-    activeClient = null;
-    activeClientKey = "";
-    await previousClient.close();
+    activeClients.delete(accountId);
+    activeClientKeys.delete(accountId);
+    await activeClient.close();
   };
 
-  const resolveRuntimeAccount = (): WeixinStoredAccount | null =>
-    stateStore.resolveRuntimeAccount(config.accountId, {
-      token: config.token,
-      baseUrl: config.baseUrl
+  const resolveRuntimeAccount = (
+    account: typeof config.accounts[number]
+  ): WeixinStoredAccount | null =>
+    stateStore.resolveRuntimeAccount(account.accountId, {
+      token: account.token,
+      baseUrl: account.baseUrl
     }) as WeixinStoredAccount | null;
 
   const createWeixinClient =
@@ -288,79 +308,97 @@ export async function startWeixinGatewayService(
       }));
 
   const refreshWeixinClient = async (reason: string) => {
-    const runtimeAccount = resolveRuntimeAccount();
-    const nextClientKey = runtimeAccount
-      ? `${runtimeAccount.accountId}|${runtimeAccount.baseUrl}|${runtimeAccount.token}`
-      : "";
+    const expectedAccountIds = new Set(config.accounts.map((account) => account.accountId));
+    for (const account of config.accounts) {
+      const runtimeAccount = resolveRuntimeAccount(account);
+      const nextClientKey = runtimeAccount
+        ? `${runtimeAccount.accountId}|${runtimeAccount.baseUrl}|${runtimeAccount.token}`
+        : "";
 
-    if (!runtimeAccount) {
-      if (activeClient) {
-        writeStdout("[qq-codex-weixin-gateway] 未找到微信登录态，已停用 long-poll client");
-        await closeActiveClient();
+      if (!runtimeAccount) {
+        if (activeClients.has(account.accountId)) {
+          writeStdout(`[qq-codex-weixin-gateway] 未找到微信登录态，已停用 long-poll client { accountId: ${account.accountId} }`);
+          await closeActiveClient(account.accountId);
+        }
+        continue;
       }
-      return;
+
+      if (activeClients.has(account.accountId) && activeClientKeys.get(account.accountId) === nextClientKey) {
+        continue;
+      }
+
+      await closeActiveClient(account.accountId);
+
+      const nextClient = createWeixinClient({
+        accountId: runtimeAccount.accountId,
+        baseUrl: runtimeAccount.baseUrl,
+        token: runtimeAccount.token,
+        longPollTimeoutMs: config.longPollTimeoutMs,
+        apiTimeoutMs: config.apiTimeoutMs,
+        stateStore,
+        fetchFn,
+        onInboundMessage: async (message) => {
+          await forwardWeixinInboundToBridge(fetchFn, {
+            bridgeBaseUrl: config.bridgeBaseUrl,
+            bridgeWebhookPath: account.bridgeWebhookPath,
+            accountKey: `weixin:${account.accountId}`
+          }, message);
+        }
+      });
+
+      activeClients.set(account.accountId, nextClient);
+      activeClientKeys.set(account.accountId, nextClientKey);
+      void nextClient.connect();
+      writeStdout(
+        `[qq-codex-weixin-gateway] 微信 client 已连接 { reason: ${reason}, accountId: ${runtimeAccount.accountId}, baseUrl: ${runtimeAccount.baseUrl} }`
+      );
     }
 
-    if (activeClient && activeClientKey === nextClientKey) {
-      return;
-    }
-
-    await closeActiveClient();
-
-    const nextClient = createWeixinClient({
-      accountId: runtimeAccount.accountId,
-      baseUrl: runtimeAccount.baseUrl,
-      token: runtimeAccount.token,
-      longPollTimeoutMs: config.longPollTimeoutMs,
-      apiTimeoutMs: config.apiTimeoutMs,
-      stateStore,
-      fetchFn,
-      onInboundMessage: async (message) => {
-        await forwardWeixinInboundToBridge(fetchFn, {
-          bridgeBaseUrl: config.bridgeBaseUrl,
-          bridgeWebhookPath: config.bridgeWebhookPath,
-          accountKey: bridgeAccountKey
-        }, message);
+    for (const accountId of [...activeClients.keys()]) {
+      if (!expectedAccountIds.has(accountId)) {
+        await closeActiveClient(accountId);
       }
-    });
-
-    activeClient = nextClient;
-    activeClientKey = nextClientKey;
-    void nextClient.connect();
-    writeStdout(
-      `[qq-codex-weixin-gateway] 微信 client 已连接 { reason: ${reason}, accountId: ${runtimeAccount.accountId}, baseUrl: ${runtimeAccount.baseUrl} }`
-    );
+    }
   };
 
   const outboundSender = {
-    sendTextMessage: async ({ peerId, chatType, text, replyToMessageId }: {
+    sendTextMessage: async ({ accountKey, accountId, peerId, chatType, text, replyToMessageId }: {
+      accountKey?: string;
+      accountId?: string;
       peerId: string;
       chatType: "c2c" | "group";
       text: string;
       replyToMessageId?: string;
     }) => {
+      const targetAccountId = resolveOutboundAccountId({ accountKey, accountId }, config.accountId);
+      const activeClient = activeClients.get(targetAccountId);
       if (!activeClient) {
-        throw new Error("weixin gateway has no active logged-in client");
+        throw new Error(`weixin gateway has no active logged-in client for account ${targetAccountId}`);
       }
 
       const contextToken = stateStore.getContextToken(activeClient.accountId, peerId);
       await activeClient.sendTextMessage(peerId, text, contextToken || null);
       console.log("[weixin-gateway] delivered outbound message", {
+        accountId: targetAccountId,
         peerId,
         chatType,
         hasContextToken: Boolean(contextToken),
         replyToMessageId
       });
     },
-    sendMessage: async ({ peerId, chatType, content, mediaArtifacts, replyToMessageId }: {
+    sendMessage: async ({ accountKey, accountId, peerId, chatType, content, mediaArtifacts, replyToMessageId }: {
+      accountKey?: string;
+      accountId?: string;
       peerId: string;
       chatType: "c2c" | "group";
       content?: string;
       mediaArtifacts?: MediaArtifact[];
       replyToMessageId?: string;
     }) => {
+      const targetAccountId = resolveOutboundAccountId({ accountKey, accountId }, config.accountId);
+      const activeClient = activeClients.get(targetAccountId);
       if (!activeClient) {
-        throw new Error("weixin gateway has no active logged-in client");
+        throw new Error(`weixin gateway has no active logged-in client for account ${targetAccountId}`);
       }
 
       const contextToken = stateStore.getContextToken(activeClient.accountId, peerId);
@@ -372,6 +410,7 @@ export async function startWeixinGatewayService(
         contextToken: contextToken || null
       });
       console.log("[weixin-gateway] delivered outbound message", {
+        accountId: targetAccountId,
         peerId,
         chatType,
         hasContextToken: Boolean(contextToken),
@@ -428,13 +467,13 @@ export async function startWeixinGatewayService(
   }
 
   writeStdout(
-    `[qq-codex-weixin-gateway] ready { listenHost: ${config.listenHost}, listenPort: ${config.listenPort}, bridgeWebhook: ${config.bridgeBaseUrl}${config.bridgeWebhookPath}, loggedIn: ${Boolean(activeClient)} }`
+    `[qq-codex-weixin-gateway] ready { listenHost: ${config.listenHost}, listenPort: ${config.listenPort}, accounts: ${config.accounts.map((account) => account.accountId).join(",")}, loggedIn: ${activeClients.size} }`
   );
 
   return {
     shutdown: async () => {
       fs.unwatchFile(config.stateFilePath);
-      await closeActiveClient();
+      await Promise.all([...activeClients.keys()].map((accountId) => closeActiveClient(accountId)));
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
     status: {
@@ -442,8 +481,10 @@ export async function startWeixinGatewayService(
       enabled: config.enabled,
       listenHost: config.listenHost,
       listenPort: config.listenPort,
-      loggedIn: Boolean(activeClient),
-      accountId: config.accountId
+      loggedIn: activeClients.size > 0,
+      accountId: config.accountId,
+      accountIds: config.accounts.map((account) => account.accountId),
+      loggedInAccountIds: [...activeClients.keys()]
     }
   };
 }
@@ -492,6 +533,26 @@ function initEnvTemplate(options: {
   options.writeStdout(`[qq-codex-weixin-gateway] 已生成真实微信网关配置：${targetPath}`);
   options.writeStdout("[qq-codex-weixin-gateway] 你也可以直接把这些变量写进项目根目录的 .env。");
   return 0;
+}
+
+function resolveOutboundAccountId(
+  target: { accountKey?: string; accountId?: string },
+  fallbackAccountId: string
+): string {
+  const explicitAccountId = String(target.accountId ?? "").trim();
+  if (explicitAccountId) {
+    return explicitAccountId;
+  }
+
+  const accountKey = String(target.accountKey ?? "").trim();
+  if (accountKey.startsWith("weixin:")) {
+    const accountId = accountKey.slice("weixin:".length).trim();
+    if (accountId) {
+      return accountId;
+    }
+  }
+
+  return fallbackAccountId;
 }
 
 function printHelp(writeStdout: (line: string) => void) {

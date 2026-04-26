@@ -32,6 +32,8 @@ export class WeixinHttpClient {
   }
 
   async sendMessage(target: {
+    accountKey?: string;
+    accountId?: string;
     peerId: string;
     chatType: "c2c" | "group";
     replyToMessageId?: string;
@@ -45,6 +47,8 @@ export class WeixinHttpClient {
         "content-type": "application/json"
       },
       body: JSON.stringify({
+        ...(target.accountKey ? { accountKey: target.accountKey } : {}),
+        ...(target.accountId ? { accountId: target.accountId } : {}),
         peerId: target.peerId,
         chatType: target.chatType,
         ...(target.content ? { content: target.content } : {}),
