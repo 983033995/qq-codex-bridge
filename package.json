@@ -1,6 +1,6 @@
 {
   "name": "qq-codex-bridge",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A bridge between QQ Official Bot and Codex Desktop, with media relay, STT, thread management, and incremental reply delivery.",
   "type": "module",
   "homepage": "https://github.com/983033995/qq-codex-bridge",

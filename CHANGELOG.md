@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+暂无。
+
+## [0.1.4] - 2026-04-26
+
 ### Added
 
 - QQ 官方 Bot 与 Codex Desktop 的桥接主链路
@@ -76,4 +80,3 @@
 git tag v0.1.0
 git push origin v0.1.0
 ```
-
