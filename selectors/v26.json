@@ -1,0 +1,24 @@
+{
+  "profile": "v26",
+  "composer": [
+    "textarea",
+    "input[type=\"text\"]",
+    "[contenteditable=\"true\"]",
+    "[role=\"textbox\"]"
+  ],
+  "assistantUnit": "[data-content-search-unit-key$=\":assistant\"]",
+  "contentUnit": "[data-content-search-unit-key]",
+  "contentUnitKeyAttribute": "data-content-search-unit-key",
+  "threadTitle": "[data-thread-title=\"true\"]",
+  "threadTime": ".text-token-description-foreground",
+  "controls": "button, [role=\"button\"]",
+  "streamingControls": "button, [role=\"button\"], [aria-busy=\"true\"]",
+  "assistantStatus": ".text-xs, [aria-live], [data-state], [class*=\"status\"], [class*=\"loading\"]",
+  "markdownContent": "[class*=\"_markdownContent_\"]",
+  "mediaElements": "img[src], audio[src], audio source[src], video[src], video source[src], a[href]",
+  "submitButtonPrimaryClass": "size-token-button-composer",
+  "streamingStopIconPaths": [
+    "M4.5 5.75C4.5 5.05964",
+    "M4.5 5.75C4.5 5.0596"
+  ]
+}

@@ -114,8 +114,29 @@ describe("bridge config", () => {
     });
     expect(current.desktopDriver).toEqual({
       transport: "app-server",
-      probeIntervalMs: 60000
+      probeIntervalMs: 60000,
+      selectorProfile: "v27",
+      selectorFile: null
     });
+  });
+
+  it("loads a versioned or explicit Codex selector profile", () => {
+    const config = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      CODEX_SELECTOR_PROFILE: "v26",
+      CODEX_SELECTOR_FILE: "/tmp/custom-selectors.json"
+    });
+
+    expect(config.desktopDriver.selectorProfile).toBe("v26");
+    expect(config.desktopDriver.selectorFile).toBe("/tmp/custom-selectors.json");
+
+    const defaults = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      CODEX_SELECTOR_PROFILE: ""
+    });
+    expect(defaults.desktopDriver.selectorProfile).toBe("v27");
   });
 
   it("requires a token of at least 32 bytes when push is enabled", () => {

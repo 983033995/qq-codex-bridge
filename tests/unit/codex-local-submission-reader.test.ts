@@ -112,4 +112,34 @@ describe("codex local submission reader", () => {
       reason: "submission_dispatch_logged"
     });
   });
+
+  it("falls back to the newest logs database with the required schema", () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-local-submission-discovery-"));
+    tempDirs.push(rootDir);
+    const codexHomeDir = path.join(rootDir, ".codex");
+    fs.mkdirSync(codexHomeDir, { recursive: true });
+    fs.writeFileSync(path.join(codexHomeDir, "logs_20.sqlite"), "not sqlite", "utf8");
+
+    const incompatible = new BetterSqlite3(path.join(codexHomeDir, "logs_19.sqlite"));
+    incompatible.exec("CREATE TABLE logs (id INTEGER PRIMARY KEY, target TEXT)");
+    incompatible.close();
+
+    const compatible = new BetterSqlite3(path.join(codexHomeDir, "logs_3.sqlite"));
+    compatible.exec(`
+      CREATE TABLE logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target TEXT NOT NULL,
+        feedback_log_body TEXT,
+        thread_id TEXT
+      );
+    `);
+    compatible.close();
+
+    const cursor = new CodexLocalSubmissionReader({ codexHomeDir })
+      .captureCursorForThreadId("thread-discovered");
+    expect(cursor).toEqual({
+      threadId: "thread-discovered",
+      lastLogId: 0
+    });
+  });
 });

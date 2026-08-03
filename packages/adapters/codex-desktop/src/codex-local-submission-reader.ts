@@ -1,7 +1,7 @@
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { resolveCompatibleCodexDatabase } from "./codex-local-db-resolver.js";
 
 const require = createRequire(import.meta.url);
 const BetterSqlite3 = require("better-sqlite3") as new (
@@ -120,8 +120,11 @@ export class CodexLocalSubmissionReader {
   }
 
   private resolveLogsDbPath(): string | null {
-    const dbPath = path.join(this.codexHomeDir, "logs_2.sqlite");
-    return fs.existsSync(dbPath) ? dbPath : null;
+    return resolveCompatibleCodexDatabase(this.codexHomeDir, {
+      prefix: "logs",
+      table: "logs",
+      requiredColumns: ["id", "target", "feedback_log_body", "thread_id"]
+    });
   }
 }
 

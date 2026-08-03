@@ -28,7 +28,13 @@ import {
   type CodexLocalSubmissionResult
 } from "./codex-local-submission-reader.js";
 import { isLikelyComposerSubmitButton } from "./composer-heuristics.js";
+import { collectMediaReferences } from "./image-collector.js";
 import { parseAssistantReply } from "./reply-parser.js";
+import {
+  loadCodexSelectorProfile,
+  serializeSelectorProfile,
+  type CodexSelectorProfile
+} from "./selector-registry.js";
 
 const TARGET_REF_PREFIX = "cdp-target:";
 const THREAD_REF_PREFIX = "codex-thread:";
@@ -66,6 +72,7 @@ type CodexDesktopDriverOptions = {
   replyStablePolls?: number;
   partialReplyStablePolls?: number;
   composerSubmitPollIntervalMs?: number;
+  selectorProfile?: CodexSelectorProfile;
   sleep?: (ms: number) => Promise<void>;
   localRolloutReader?: {
     captureCursorForThreadTitle(title: string): CodexLocalRolloutCursor | null;
@@ -90,6 +97,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   private readonly replyStablePolls: number;
   private readonly partialReplyStablePolls: number;
   private readonly composerSubmitPollIntervalMs: number;
+  private readonly selectorProfile: CodexSelectorProfile;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly localRolloutReader: CodexDesktopDriverOptions["localRolloutReader"];
   private readonly localSubmissionReader: CodexDesktopDriverOptions["localSubmissionReader"];
@@ -109,6 +117,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     this.replyStablePolls = Math.max(1, options.replyStablePolls ?? 3);
     this.partialReplyStablePolls = Math.max(1, options.partialReplyStablePolls ?? 2);
     this.composerSubmitPollIntervalMs = Math.max(50, options.composerSubmitPollIntervalMs ?? 300);
+    this.selectorProfile = options.selectorProfile ?? loadCodexSelectorProfile();
     this.sleep =
       options.sleep ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -1100,13 +1109,11 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         "unitKey" in structuredReply && typeof structuredReply.unitKey === "string"
           ? structuredReply.unitKey
           : null;
-      const mediaReferences =
+      const mediaReferences = collectMediaReferences(
         "mediaReferences" in structuredReply && Array.isArray(structuredReply.mediaReferences)
-          ? structuredReply.mediaReferences.filter(
-              (reference): reference is string =>
-                typeof reference === "string" && reference.trim().length > 0
-            )
-          : [];
+          ? structuredReply.mediaReferences
+          : []
+      );
       const isStreaming =
         "isStreaming" in structuredReply && typeof structuredReply.isStreaming === "boolean"
           ? structuredReply.isStreaming
@@ -1272,6 +1279,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildThreadListScript(): string {
     return `(() => {
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
       const toText = (value) => (value || '').replace(/\\s+/g, ' ').trim();
       const extractProjectName = (titleNode) => {
         const row = titleNode.closest('[role="button"]');
@@ -1303,7 +1312,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         }
         return null;
       };
-      const rows = Array.from(document.querySelectorAll('[data-thread-title="true"]'))
+      const rows = querySelectorAllSafe(document, selectorProfile.threadTitle)
         .map((titleNode) => {
           if (!(titleNode instanceof HTMLElement)) {
             return null;
@@ -1312,7 +1321,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           if (!(row instanceof HTMLElement)) {
             return null;
           }
-          const timeNode = row.querySelector('.text-token-description-foreground');
+          const timeNode = querySelectorSafe(row, selectorProfile.threadTime);
           return {
             title: toText(titleNode.innerText),
             projectName: extractProjectName(titleNode),
@@ -1392,6 +1401,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
     const expectedTitle = JSON.stringify(locator.title);
     const expectedProject = JSON.stringify(locator.projectName);
     return `(() => {
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
       const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
       const extractProjectName = (titleNode) => {
         const row = titleNode.closest('[role="button"]');
@@ -1423,7 +1434,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         }
         return null;
       };
-      const target = Array.from(document.querySelectorAll('[data-thread-title="true"]'))
+      const target = querySelectorAllSafe(document, selectorProfile.threadTitle)
         .find((titleNode) => {
           if (!(titleNode instanceof HTMLElement)) {
             return false;
@@ -1456,7 +1467,9 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildNewThreadScript(): string {
     return `(() => {
-      const controls = Array.from(document.querySelectorAll('button, [role="button"]'));
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
+      const controls = querySelectorAllSafe(document, selectorProfile.controls);
       const button = controls.find((candidate) => {
         if (!(candidate instanceof HTMLElement)) {
           return false;
@@ -1481,9 +1494,11 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildFreshThreadProbeScript(): string {
     return `(() => {
-      const composer = document.querySelector(
-        '[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"]'
-      );
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
+      const composer = selectorProfile.composer
+        .map((selector) => querySelectorSafe(document, selector))
+        .find((node) => node instanceof HTMLElement) ?? null;
       const readComposerText = (node) => {
         if (!(node instanceof HTMLElement)) {
           return '';
@@ -1493,7 +1508,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         }
         return node.textContent || '';
       };
-      const assistantUnits = document.querySelectorAll('[data-content-search-unit-key]').length;
+      const assistantUnits = querySelectorAllSafe(document, selectorProfile.contentUnit).length;
       const composerText = readComposerText(composer).trim();
       const fresh = assistantUnits === 0 && composerText.length === 0;
       return { ok: fresh, reason: fresh ? 'fresh_thread' : 'thread_not_ready' };
@@ -1502,16 +1517,11 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildFocusComposerScript(): string {
     return `(() => {
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
       const resolveComposer = () => {
-        const selectors = [
-          '[data-codex-composer="true"]',
-          'textarea',
-          'input[type="text"]',
-          '[contenteditable="true"]',
-          '[role="textbox"]'
-        ];
-        const candidates = selectors
-          .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        const candidates = selectorProfile.composer
+          .flatMap((selector) => querySelectorAllSafe(document, selector))
           .filter((candidate) => {
             if (!(candidate instanceof HTMLElement)) {
               return false;
@@ -1546,8 +1556,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     return `(() => {
       ${submitButtonMatcher}
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
       const readConversationFingerprint = () => {
-        const units = Array.from(document.querySelectorAll('[data-content-search-unit-key]'))
+        const units = querySelectorAllSafe(document, selectorProfile.contentUnit)
           .filter((node) => node instanceof HTMLElement)
           .map((node) => {
             if (!(node instanceof HTMLElement)) {
@@ -1564,7 +1576,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         return {
           latestUnitKey:
             latestUnit instanceof HTMLElement
-              ? latestUnit.getAttribute('data-content-search-unit-key')
+              ? latestUnit.getAttribute(selectorProfile.contentUnitKeyAttribute)
               : null,
           latestSnippet:
             latestUnit instanceof HTMLElement
@@ -1579,15 +1591,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         && left.latestSnippet === right.latestSnippet
         && left.unitCount === right.unitCount;
       const resolveComposer = () => {
-        const selectors = [
-          '[data-codex-composer="true"]',
-          'textarea',
-          'input[type="text"]',
-          '[contenteditable="true"]',
-          '[role="textbox"]'
-        ];
-        const candidates = selectors
-          .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        const candidates = selectorProfile.composer
+          .flatMap((selector) => querySelectorAllSafe(document, selector))
           .filter((candidate) => {
             if (!(candidate instanceof HTMLElement)) {
               return false;
@@ -1616,7 +1621,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         return node.textContent || '';
       };
       const resolveComposerSubmitButton = (allowDisabled, strictMatch) =>
-        Array.from(document.querySelectorAll('button, [role="button"]'))
+        querySelectorAllSafe(document, selectorProfile.controls)
           .filter((candidate) => {
             if (!(candidate instanceof HTMLElement)) {
               return false;
@@ -1667,8 +1672,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             };
             const leftStrictScore = isLikelyComposerSubmitButton(leftLabel) ? 1000 : 0;
             const rightStrictScore = isLikelyComposerSubmitButton(rightLabel) ? 1000 : 0;
-            const leftPrimaryScore = /\bsize-token-button-composer\b/i.test(leftLabel.className) ? 100 : 0;
-            const rightPrimaryScore = /\bsize-token-button-composer\b/i.test(rightLabel.className) ? 100 : 0;
+            const leftPrimaryScore = String(leftLabel.className).split(/\\s+/).includes(
+              selectorProfile.submitButtonPrimaryClass
+            ) ? 100 : 0;
+            const rightPrimaryScore = String(rightLabel.className).split(/\\s+/).includes(
+              selectorProfile.submitButtonPrimaryClass
+            ) ? 100 : 0;
             const leftScore =
               leftStrictScore + leftPrimaryScore + leftRect.x - Math.abs(leftRect.y - inputRect.bottom);
             const rightScore =
@@ -1756,8 +1765,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
     return `(() => {
       ${submitButtonMatcher}
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
       const readConversationFingerprint = () => {
-        const units = Array.from(document.querySelectorAll('[data-content-search-unit-key]'))
+        const units = querySelectorAllSafe(document, selectorProfile.contentUnit)
           .filter((node) => node instanceof HTMLElement)
           .map((node) => {
             if (!(node instanceof HTMLElement)) {
@@ -1774,7 +1785,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         return {
           latestUnitKey:
             latestUnit instanceof HTMLElement
-              ? latestUnit.getAttribute('data-content-search-unit-key')
+              ? latestUnit.getAttribute(selectorProfile.contentUnitKeyAttribute)
               : null,
           latestSnippet:
             latestUnit instanceof HTMLElement
@@ -1788,15 +1799,8 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         && left.latestUnitKey === right.latestUnitKey
         && left.latestSnippet === right.latestSnippet
         && left.unitCount === right.unitCount;
-      const selectors = [
-        '[data-codex-composer="true"]',
-        'textarea',
-        'input[type="text"]',
-        '[contenteditable="true"]',
-        '[role="textbox"]'
-      ];
-      const inputCandidates = selectors
-        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      const inputCandidates = selectorProfile.composer
+        .flatMap((selector) => querySelectorAllSafe(document, selector))
         .filter((candidate) => {
           if (!(candidate instanceof HTMLElement)) {
             return false;
@@ -1819,7 +1823,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       }
       const inputRect = input.getBoundingClientRect();
       const resolveComposerSubmitButton = (allowDisabled) =>
-        Array.from(document.querySelectorAll('button, [role="button"]'))
+        querySelectorAllSafe(document, selectorProfile.controls)
           .filter((candidate) => {
             if (!(candidate instanceof HTMLElement)) {
               return false;
@@ -1859,8 +1863,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
             };
             const leftStrictScore = isLikelyComposerSubmitButton(leftLabel) ? 1000 : 0;
             const rightStrictScore = isLikelyComposerSubmitButton(rightLabel) ? 1000 : 0;
-            const leftPrimaryScore = /\bsize-token-button-composer\b/i.test(leftLabel.className) ? 100 : 0;
-            const rightPrimaryScore = /\bsize-token-button-composer\b/i.test(rightLabel.className) ? 100 : 0;
+            const leftPrimaryScore = String(leftLabel.className).split(/\\s+/).includes(
+              selectorProfile.submitButtonPrimaryClass
+            ) ? 100 : 0;
+            const rightPrimaryScore = String(rightLabel.className).split(/\\s+/).includes(
+              selectorProfile.submitButtonPrimaryClass
+            ) ? 100 : 0;
             const leftScore =
               leftStrictScore + leftPrimaryScore + leftRect.x - Math.abs(leftRect.y - inputRect.bottom);
             const rightScore =
@@ -2283,12 +2291,12 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildAssistantReplyProbeScript(): string {
     return `(() => {
-      const allAssistantUnits = Array.from(
-        document.querySelectorAll('[data-content-search-unit-key$=":assistant"]')
-      );
-      const composer = document.querySelector(
-        '[data-codex-composer="true"], textarea, input[type="text"], [contenteditable="true"], [role="textbox"]'
-      );
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
+      const allAssistantUnits = querySelectorAllSafe(document, selectorProfile.assistantUnit);
+      const composer = selectorProfile.composer
+        .map((selector) => querySelectorSafe(document, selector))
+        .find((node) => node instanceof HTMLElement) ?? null;
       const composerRect = composer instanceof HTMLElement
         ? composer.getBoundingClientRect()
         : null;
@@ -2332,18 +2340,22 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         if (!value || typeof value !== 'string') {
           return null;
         }
-        if (value.startsWith('file://')) {
+        const lowerValue = value.toLowerCase();
+        if (lowerValue.startsWith('blob:')) {
+          return null;
+        }
+        if (lowerValue.startsWith('file://')) {
           try {
             return decodeURIComponent(new URL(value).pathname);
           } catch {
-            return value;
+            return null;
           }
         }
         if (
-          value.startsWith('http://') ||
-          value.startsWith('https://') ||
+          lowerValue.startsWith('http://') ||
+          lowerValue.startsWith('https://') ||
           value.startsWith('/') ||
-          value.startsWith('data:')
+          lowerValue.startsWith('data:')
         ) {
           return value;
         }
@@ -2508,9 +2520,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           .replace(/\\n{3,}/g, '\\n\\n')
           .trim();
       };
-      const mediaReferences = Array.from(
-        latestAssistantUnit.querySelectorAll('img[src], audio[src], audio source[src], video[src], video source[src], a[href]')
-      )
+      const mediaReferences = querySelectorAllSafe(latestAssistantUnit, selectorProfile.mediaElements)
         .map((node) => {
           if (!(node instanceof HTMLElement)) {
             return null;
@@ -2534,14 +2544,13 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           return false;
         }
         const className = String(node.className || '');
-        if (!className.includes('size-token-button-composer')) {
+        if (!className.split(/\\s+/).includes(selectorProfile.submitButtonPrimaryClass)) {
           return false;
         }
         const html = node.innerHTML || '';
-        return html.includes('M4.5 5.75C4.5 5.05964')
-          || html.includes('M4.5 5.75C4.5 5.0596');
+        return selectorProfile.streamingStopIconPaths.some((path) => html.includes(path));
       };
-      const isStreaming = Array.from(document.querySelectorAll('button, [role="button"], [aria-busy="true"]'))
+      const isStreaming = querySelectorAllSafe(document, selectorProfile.streamingControls)
         .some((node) => {
           if (!(node instanceof HTMLElement)) {
             return false;
@@ -2566,20 +2575,18 @@ export class CodexDesktopDriver implements DesktopDriverPort {
           ].join(' ').trim();
           return streamingMatcher.test(label);
         });
-      const assistantStatusText = Array.from(
-        latestAssistantUnit.querySelectorAll('.text-xs, [aria-live], [data-state], [class*="status"], [class*="loading"]')
-      )
+      const assistantStatusText = querySelectorAllSafe(latestAssistantUnit, selectorProfile.assistantStatus)
         .map((node) => (node instanceof HTMLElement ? node.innerText || '' : ''))
         .join('\\n');
       const hasAssistantActivity = assistantStatusMatcher.test(assistantStatusText)
         || assistantStatusMatcher.test(latestAssistantUnit.innerText || '');
 
-      const richContent = latestAssistantUnit.querySelector('[class*="_markdownContent_"]');
+      const richContent = querySelectorSafe(latestAssistantUnit, selectorProfile.markdownContent);
       if (richContent instanceof HTMLElement) {
         const text = serializeRichContent(richContent);
         if (text) {
           return {
-            unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
+            unitKey: latestAssistantUnit.getAttribute(selectorProfile.contentUnitKeyAttribute),
             reply: text,
             mediaReferences,
             isStreaming: isStreaming || hasAssistantActivity
@@ -2602,7 +2609,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
         .trim();
       return text || mediaReferences.length > 0
         ? {
-            unitKey: latestAssistantUnit.getAttribute('data-content-search-unit-key'),
+            unitKey: latestAssistantUnit.getAttribute(selectorProfile.contentUnitKeyAttribute),
             reply: text || null,
             mediaReferences,
             isStreaming: isStreaming || hasAssistantActivity
@@ -2613,8 +2620,10 @@ export class CodexDesktopDriver implements DesktopDriverPort {
 
   private buildConversationViewportFingerprintProbeScript(): string {
     return `(() => {
+      const selectorProfile = ${serializeSelectorProfile(this.selectorProfile)};
+      ${this.buildSafeSelectorHelpersScript()}
       const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-      const units = Array.from(document.querySelectorAll('[data-content-search-unit-key]'))
+      const units = querySelectorAllSafe(document, selectorProfile.contentUnit)
         .filter((node) => node instanceof HTMLElement)
         .map((node) => {
           if (!(node instanceof HTMLElement)) {
@@ -2638,11 +2647,30 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       const snippet = normalize(latestUnit.innerText)
         .slice(0, 200);
       return {
-        latestUnitKey: latestUnit.getAttribute('data-content-search-unit-key'),
+        latestUnitKey: latestUnit.getAttribute(selectorProfile.contentUnitKeyAttribute),
         latestSnippet: snippet || null,
         unitCount: units.length
       };
     })();`;
+  }
+
+  private buildSafeSelectorHelpersScript(): string {
+    return `
+      const querySelectorAllSafe = (root, selector) => {
+        try {
+          return Array.from(root.querySelectorAll(selector));
+        } catch {
+          return [];
+        }
+      };
+      const querySelectorSafe = (root, selector) => {
+        try {
+          return root.querySelector(selector);
+        } catch {
+          return null;
+        }
+      };
+    `;
   }
 }
 

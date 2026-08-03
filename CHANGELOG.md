@@ -6,6 +6,28 @@
 
 暂无。
 
+## [0.2.0] - 2026-08-03
+
+### Added
+
+- 统一桌面驱动，优先使用 AppServer，并在消息确认发送前安全降级到 CDP
+- QQ、微信、飞书统一入站对话；飞书采用官方 SDK 长连接
+- Agent 主动推送 HTTP API、MCP stdio 工具、目标别名与持久化重试队列
+- 推送 Token 鉴权、目标授权、限流、媒体沙箱、幂等和重启恢复
+- 版本化 CDP 选择器配置、Codex 本地数据库自动发现和统一媒体引用采集
+
+### Changed
+
+- `chatgpt-desktop` 存量会话读取时映射到统一桌面行为
+- AppServer 成为默认主传输，CDP 仅作为可控降级路径
+- 旧 ChatGPT AX provider、`/source chatgpt` 与 `/cgpt` 停止默认装配并进入弃用期
+
+### Security
+
+- 主动推送默认关闭且默认仅监听 loopback；远程监听必须显式授权
+- API 和 MCP 只能使用已登记目标别名，不能直接提交渠道原始 ID
+- 推送媒体仅允许来自受控 outbox 的真实文件，拒绝远程 URL、`file://` 和符号链接越界
+
 ## [0.1.4] - 2026-04-26
 
 ### Added

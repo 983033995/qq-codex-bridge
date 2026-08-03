@@ -64,7 +64,9 @@ export const appConfigSchema = z.object({
   }),
   desktopDriver: z.object({
     transport: z.enum(["auto", "app-server", "cdp"]),
-    probeIntervalMs: z.number().int().nonnegative()
+    probeIntervalMs: z.number().int().nonnegative(),
+    selectorProfile: z.string().min(1),
+    selectorFile: z.string().min(1).nullable()
   }),
   push: z.object({
     enabled: z.boolean(),
@@ -153,7 +155,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
     },
     desktopDriver: {
       transport: resolveDesktopTransport(env),
-      probeIntervalMs: Number(env.DESKTOP_DRIVER_PROBE_INTERVAL_MS ?? "300000")
+      probeIntervalMs: Number(env.DESKTOP_DRIVER_PROBE_INTERVAL_MS ?? "300000"),
+      selectorProfile: nullableString(env.CODEX_SELECTOR_PROFILE) ?? "v27",
+      selectorFile: nullableString(env.CODEX_SELECTOR_FILE)
     },
     push: {
       enabled: booleanEnv(env.PUSH_ENABLED, false),

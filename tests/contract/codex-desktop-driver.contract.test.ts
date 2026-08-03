@@ -7,6 +7,7 @@ import {
 } from "../../packages/domain/src/message.js";
 import { CodexDesktopDriver } from "../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
 import { parseAssistantReply } from "../../packages/adapters/codex-desktop/src/reply-parser.js";
+import { loadCodexSelectorProfile } from "../../packages/adapters/codex-desktop/src/selector-registry.js";
 import type { CdpSession } from "../../packages/adapters/codex-desktop/src/cdp-session.js";
 
 class FakeControlElement {
@@ -170,6 +171,48 @@ class FakeHtmlElement {
 }
 
 describe("codex desktop driver contract", () => {
+  it("injects a validated custom selector profile into CDP scripts", () => {
+    const selectorProfile = {
+      ...loadCodexSelectorProfile(),
+      profile: "contract-custom",
+      composer: ["#contract-composer"],
+      assistantUnit: "[data-contract-assistant]"
+    };
+    const driver = new CodexDesktopDriver({} as unknown as CdpSession, { selectorProfile });
+    const scripts = driver as unknown as {
+      buildFocusComposerScript: () => string;
+      buildAssistantReplyProbeScript: () => string;
+    };
+
+    expect(scripts.buildFocusComposerScript()).toContain('"#contract-composer"');
+    expect(scripts.buildAssistantReplyProbeScript()).toContain(
+      '"assistantUnit":"[data-contract-assistant]"'
+    );
+  });
+
+  it("turns an invalid custom composer selector into a recoverable not-found result", () => {
+    const selectorProfile = {
+      ...loadCodexSelectorProfile(),
+      profile: "invalid-selector",
+      composer: ["["]
+    };
+    const driver = new CodexDesktopDriver({} as unknown as CdpSession, { selectorProfile });
+    const script = (driver as unknown as { buildFocusComposerScript: () => string })
+      .buildFocusComposerScript();
+    const execute = new Function("document", "HTMLElement", `return ${script}`) as (
+      document: unknown,
+      htmlElement: unknown
+    ) => { ok: boolean; reason: string };
+    const result = execute({
+      activeElement: null,
+      querySelectorAll: () => {
+        throw new SyntaxError("invalid selector");
+      }
+    }, class {});
+
+    expect(result).toEqual({ ok: false, reason: "input_not_found" });
+  });
+
   it("extracts the latest assistant reply from a snapshot string", () => {
     const reply = parseAssistantReply(`
       User: hello

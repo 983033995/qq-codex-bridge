@@ -19,9 +19,9 @@ import type {
   DesktopDriverPort
 } from "../../../ports/src/conversation.js";
 import {
-  buildMediaArtifactFromReference,
-  parseQqMediaSegments
+  buildMediaArtifactFromReference
 } from "../../qq/src/qq-media-parser.js";
+import { collectMediaReferencesFromText } from "./image-collector.js";
 
 const APP_THREAD_REF_PREFIX = "codex-app-thread:";
 const LEGACY_THREAD_REF_PREFIX = "codex-thread:";
@@ -693,7 +693,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
     }
 
     pending.finalText = text;
-    pending.mediaReferences = extractMediaReferences(text);
+    pending.mediaReferences = collectMediaReferencesFromText(text);
   }
 
   private handleTurnCompleted(params: TurnCompletedParams): void {
@@ -720,7 +720,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
     pending.resolve({
       turnId,
       finalText,
-      mediaReferences: extractMediaReferences(finalText)
+      mediaReferences: collectMediaReferencesFromText(finalText)
     });
   }
 
@@ -1160,10 +1160,4 @@ function formatRateLimitWindow(label: string, window: RateLimitWindow | null | u
   return reset
     ? `${label} ${Math.round(normalizedPercent)}%（${reset} 重置）`
     : `${label} ${Math.round(normalizedPercent)}%`;
-}
-
-function extractMediaReferences(text: string): string[] {
-  return parseQqMediaSegments(text)
-    .filter((segment) => segment.type === "media")
-    .map((segment) => segment.reference);
 }

@@ -106,11 +106,11 @@
 
 | 子模块 | 职责 |
 |---|---|
-| `feature-probe.ts` | 启动时探测应用版本、可用传输（AppServer WS / CDP）、缓存路径、本地 DB |
+| `feature-probe.ts` | 启动和周期探测可用传输（AppServer WS / CDP） |
 | `unified-driver.ts` | 实现 `DesktopDriverPort`，内部自动选择 AppServer 或 CDP |
-| `selector-registry.ts` | DOM 选择器按版本外部化配置，支持热更新 |
-| `image-collector.ts` | 统一图片采集：AppServer 媒体事件 + Kingfisher 缓存 diff |
-| `capability.ts` | 应用能力声明（模型列表、图片生成、语音等） |
+| `selector-registry.ts` | CDP DOM 选择器按版本外部化配置；自定义文件在进程重启时加载 |
+| `image-collector.ts` | 统一归一化和去重 AppServer、rollout 与 CDP 媒体引用 |
+| `codex-local-db-resolver.ts` | 按版本发现 state/log DB 并验证所需表列 |
 
 **传输选择策略**：
 ```
@@ -120,7 +120,7 @@
        └─ 均不可用 → 错误上报，等待重试
        
 运行中 → 定期 re-probe（默认 5 分钟）
-         AppServer 恢复 → 自动回切
+         AppServer 恢复 → 下一轮对话回切
          降级/回切 → 记录 runtime_events
 ```
 
@@ -128,28 +128,20 @@
 
 **解决的问题**：当前架构仅支持"用户发消息 → AI 回复"单向流，无法支持 Agent 主动推送。
 
-#### 4.2.1 Webhook 推送 API
+#### 4.2.1 HTTP 推送 API
 
 ```
 POST /api/v1/push
 Content-Type: application/json
 Authorization: Bearer <push-token>
+Idempotency-Key: <stable-key>
 
 {
-  "channel": "qq" | "weixin" | "feishu",
-  "target": {
-    "type": "user" | "group",
-    "id": "user_openid 或 group_openid"
-  },
+  "target": "daily-report-group",
   "message": {
     "text": "构建完成，共修改 12 个文件",
     "format": "markdown" | "plain",
-    "media": [
-      {
-        "type": "image",
-        "url": "file:///path/to/screenshot.png"
-      }
-    ]
+    "media": [{ "type": "image", "path": "report.png" }]
   },
   "metadata": {
     "source": "codex-automation",
@@ -158,15 +150,17 @@ Authorization: Bearer <push-token>
   }
 }
 
-Response: 200 OK
+Response: 202 Accepted
 {
   "pushId": "uuid",
-  "status": "delivered" | "queued" | "failed",
-  "deliveredAt": "2026-08-03T10:00:00Z"
+  "status": "queued",
+  "duplicate": false
 }
 ```
 
-#### 4.2.2 MCP Server（push-mcp）
+同一幂等键固定返回原 `pushId`，不重复入队。API 另提供 `GET /api/v1/push/:pushId` 与 `GET /api/v1/push-targets`。调用者只能传管理页登记的目标别名，不能直接传 OpenID、群号或 wxid；媒体只能来自 `PUSH_OUTBOX_ROOT` 的真实文件。
+
+#### 4.2.2 MCP Server（stdio）
 
 为 Codex / Claude 等支持 MCP 协议的 Agent 提供原生推送工具：
 
@@ -174,21 +168,20 @@ Response: 200 OK
 
 | 工具名 | 描述 | 参数 |
 |---|---|---|
-| `push_message` | 推送文本/图片消息到指定渠道和目标 | `channel`, `target`, `text`, `format`, `media` |
-| `push_task_report` | 推送结构化任务报告 | `channel`, `target`, `taskId`, `status`, `summary`, `details` |
-| `list_push_targets` | 列出可推送的目标（群/用户） | `channel` |
-| `get_push_history` | 查询推送历史 | `pushId` 或 `taskId` |
+| `push_message` | 推送文本/图片消息到目标别名 | `target`, `text`, `format`, `media`, `idempotencyKey` |
+| `push_task_report` | 推送结构化任务报告 | `target`, `taskId`, `status`, `summary`, `details` |
+| `list_push_targets` | 列出可推送的公开目标信息 | 无 |
+| `get_push_status` | 查询单个推送任务状态 | `pushId` |
 
 **MCP 配置示例**（在 Codex `.codex/mcp.json` 中）：
 ```json
 {
   "mcpServers": {
     "qq-bridge-push": {
-      "command": "node",
-      "args": ["dist/mcp/push-server.js"],
+      "command": "qq-codex-mcp",
       "env": {
-        "BRIDGE_PUSH_URL": "http://127.0.0.1:3100",
-        "BRIDGE_PUSH_TOKEN": "your-push-token"
+        "MCP_PUSH_BASE_URL": "http://127.0.0.1:3100",
+        "MCP_PUSH_TOKEN": "your-push-token"
       }
     }
   }
@@ -209,11 +202,10 @@ Response: 200 OK
 
 ```
 推送请求 → 鉴权（Token 校验）
-         → 目标解析（渠道 + 用户/群 OpenID）
-         → 格式化（按目标渠道适配 Markdown/富文本）
-         → 限流（防止刷屏，可配置每分钟/每小时上限）
-         → 入库（push_history 表记录）
-         → 渠道 Sender 发送
+         → 目标别名解析（服务端读取真实渠道 ID）
+         → 媒体沙箱校验 + 限流
+         → push_jobs 持久化入队
+         → Worker claim + 渠道 PushEgress 发送
          → 回写状态（delivered / failed）
 ```
 
@@ -221,9 +213,10 @@ Response: 200 OK
 
 | 子模块 | 职责 |
 |---|---|
-| `feishu-api-client.ts` | 飞书开放平台 API 封装（消息发送、事件订阅） |
-| `feishu-gateway.ts` | 飞书事件回调接收（HTTP Challenge + 消息事件） |
-| `feishu-sender.ts` | 出站消息发送（文本、富文本、图片、卡片） |
+| `feishu-message-client.ts` | 飞书消息与图片 API 的受控封装 |
+| `feishu-ingress.ts` | 官方 SDK 长连接接收 `im.message.receive_v1` |
+| `feishu-sender.ts` | 对话出站（文本、富文本、图片） |
+| `feishu-push-egress.ts` | 主动推送出站与错误分类 |
 | `feishu-channel-adapter.ts` | 组合入站/出站，注册到 BridgeOrchestrator |
 
 ### 4.4 渠道出站格式化
@@ -234,7 +227,7 @@ Response: 200 OK
 |---|---|---|
 | QQ | `qq-outbound-format.ts` | Markdown 可选、图片 base64 | 
 | 微信 | `weixin-outbound-format.ts` | 纯文本为主、链接预览 |
-| 飞书 | `feishu-outbound-format.ts`（新） | 富文本卡片、Markdown 原生支持 |
+| 飞书 | `feishu-sender.ts` | 文本、post 富文本、图片 |
 
 ---
 
@@ -245,17 +238,19 @@ Response: 200 OK
 ```env
 # ===== 桌面驱动 =====
 DESKTOP_DRIVER_TRANSPORT=auto          # auto | app-server | cdp
-DESKTOP_DRIVER_CDP_PORT=9229
-DESKTOP_DRIVER_SELECTOR_PROFILE=auto   # auto | v26 | v27 | custom
+CODEX_REMOTE_DEBUGGING_PORT=9229
 DESKTOP_DRIVER_PROBE_INTERVAL_MS=300000
 
 # ===== Agent 推送 =====
 PUSH_ENABLED=true
-PUSH_API_TOKEN=your-secure-token
-PUSH_RATE_LIMIT_PER_MIN=30
-PUSH_RATE_LIMIT_PER_HOUR=500
-PUSH_MCP_ENABLED=true
-PUSH_MCP_LISTEN_PORT=3101
+PUSH_TOKEN=your-secure-token-at-least-32-bytes
+PUSH_ALLOW_REMOTE=false
+PUSH_OUTBOX_ROOT=runtime/media/push-outbox
+PUSH_RATE_LIMIT_PER_MINUTE=60
+
+# MCP 是 stdio 子进程，不监听额外端口
+MCP_PUSH_BASE_URL=http://127.0.0.1:3100
+MCP_PUSH_TOKEN=your-secure-token-at-least-32-bytes
 
 # ===== QQ Bot（保持兼容） =====
 QQBOT_APP_ID=...
@@ -269,9 +264,7 @@ WEIXIN_ACCOUNT_ID=default
 FEISHU_ENABLED=false
 FEISHU_APP_ID=your-feishu-app-id
 FEISHU_APP_SECRET=your-feishu-app-secret
-FEISHU_VERIFICATION_TOKEN=your-verification-token
-FEISHU_ENCRYPT_KEY=your-encrypt-key
-FEISHU_WEBHOOK_PATH=/webhooks/feishu
+FEISHU_ACCOUNT_ID=default
 
 # ===== Bridge 运行时（保持兼容） =====
 QQ_CODEX_DATABASE_PATH=runtime/qq-codex-bridge.sqlite
@@ -287,20 +280,15 @@ QQ_CODEX_LISTEN_PORT=3100
     "transport": "auto",
     "fallbackChain": ["app-server", "cdp"],
     "probeIntervalMs": 300000,
-    "selectorProfile": "auto",
-    "customSelectorPath": null
+    "selectorProfile": "v27",
+    "selectorFile": null
   },
   "push": {
-    "rateLimits": {
-      "perMinute": 30,
-      "perHour": 500,
-      "perTarget": {
-        "perMinute": 10
-      }
-    },
+    "rateLimits": { "perMinute": 60 },
     "retryPolicy": {
       "maxRetries": 3,
-      "backoffMs": [1000, 5000, 15000]
+      "backoffMs": [5000, 30000, 120000],
+      "jitter": true
     }
   }
 }
@@ -313,53 +301,45 @@ QQ_CODEX_LISTEN_PORT=3100
 ### 6.1 新增表
 
 ```sql
--- Agent 推送历史
-CREATE TABLE IF NOT EXISTS push_history (
-  push_id TEXT PRIMARY KEY,
-  channel TEXT NOT NULL,           -- qq | weixin | feishu
-  target_type TEXT NOT NULL,       -- user | group
-  target_id TEXT NOT NULL,
-  message_text TEXT,
-  message_format TEXT DEFAULT 'plain',
-  media_json TEXT,                 -- JSON array
-  metadata_json TEXT,              -- source, taskId, priority
-  status TEXT NOT NULL DEFAULT 'queued',  -- queued | delivered | failed
-  error_message TEXT,
-  created_at TEXT NOT NULL,
-  delivered_at TEXT
-);
-
--- 推送目标别名（方便 Agent 按名字推送而非 OpenID）
 CREATE TABLE IF NOT EXISTS push_targets (
-  alias TEXT PRIMARY KEY,          -- 如 "dev-team", "boss"
+  alias TEXT PRIMARY KEY,
   channel TEXT NOT NULL,
+  account_key TEXT NOT NULL,
   target_type TEXT NOT NULL,
-  target_id TEXT NOT NULL,
-  description TEXT,
-  created_at TEXT NOT NULL
-);
-
--- 飞书网关会话
-CREATE TABLE IF NOT EXISTS feishu_sessions (
-  session_key TEXT PRIMARY KEY,
-  app_id TEXT NOT NULL,
-  chat_id TEXT,
-  user_open_id TEXT,
-  chat_type TEXT NOT NULL,         -- p2p | group
-  last_event_id TEXT,
+  provider_target_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS push_jobs (
+  push_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  target_alias TEXT NOT NULL,
+  status TEXT NOT NULL,            -- queued | sending | retry_wait | delivered | failed
+  payload_json TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  provider_message_id TEXT,
+  last_error TEXT,
+  failure_code TEXT,
+  claimed_by TEXT,
+  claimed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  delivered_at TEXT,
+  FOREIGN KEY (target_alias) REFERENCES push_targets(alias)
 );
 ```
 
 ### 6.2 现有表变更
 
 ```sql
--- bridge_sessions 移除 conversation_provider 列（Phase 3）
--- 暂时保留但标记 deprecated，代码中忽略该字段
+-- bridge_sessions.conversation_provider 在 v0.2 保留以兼容存量数据库。
+-- 读取 chatgpt-desktop 时映射到统一桌面行为，物理删除延后到 v0.3。
 
 -- runtime_events 增加 push 相关事件类型
--- source 可取值新增: 'push', 'push-mcp', 'feishu-gateway'
+-- source 可取值新增: 'push', 'mcp-push', 'feishu-ingress'
 ```
 
 ---
@@ -396,116 +376,26 @@ CREATE TABLE IF NOT EXISTS feishu_sessions (
 
 ## 八、MCP Server 详细规格
 
-### 8.1 工具定义
+### 8.1 固定工具契约
 
-```typescript
-// push_message
-{
-  name: "push_message",
-  description: "推送消息到指定 IM 渠道（QQ/微信/飞书）的用户或群",
-  inputSchema: {
-    type: "object",
-    properties: {
-      channel: {
-        type: "string",
-        enum: ["qq", "weixin", "feishu"],
-        description: "目标 IM 渠道"
-      },
-      target: {
-        type: "string",
-        description: "目标标识：push_targets 中的别名，或 channel:type:id 格式"
-      },
-      text: {
-        type: "string",
-        description: "消息正文，支持 Markdown"
-      },
-      format: {
-        type: "string",
-        enum: ["markdown", "plain"],
-        default: "markdown"
-      },
-      media: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            type: { type: "string", enum: ["image", "file"] },
-            path: { type: "string", description: "本地文件路径" }
-          }
-        },
-        description: "可选附件"
-      }
-    },
-    required: ["channel", "target", "text"]
-  }
-}
+| 工具 | 必填参数 | 关键行为 |
+|---|---|---|
+| `push_message` | `target`, `idempotencyKey`，以及文本或媒体 | 调用者显式提供稳定幂等键 |
+| `push_task_report` | `target`, `taskId`, `status`, `summary` | 未提供幂等键时按 source/target/taskId/status 生成 SHA-256 稳定键 |
+| `list_push_targets` | 无 | 仅返回 alias、channel、type、accountKey 和 enabled |
+| `get_push_status` | `pushId` | 返回脱敏任务状态，不返回幂等键、claim 信息和媒体真实路径 |
 
-// push_task_report
-{
-  name: "push_task_report",
-  description: "推送结构化任务报告到指定渠道，包含状态、摘要和详情",
-  inputSchema: {
-    type: "object",
-    properties: {
-      channel: { type: "string", enum: ["qq", "weixin", "feishu"] },
-      target: { type: "string" },
-      taskId: { type: "string", description: "关联的任务 ID" },
-      status: { type: "string", enum: ["success", "failed", "in_progress", "blocked"] },
-      summary: { type: "string", description: "一句话摘要" },
-      details: { type: "string", description: "详细内容，支持 Markdown" },
-      artifacts: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            label: { type: "string" },
-            path: { type: "string" }
-          }
-        },
-        description: "关联产物（文件路径）"
-      }
-    },
-    required: ["channel", "target", "status", "summary"]
-  }
-}
-
-// list_push_targets
-{
-  name: "list_push_targets",
-  description: "列出所有已配置的推送目标别名",
-  inputSchema: {
-    type: "object",
-    properties: {
-      channel: {
-        type: "string",
-        enum: ["qq", "weixin", "feishu"],
-        description: "可选，按渠道过滤"
-      }
-    }
-  }
-}
-
-// get_push_history
-{
-  name: "get_push_history",
-  description: "查询推送历史记录",
-  inputSchema: {
-    type: "object",
-    properties: {
-      pushId: { type: "string" },
-      taskId: { type: "string" },
-      limit: { type: "number", default: 20 }
-    }
-  }
-}
-```
+`push_task_report.status` 固定为 `running | completed | failed`。目标始终是服务端登记的 alias，MCP schema 不提供裸渠道 ID 字段。
 
 ### 8.2 MCP Server 实现要点
 
 - 传输层：`stdio`（Codex/Claude 子进程模式）
-- 认证：通过环境变量 `BRIDGE_PUSH_TOKEN` 传入，server 启动时注入
-- 底层调用：每个 MCP 工具内部调用 `http://127.0.0.1:{BRIDGE_PORT}/api/v1/push`
-- 错误处理：MCP 工具返回结构化错误（包含 pushId、渠道、失败原因）
+- SDK：`@modelcontextprotocol/sdk` 1.29.x + `StdioServerTransport`
+- 认证：`MCP_PUSH_TOKEN`，未设置时回退 `PUSH_TOKEN`；至少 32 字节
+- 网络边界：`MCP_PUSH_BASE_URL` 必须是无内嵌凭据的 loopback HTTP(S) URL
+- 底层调用：所有工具复用现有 Push HTTP API，不新增监听端口
+- 错误处理：使用 MCP `isError: true`，错误文本不包含 Bearer Token
+- stdout：只承载 MCP 协议；启动错误仅写 stderr
 
 ---
 
@@ -515,9 +405,9 @@ CREATE TABLE IF NOT EXISTS feishu_sessions (
 |---|---|
 | 可用性 | 单渠道故障不影响其他渠道；驱动层降级不中断服务 |
 | 安全性 | 推送 API 必须 Token 鉴权；推送目标不能通过 API 枚举未授权的 OpenID |
-| 可观测性 | 所有推送记录入 push_history 表；驱动层切换记录 runtime_events |
+| 可观测性 | 所有推送记录入 push_jobs；驱动层切换记录 runtime_events |
 | 性能 | 单条推送 P99 < 3s；入站消息处理 P99 < 5s |
-| 限流 | 推送 API 支持全局和按目标的速率限制，防止 Agent 刷屏 |
+| 限流 | 推送 API 首版提供进程级每分钟限流；按目标限流可在后续版本扩展 |
 | 兼容性 | v0.1.x 的 .env 配置在 v0.2 下无需改动即可启动（新功能默认关闭） |
 
 ---
@@ -527,10 +417,9 @@ CREATE TABLE IF NOT EXISTS feishu_sessions (
 | v0.1.x 配置项 | v0.2 处理 |
 |---|---|
 | `CODEX_APP_NAME` | 保留兼容，UnifiedDriver 自动探测 |
-| `CODEX_REMOTE_DEBUGGING_PORT` | 映射为 `DESKTOP_DRIVER_CDP_PORT` |
-| `BRIDGE_CONVERSATION_PROVIDER` | 忽略，统一使用 UnifiedDriver |
+| `CODEX_REMOTE_DEBUGGING_PORT` | 原名保留，作为 CDP fallback 端口 |
+| `BRIDGE_CONVERSATION_PROVIDER` | 旧值保留解析；默认装配统一驱动并输出弃用语义 |
 | `QQBOT_*` | 完全保持兼容 |
 | `WEIXIN_*` | 完全保持兼容 |
 | 新增 `PUSH_*` | 默认 `PUSH_ENABLED=false`，不影响现有部署 |
 | 新增 `FEISHU_*` | 默认 `FEISHU_ENABLED=false` |
-

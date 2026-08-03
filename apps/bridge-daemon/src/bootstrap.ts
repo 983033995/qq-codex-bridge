@@ -19,6 +19,7 @@ import { CodexDesktopAppUiNotificationForwarder } from "../../../packages/adapte
 import { CodexLocalRolloutReader } from "../../../packages/adapters/codex-desktop/src/codex-local-rollout-reader.js";
 import { CodexLocalSubmissionReader } from "../../../packages/adapters/codex-desktop/src/codex-local-submission-reader.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
+import { loadCodexSelectorProfile } from "../../../packages/adapters/codex-desktop/src/selector-registry.js";
 import { UnifiedDesktopDriver } from "../../../packages/adapters/unified-desktop/src/unified-driver.js";
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
 import type { TurnEvent } from "../../../packages/domain/src/message.js";
@@ -88,7 +89,11 @@ export function bootstrap() {
     cdpSession,
     {
       localRolloutReader: new CodexLocalRolloutReader(),
-      localSubmissionReader: new CodexLocalSubmissionReader()
+      localSubmissionReader: new CodexLocalSubmissionReader(),
+      selectorProfile: loadCodexSelectorProfile({
+        profile: config.desktopDriver.selectorProfile,
+        filePath: config.desktopDriver.selectorFile
+      })
     }
   );
   const appServerDriver = new CodexAppServerDriver({

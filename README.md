@@ -7,9 +7,9 @@
 
 ![qq-codex-bridge README Hero](./output/readme-hero-nanobanana-productized-v1.png)
 
-## 把 Codex / ChatGPT Desktop 变成你的 QQ / 微信私人 AI 助理
+## 把统一 Codex / ChatGPT App 接入 QQ、微信和飞书
 
-**qq-codex-bridge** 是一个开源本地桥接工具，让你通过 **QQ** 或**微信**直接对话 **Codex Desktop** 或 **ChatGPT Desktop**——支持图片理解、语音提问、文件分析、AI 生图回传，私聊群聊都能用，同时支持多 Bot、多账号接入。
+**qq-codex-bridge** 是一个开源本地桥接工具：用户可以从 **QQ、微信或飞书**发起对话，统一桌面驱动再把消息交给合并后的 **Codex / ChatGPT App**。Codex、Claude 等 Agent 也可以通过 HTTP API 或 MCP 主动推送任务汇报、告警和自动化结果。
 
 ---
 
@@ -48,19 +48,21 @@ Codex / ChatGPT 调用图片生成工具后，成品会自动回传到 QQ 对话
 ## 工作原理
 
 ```text
-QQ Bot / 微信
+QQ Bot / 微信 / 飞书
       │
       ▼
 BridgeOrchestrator（本地 Node.js 进程）
       │
       ├── SessionStore / TranscriptStore（SQLite）
-      ├── Channel Sender（QQ / 微信）
+      ├── Channel Sender（QQ / 微信 / 飞书）
+      ├── Push API / Durable Queue ◄── HTTP / MCP Agent
       │
-      ├── CodexDesktopDriver ──► Chrome DevTools Protocol ──► Codex Desktop
-      └── ChatgptDesktopDriver ──► macOS Accessibility API ──► ChatGPT Desktop
+      └── UnifiedDesktopDriver
+          ├── AppServer（主传输）
+          └── CDP（发送前故障降级）
 ```
 
-桥接运行在本地，通过 CDP 驱动 Codex Desktop，通过 macOS Accessibility API 驱动 ChatGPT Desktop，完成消息收发和上下文注入。每个私聊会话可以独立绑定对话线程，并通过 `/source` 命令随时切换 AI 源。
+桥接默认运行在本机。`auto` 模式优先使用 AppServer；只有在本轮消息尚未确认发送时才允许降级到 CDP，避免重复提交。AppServer 恢复后从下一轮回切。旧 ChatGPT AX provider 在 v0.2 只保留兼容代码，不再作为默认装配路径。
 
 ---
 
@@ -107,6 +109,9 @@ QQBOT_CLIENT_SECRET=你的ClientSecret
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `CODEX_REMOTE_DEBUGGING_PORT` | Codex Desktop 远程调试端口 | `9229` |
+| `DESKTOP_DRIVER_TRANSPORT` | 桌面传输策略：`auto` / `app-server` / `cdp` | `auto` |
+| `CODEX_SELECTOR_PROFILE` | CDP 降级路径的内置选择器版本 | `v27` |
+| `CODEX_SELECTOR_FILE` | 严格校验的自定义选择器 JSON 文件 | — |
 | `QQBOT_STT_*` | 语音转文字配置（可选，不填则用 QQ 内置 ASR） | — |
 | `QQBOT_MARKDOWN_SUPPORT` | 是否启用 QQ markdown 文本发送 | `false` |
 
@@ -177,6 +182,63 @@ qq-codex-weixin-gateway
 
 ---
 
+## 飞书通道
+
+飞书首版使用官方 Node SDK 长连接接收 `im.message.receive_v1`，不需要公网回调地址。出站支持文本、富文本和图片。
+
+```env
+FEISHU_ENABLED=true
+FEISHU_ACCOUNT_ID=default
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=your-app-secret
+```
+
+飞书应用需要开通消息读取、消息发送和图片上传权限，并在事件订阅中启用 `im.message.receive_v1`。HTTP 回调、卡片交互和批量发送不属于 v0.2。
+
+---
+
+## Agent 主动推送
+
+主动推送默认关闭。启用后先在管理页 `http://127.0.0.1:3100/admin` 的“推送目标”页面，从已有会话创建目标别名；API 和 MCP 只能使用别名，不能直接传群号、OpenID 或 wxid。
+
+```env
+PUSH_ENABLED=true
+PUSH_TOKEN=replace-with-at-least-32-random-bytes
+PUSH_OUTBOX_ROOT=runtime/media/push-outbox
+```
+
+HTTP 调用示例：
+
+```bash
+curl -X POST http://127.0.0.1:3100/api/v1/push \
+  -H "Authorization: Bearer $PUSH_TOKEN" \
+  -H "Idempotency-Key: build-report-20260803" \
+  -H "Content-Type: application/json" \
+  -d '{"target":"daily-report-group","message":{"text":"构建完成","format":"plain","media":[]},"metadata":{"source":"codex","taskId":"task-123"}}'
+```
+
+固定返回 `202` 和 `{ pushId, status: "queued", duplicate }`。可通过 `GET /api/v1/push/:pushId` 查询状态。媒体路径必须位于 `runtime/media/push-outbox` 的真实文件中，远程 URL、`file://` 和符号链接越界会被拒绝。
+
+Codex / Claude MCP 配置：
+
+```json
+{
+  "mcpServers": {
+    "qq-codex-push": {
+      "command": "qq-codex-mcp",
+      "env": {
+        "MCP_PUSH_BASE_URL": "http://127.0.0.1:3100",
+        "MCP_PUSH_TOKEN": "replace-with-the-same-push-token"
+      }
+    }
+  }
+}
+```
+
+MCP 通过 stdio 工作，不监听额外网络端口，提供 `push_message`、`push_task_report`、`list_push_targets`、`get_push_status` 四个工具。
+
+---
+
 ## 多 Bot / 多账号接入
 
 ### 多 QQ Bot
@@ -223,17 +285,15 @@ WEIXIN_SHOP_EGRESS_TOKEN=token-shop
 
 ---
 
-## 对话源切换（Codex / ChatGPT）
+## 统一桌面传输与兼容命令
 
-bridge 同时支持 **Codex Desktop** 和 **ChatGPT Desktop** 作为 AI 对话后端。每个私聊会话可以独立切换：
+v0.2 默认只装配 `UnifiedDesktopDriver`。旧命令仍保留到 v0.3，调用时会给出弃用提示：
 
 ```text
-/source          查看当前对话源
-/source codex    切换到 Codex Desktop
-/source chatgpt  切换到 ChatGPT Desktop
+/source          查看兼容状态
+/source codex    使用统一桌面驱动
+/source chatgpt  已弃用；不再切换到 AX 默认路径
 ```
-
-切换后，`/t`、`/tu`、`/tn` 等线程命令会自动路由到对应的 Desktop 应用。
 
 ---
 
@@ -256,11 +316,13 @@ pnpm dev
 
 - QQ 官方 Bot WebSocket gateway 入站，支持多 bot 并行
 - 微信文本 long-poll 入站 / HTTP 文本出站，支持多账号
+- 飞书官方 SDK 长连接入站，支持文本、富文本和图片出站
 - QQ 私聊 / 群聊会话隔离
-- 多通道会话隔离（QQ / 微信）
-- 双 AI 源：Codex Desktop（CDP）+ ChatGPT Desktop（macOS AX）
-- 每个私聊会话独立绑定线程，可随时切换 AI 源
+- 多通道会话隔离（QQ / 微信 / 飞书）
+- 统一桌面驱动：AppServer 主传输 + CDP 安全降级
+- 每个会话独立绑定统一 App 线程
 - SQLite 持久化会话、入站记录、出站任务
+- Agent 主动推送 API、MCP stdio 工具和持久化重试队列
 
 ### 媒体与语音
 
@@ -280,7 +342,7 @@ pnpm dev
 
 所有命令仅在**私聊**中有效；`/` 开头的命令由 bridge 拦截处理，不会直接发给 AI。
 
-**Codex Desktop 源下可用：**
+**统一桌面驱动下可用：**
 
 | 用途 | 完整命令 | 简写 |
 | --- | --- | --- |
@@ -294,22 +356,13 @@ pnpm dev
 | 查看额度信息 | `/quota` | `/q` |
 | 查看当前运行状态 | `/status` | `/st` |
 
-**ChatGPT Desktop 源下可用：**
-
-| 用途 | 完整命令 | 简写 |
-| --- | --- | --- |
-| 查看最近对话列表 | `/threads` | `/t` |
-| 查看当前绑定对话 | `/thread current` | `/tc` |
-| 切换到指定对话 | `/thread use <序号>` | `/tu <序号>` |
-| 新建对话 | `/thread new <标题>` | `/tn <标题>` |
-
-**两种源通用：**
+**通用命令：**
 
 | 用途 | 命令 |
 | --- | --- |
-| 查看当前对话源 | `/source` |
-| 切换到 Codex Desktop | `/source codex` |
-| 切换到 ChatGPT Desktop | `/source chatgpt` |
+| 查看兼容来源状态 | `/source`（deprecated） |
+| 使用统一桌面驱动 | `/source codex`（deprecated） |
+| 旧 AX 来源 | `/source chatgpt`（deprecated，不再默认装配） |
 | 查看所有已接入账号 | `/accounts` |
 | 查看帮助 | `/help` 或 `/h` |
 
@@ -326,12 +379,14 @@ pnpm dev
 
 ## 已知限制
 
-- Codex Desktop 驱动依赖当前版本的 DOM 结构和 CDP 可见性，桌面端改版后可能需要跟着适配
-- ChatGPT Desktop 驱动依赖 macOS Accessibility API，macOS 系统权限变更可能影响使用
+- AppServer 与统一 App 的内部协议仍可能随产品版本变化；不可用时会降级到 CDP
+- CDP fallback 仍依赖页面 DOM，选择器配置可以独立更新，但大改版仍可能需要适配
 - 对 AI 回复的增量采集是**基于页面快照的伪流式**，不是官方内部事件流
 - QQ 客户端的消息样式、Markdown 支持、媒体卡片展示不完全可控
 - 微信当前只开放了**文本通道**，还没有内置图片、语音、文件与真实提供方签名适配
-- 线程管理命令目前只在 **QQ 私聊** 中开放
+- 飞书真实租户权限、长连接重连和渠道限额需要用实际应用凭据联调
+- QQ 主动消息能力取决于腾讯侧账号权限；不支持时任务会返回 `channel_unsupported`
+- 线程管理命令目前只在私聊中开放
 
 ---
 
@@ -339,8 +394,7 @@ pnpm dev
 
 - macOS
 - Node.js 20+
-- 已安装 Codex Desktop（使用 Codex 源时）
-- 已安装 ChatGPT Desktop（使用 ChatGPT 源时）
+- 已安装合并后的 Codex / ChatGPT App，或可访问的 Codex AppServer
 - QQ 官方机器人 `AppID` 和 `ClientSecret`
 
 ---
@@ -348,6 +402,8 @@ pnpm dev
 ## 安全提醒
 
 - `.env` 里包含 QQ Bot、STT 等敏感密钥，**不要提交到仓库**（`.gitignore` 已默认排除 `.env`）
+- `PUSH_TOKEN` 至少 32 字节，默认只在 loopback 使用；不要把 Token 写入日志或命令参数历史
+- 推送目标必须在本机管理页从已有会话登记，Agent 只接触目标别名
 - 如果你把项目分享给别人，请务必轮换已经暴露过的密钥
 - 本项目会处理用户消息、附件、语音与本地文件路径，联调时请注意隐私边界
 
@@ -372,6 +428,8 @@ pnpm run debug:codex-workers -- --duration-ms 12000
 
 - [FAQ 与故障排查](./docs/faq.md)
 - [架构说明](./docs/architecture.md)
+- [v0.2 产品说明书](./docs/PRODUCT-SPEC-v0.2.md)
+- [v0.2 重构与迁移计划](./docs/REFACTOR-PLAN-v0.2.md)
 - [测试说明](./docs/testing.md)
 - [变更记录](./CHANGELOG.md)
 - [贡献指南](./CONTRIBUTING.md)

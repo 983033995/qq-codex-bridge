@@ -239,4 +239,41 @@ describe("codex local rollout reader", () => {
       mediaReferences: []
     });
   });
+
+  it("selects the newest compatible state database and skips corrupt or incompatible versions", () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-local-rollout-discovery-"));
+    tempDirs.push(rootDir);
+    const codexHomeDir = path.join(rootDir, ".codex");
+    fs.mkdirSync(codexHomeDir, { recursive: true });
+    const rolloutPath = path.join(rootDir, "rollout-discovered.jsonl");
+    fs.writeFileSync(rolloutPath, "{}\n", "utf8");
+    fs.writeFileSync(path.join(codexHomeDir, "state_100.sqlite"), "not sqlite", "utf8");
+
+    const incompatible = new BetterSqlite3(path.join(codexHomeDir, "state_99.sqlite"));
+    incompatible.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT)");
+    incompatible.close();
+
+    const compatible = new BetterSqlite3(path.join(codexHomeDir, "state_7.sqlite"));
+    compatible.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        rollout_path TEXT,
+        title TEXT,
+        archived INTEGER,
+        updated_at_ms INTEGER
+      );
+    `);
+    compatible.prepare(
+      `INSERT INTO threads (id, rollout_path, title, archived, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run("thread-discovered", rolloutPath, "自动发现", 0, 1);
+    compatible.close();
+
+    const cursor = new CodexLocalRolloutReader({ codexHomeDir })
+      .captureCursorForThreadTitle("自动发现");
+    expect(cursor).toMatchObject({
+      threadId: "thread-discovered",
+      rolloutPath
+    });
+  });
 });

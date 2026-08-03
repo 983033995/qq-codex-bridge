@@ -1,7 +1,7 @@
 {
   "name": "qq-codex-bridge",
-  "version": "0.1.4",
-  "description": "A bridge between QQ Official Bot and Codex Desktop, with media relay, STT, thread management, and incremental reply delivery.",
+  "version": "0.2.0",
+  "description": "A local QQ, Weixin, and Feishu bridge for the unified Codex/ChatGPT App, with durable Agent push APIs and MCP tools.",
   "type": "module",
   "homepage": "https://github.com/983033995/qq-codex-bridge",
   "bugs": {
@@ -16,9 +16,12 @@
     "cdp",
     "codex",
     "electron",
+    "feishu",
+    "mcp",
     "qq",
     "qq-bot",
-    "typescript"
+    "typescript",
+    "weixin"
   ],
   "bin": {
     "qq-codex-bridge": "bin/qq-codex-bridge.js",
@@ -29,6 +32,7 @@
     "bin",
     "dist/apps",
     "dist/packages",
+    "selectors",
     ".env.example",
     "README.md",
     "LICENSE"

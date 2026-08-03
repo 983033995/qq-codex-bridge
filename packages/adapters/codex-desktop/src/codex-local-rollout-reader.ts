@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { parseQqMediaSegments } from "../../qq/src/qq-media-parser.js";
+import { resolveCompatibleCodexDatabase } from "./codex-local-db-resolver.js";
+import { collectMediaReferencesFromText } from "./image-collector.js";
 
 const require = createRequire(import.meta.url);
 const BetterSqlite3 = require("better-sqlite3") as new (
@@ -189,7 +190,7 @@ export class CodexLocalRolloutReader {
             commentaryMessages,
             finalText,
             fullText,
-            mediaReferences: extractMediaReferences(fullText)
+            mediaReferences: collectMediaReferencesFromText(fullText)
           };
         }
       }
@@ -203,8 +204,12 @@ export class CodexLocalRolloutReader {
   }
 
   private findLatestThreadByTitle(title: string): ThreadRow | null {
-    const stateDbPath = path.join(this.codexHomeDir, "state_5.sqlite");
-    if (!fs.existsSync(stateDbPath)) {
+    const stateDbPath = resolveCompatibleCodexDatabase(this.codexHomeDir, {
+      prefix: "state",
+      table: "threads",
+      requiredColumns: ["id", "rollout_path", "title", "archived", "updated_at_ms"]
+    });
+    if (!stateDbPath) {
       return null;
     }
 
@@ -321,10 +326,4 @@ function joinMessageParts(commentaryMessages: string[], finalText: string): stri
     .map((part) => part.trim())
     .filter(Boolean)
     .join("\n");
-}
-
-function extractMediaReferences(text: string): string[] {
-  return parseQqMediaSegments(text)
-    .filter((segment) => segment.type === "media")
-    .map((segment) => segment.reference);
 }
