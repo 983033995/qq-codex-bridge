@@ -39,6 +39,13 @@ const weixinConfigSchema = z.object({
   egressToken: z.string().min(1).nullable()
 });
 
+const feishuConfigSchema = z.object({
+  enabled: z.boolean(),
+  accountId: z.string().min(1),
+  appId: z.string(),
+  appSecret: z.string()
+});
+
 export const appConfigSchema = z.object({
   databasePath: z.string().min(1),
   runtime: z.object({
@@ -50,6 +57,7 @@ export const appConfigSchema = z.object({
   qqBots: z.array(qqBotConfigSchema).min(1),
   weixin: weixinConfigSchema,
   weixinAccounts: z.array(weixinConfigSchema),
+  feishu: feishuConfigSchema,
   codexDesktop: z.object({
     appName: z.string().min(1),
     remoteDebuggingPort: z.number().int().positive()
@@ -69,6 +77,22 @@ export const appConfigSchema = z.object({
   }),
   conversationProvider: z.enum(["codex-desktop", "chatgpt-desktop"])
 }).superRefine((config, context) => {
+  if (config.feishu.enabled) {
+    if (!config.feishu.appId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["feishu", "appId"],
+        message: "FEISHU_APP_ID is required when Feishu is enabled"
+      });
+    }
+    if (!config.feishu.appSecret) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["feishu", "appSecret"],
+        message: "FEISHU_APP_SECRET is required when Feishu is enabled"
+      });
+    }
+  }
   if (!config.push.enabled) {
     return;
   }
@@ -117,6 +141,12 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
     qqBots: resolveQqBotConfigs(env, fallbackQqBot),
     weixin: fallbackWeixin,
     weixinAccounts: resolveWeixinConfigs(env, fallbackWeixin),
+    feishu: {
+      enabled: booleanEnv(env.FEISHU_ENABLED, false),
+      accountId: env.FEISHU_ACCOUNT_ID ?? "default",
+      appId: env.FEISHU_APP_ID ?? "",
+      appSecret: env.FEISHU_APP_SECRET ?? ""
+    },
     codexDesktop: {
       appName: env.CODEX_APP_NAME ?? "Codex",
       remoteDebuggingPort: Number(env.CODEX_REMOTE_DEBUGGING_PORT ?? "9229")

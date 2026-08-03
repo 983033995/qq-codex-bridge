@@ -238,6 +238,15 @@ export const ADMIN_HTML = `<!doctype html>
     .field.inline label { display: flex; align-items: center; gap: 7px; font-size: 13px; }
     .field.inline input { width: 16px; height: 16px; min-height: 16px; padding: 0; }
     .json-details summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; font-size: 13px; margin-bottom: 7px; }
+    .target-layout { display: grid; grid-template-columns: minmax(260px,.7fr) minmax(0,1.3fr); gap: 12px; align-items: start; }
+    .target-list { display: grid; gap: 8px; }
+    .target-row {
+      border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+      padding: 11px 12px; display: grid; grid-template-columns: minmax(0,1fr) auto;
+      gap: 10px; align-items: center;
+    }
+    .target-name { font: 700 13px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .target-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
 
     @media (max-width: 1080px) { .sessions-layout { grid-template-columns: 250px minmax(0,1fr); } }
     @media (max-width: 940px) {
@@ -247,7 +256,7 @@ export const ADMIN_HTML = `<!doctype html>
       .nav button { width: auto; white-space: nowrap; }
       .side-note { display: none; }
       .health-strip { grid-template-columns: repeat(2,minmax(0,1fr)); }
-      .split,.form-grid,.channel-add-grid { grid-template-columns: 1fr; }
+      .split,.form-grid,.channel-add-grid,.target-layout { grid-template-columns: 1fr; }
       .form-section.full { grid-column: auto; }
       .sessions-layout { grid-template-columns: 1fr; }
       .session-list-panel { position: static; max-height: 280px; }
@@ -277,6 +286,7 @@ export const ADMIN_HTML = `<!doctype html>
       <nav class="nav" aria-label="管理台导航">
         <button class="active" data-view="status">运行总览</button>
         <button data-view="sessions">会话 &amp; 消息</button>
+        <button data-view="push">推送目标</button>
         <button data-view="errors">错误日志</button>
         <button data-view="config">配置</button>
       </nav>
@@ -349,6 +359,37 @@ export const ADMIN_HTML = `<!doctype html>
           </div>
           <div class="thread-panel" id="thread-panel">
             <div class="thread-empty">← 点击左侧会话查看对话记录</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 推送目标 -->
+      <section class="view" id="view-push">
+        <div class="section-head">
+          <div><h2>推送目标</h2><p>从已验证会话创建稳定别名，Agent 只能看到和使用别名。</p></div>
+          <span class="pill neutral" id="push-target-count">0 个</span>
+        </div>
+        <div class="target-layout">
+          <div class="panel">
+            <div class="toolbar"><strong>登记目标</strong><span class="muted">仅使用已有会话</span></div>
+            <div class="panel-body">
+              <form id="push-target-form" class="form-section" style="border:0;padding:0;">
+                <div class="field">
+                  <label for="push-target-session">来源会话</label>
+                  <select id="push-target-session" required></select>
+                </div>
+                <div class="field">
+                  <label for="push-target-alias">目标别名</label>
+                  <input id="push-target-alias" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="daily-report-group" autocomplete="off">
+                </div>
+                <button class="primary" type="submit">保存并启用</button>
+                <span class="toast" id="push-target-result"></span>
+              </form>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="toolbar"><strong>已登记别名</strong><span class="muted">真实目标标识不会显示</span></div>
+            <div class="panel-body target-list" id="push-target-list"><div class="loading">读取目标中</div></div>
           </div>
         </div>
       </section>
@@ -536,6 +577,7 @@ export const ADMIN_HTML = `<!doctype html>
     const pageMeta = {
       status:   ["运行总览",    "正在读取桥接服务状态、通道和最近事件。"],
       sessions: ["会话 & 消息", "左侧按渠道浏览所有会话线程，右侧查看完整对话时间线。"],
+      push:     ["推送目标",     "从已验证会话创建 Agent 可使用的稳定目标别名。"],
       errors:   ["错误日志",    "运行事件与投递错误分开展示，便于定位问题。"],
       config:   ["配置",        "修改后点击「保存配置」，重启服务后生效。"]
     };
@@ -549,6 +591,7 @@ export const ADMIN_HTML = `<!doctype html>
     document.querySelector("#config-form").addEventListener("input", syncPendingFromForm);
     document.querySelector("#add-qq-channel").addEventListener("click", addQqChannel);
     document.querySelector("#add-weixin-channel").addEventListener("click", addWeixinChannel);
+    document.querySelector("#push-target-form").addEventListener("submit", createPushTarget);
 
     function activateView(name) {
       for (const item of tabs) item.classList.toggle("active", item.dataset.view === name);
@@ -569,22 +612,93 @@ export const ADMIN_HTML = `<!doctype html>
     async function loadAll() {
       setLoading(true);
       try {
-        const [status, sessions, messages, errors, config] = await Promise.all([
+        const [status, sessions, messages, errors, config, pushTargets] = await Promise.all([
           api("/admin/api/status"),
           api("/admin/api/sessions?limit=200"),
           api("/admin/api/messages?limit=200"),
           api("/admin/api/errors?limit=100"),
-          api("/admin/api/config")
+          api("/admin/api/config"),
+          api("/admin/api/push-targets")
         ]);
-        Object.assign(state, { status, sessions, messages, errors, config });
+        Object.assign(state, { status, sessions, messages, errors, config, pushTargets });
         renderStatus(status);
         renderSessionsView(sessions.sessions, messages.messages);
         renderErrors(errors);
         renderConfig(config);
+        renderPushTargets(pushTargets.targets, sessions.sessions);
       } catch (error) {
         renderLoadError(error);
       } finally {
         setLoading(false);
+      }
+    }
+
+    /* ── Push targets ── */
+    function renderPushTargets(targets, sessions) {
+      document.querySelector("#push-target-count").textContent = number(targets.length) + " 个";
+      const select = document.querySelector("#push-target-session");
+      select.innerHTML = sessions.length
+        ? sessions.map(session => '<option value="' + escapeHtml(session.sessionKey) + '">' +
+            escapeHtml((session.accountKey || "channel") + " · " + (session.peerKey || session.sessionKey)) +
+          '</option>').join("")
+        : '<option value="">暂无可用会话</option>';
+      select.disabled = !sessions.length;
+
+      const list = document.querySelector("#push-target-list");
+      if (!targets.length) {
+        list.innerHTML = '<div class="empty">尚未登记推送目标。</div>';
+        return;
+      }
+      list.innerHTML = targets.map(target => '<div class="target-row">' +
+        '<div><div class="target-name">' + escapeHtml(target.alias) + '</div>' +
+          '<div class="target-meta">' +
+            cellHtml(pill(target.channel, "info")) +
+            cellHtml(pill(target.targetType, "neutral")) +
+            cellHtml(pill(target.enabled ? "enabled" : "disabled", target.enabled ? undefined : "warn")) +
+            '<span class="toast">' + escapeHtml(target.accountKey) + '</span>' +
+          '</div></div>' +
+        (target.enabled
+          ? '<button class="disable-target" data-alias="' + escapeHtml(target.alias) + '">停用</button>'
+          : '<span class="toast">可用同名别名重新登记</span>') +
+      '</div>').join("");
+      for (const button of document.querySelectorAll(".disable-target")) {
+        button.addEventListener("click", () => disablePushTarget(button.dataset.alias));
+      }
+    }
+
+    async function createPushTarget(event) {
+      event.preventDefault();
+      const result = document.querySelector("#push-target-result");
+      result.classList.remove("error");
+      try {
+        await api("/admin/api/push-targets", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            alias: value("push-target-alias"),
+            sessionKey: value("push-target-session"),
+            enabled: true
+          })
+        });
+        result.textContent = "目标已保存。";
+        setField("push-target-alias", "");
+        await loadAll();
+      } catch (error) {
+        result.classList.add("error");
+        result.textContent = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    async function disablePushTarget(alias) {
+      const result = document.querySelector("#push-target-result");
+      try {
+        await api("/admin/api/push-targets/" + encodeURIComponent(alias), { method: "DELETE" });
+        result.classList.remove("error");
+        result.textContent = "目标已停用：" + alias;
+        await loadAll();
+      } catch (error) {
+        result.classList.add("error");
+        result.textContent = error instanceof Error ? error.message : String(error);
       }
     }
 

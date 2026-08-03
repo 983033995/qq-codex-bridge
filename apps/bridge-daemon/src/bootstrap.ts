@@ -9,6 +9,10 @@ import {
 import { WeixinHttpClient } from "../../../packages/adapters/weixin/src/weixin-http-client.js";
 import { WeixinPushEgress } from "../../../packages/adapters/weixin/src/weixin-push-egress.js";
 import { QqPushEgress } from "../../../packages/adapters/qq/src/qq-push-egress.js";
+import {
+  createFeishuChannelAdapter,
+  type FeishuChannelAdapter
+} from "../../../packages/adapters/feishu/src/feishu-channel-adapter.js";
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
 import { CodexAppServerDriver } from "../../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
 import { CodexDesktopAppUiNotificationForwarder } from "../../../packages/adapters/codex-desktop/src/codex-app-ui-notification-forwarder.js";
@@ -50,11 +54,13 @@ type BootstrapAdapters = {
   codexDesktop: DesktopDriverPort;
   weixin?: WeixinChannelAdapter;
   weixinByAccountKey: Record<string, WeixinChannelAdapter>;
+  feishu?: FeishuChannelAdapter;
 };
 
 type BootstrapOrchestrators = {
   qq: BridgeOrchestrator;
   weixin?: BridgeOrchestrator;
+  feishu?: BridgeOrchestrator;
   byAccountKey: Record<string, BridgeOrchestrator>;
 };
 
@@ -268,19 +274,39 @@ export function bootstrap() {
   const defaultWeixinOrchestrator = weixinAdapters[0]
     ? weixinOrchestrators[weixinAdapters[0].accountKey]
     : undefined;
+  const feishuAccountKey = `feishu:${config.feishu.accountId}`;
+  const feishuAdapter = config.feishu.enabled
+    ? createFeishuChannelAdapter({
+        accountKey: feishuAccountKey,
+        appId: config.feishu.appId,
+        appSecret: config.feishu.appSecret,
+        onDispatchError: (error) => {
+          console.warn("[qq-codex-bridge] Feishu inbound dispatch failed", {
+            accountKey: feishuAccountKey,
+            error: error.message
+          });
+        }
+      })
+    : undefined;
+  const feishuOrchestrator = feishuAdapter
+    ? createChannelOrchestrator(feishuAdapter.egress)
+    : undefined;
 
   const channelOrchestrators: BootstrapOrchestrators = {
     qq: qqOrchestrators[defaultQqAdapter.accountKey],
     ...(defaultWeixinOrchestrator ? { weixin: defaultWeixinOrchestrator } : {}),
+    ...(feishuOrchestrator ? { feishu: feishuOrchestrator } : {}),
     byAccountKey: {
       ...qqOrchestrators,
-      ...weixinOrchestrators
+      ...weixinOrchestrators,
+      ...(feishuOrchestrator ? { [feishuAccountKey]: feishuOrchestrator } : {})
     }
   };
 
   const allAdapters: BootstrapAdapters = {
     ...adapters,
     ...(defaultWeixinAdapter ? { weixin: defaultWeixinAdapter } : {}),
+    ...(feishuAdapter ? { feishu: feishuAdapter } : {}),
     weixinByAccountKey: Object.fromEntries(
       weixinAdapters.map((entry) => [entry.accountKey, entry.adapter])
     )
@@ -291,7 +317,10 @@ export function bootstrap() {
         config,
         db,
         qqAccountKeys: qqAdapters.map((entry) => entry.accountKey),
-        weixinAccounts: config.weixinAccounts
+        weixinAccounts: config.weixinAccounts,
+        feishu: feishuAdapter
+          ? { accountKey: feishuAccountKey, egress: feishuAdapter.pushEgress }
+          : undefined
       })
     : null;
 
@@ -314,6 +343,10 @@ function createPushRuntime(input: {
   db: ReturnType<typeof createSqliteDatabase>;
   qqAccountKeys: string[];
   weixinAccounts: ReturnType<typeof loadConfigFromEnv>["weixinAccounts"];
+  feishu?: {
+    accountKey: string;
+    egress: FeishuChannelAdapter["pushEgress"];
+  };
 }) {
   const repository = new SqlitePushRepository(input.db);
   const mediaGuard = new PushMediaGuard(path.resolve(input.config.push.outboxRoot));
@@ -331,6 +364,9 @@ function createPushRuntime(input: {
       accountKey,
       new WeixinPushEgress(new WeixinHttpClient(account.egressBaseUrl, account.egressToken))
     );
+  }
+  if (input.feishu) {
+    channels.register("feishu", input.feishu.accountKey, input.feishu.egress);
   }
   const orchestrator = new PushOrchestrator({
     repository,

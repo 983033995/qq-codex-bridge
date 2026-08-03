@@ -35,6 +35,12 @@ describe("bridge config", () => {
       workerPollIntervalMs: 1000,
       staleSendingAfterMs: 300000
     });
+    expect(config.feishu).toEqual({
+      enabled: false,
+      accountId: "default",
+      appId: "",
+      appSecret: ""
+    });
   });
 
   it("loads multiple qq and weixin accounts from structured env json", () => {
@@ -135,5 +141,27 @@ describe("bridge config", () => {
       ...env,
       PUSH_ALLOW_REMOTE: "true"
     }).push.allowRemote).toBe(true);
+  });
+
+  it("loads Feishu long-connection credentials only when explicitly enabled", () => {
+    const base = {
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      FEISHU_ENABLED: "true"
+    };
+    expect(() => loadConfigFromEnv(base)).toThrow(/FEISHU_APP_ID/);
+
+    const config = loadConfigFromEnv({
+      ...base,
+      FEISHU_ACCOUNT_ID: "work",
+      FEISHU_APP_ID: "cli_test",
+      FEISHU_APP_SECRET: "feishu-secret"
+    });
+    expect(config.feishu).toEqual({
+      enabled: true,
+      accountId: "work",
+      appId: "cli_test",
+      appSecret: "feishu-secret"
+    });
   });
 });

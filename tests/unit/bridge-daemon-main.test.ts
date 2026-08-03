@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { InboundMessage, TurnEvent } from "../../packages/domain/src/message.js";
-import { createIngressMessageHandler, resolveTurnEventOrchestrator } from "../../apps/bridge-daemon/src/main.js";
+import {
+  createIngressMessageHandler,
+  createRuntimeShutdown,
+  resolveTurnEventOrchestrator
+} from "../../apps/bridge-daemon/src/main.js";
 
 function createMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
@@ -114,5 +118,29 @@ describe("bridge daemon main", () => {
     });
 
     expect(resolved).toBe(qqShop);
+  });
+
+  it("shuts down partially started runtime services once even when an ingress stop fails", async () => {
+    const stopWorker = vi.fn();
+    const stopHealthyIngress = vi.fn().mockResolvedValue(undefined);
+    const stopFailedIngress = vi.fn().mockRejectedValue(new Error("close failed"));
+    const shutdownService = vi.fn().mockResolvedValue(undefined);
+    const closeHttpServer = vi.fn().mockResolvedValue(undefined);
+    const shutdown = createRuntimeShutdown({
+      stopWorker,
+      ingresses: [
+        { stop: stopHealthyIngress },
+        { stop: stopFailedIngress }
+      ],
+      managedServices: [{ shutdown: shutdownService }],
+      closeHttpServer
+    });
+
+    await expect(Promise.all([shutdown(), shutdown()])).resolves.toEqual([undefined, undefined]);
+    expect(stopWorker).toHaveBeenCalledTimes(1);
+    expect(stopHealthyIngress).toHaveBeenCalledTimes(1);
+    expect(stopFailedIngress).toHaveBeenCalledTimes(1);
+    expect(shutdownService).toHaveBeenCalledTimes(1);
+    expect(closeHttpServer).toHaveBeenCalledTimes(1);
   });
 });

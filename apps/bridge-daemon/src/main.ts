@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { InboundMessage, OutboundDraft, TurnEvent } from "../../../packages/domain/src/message.js";
 import { AdminRepository } from "../../../packages/store/src/admin-repo.js";
+import { SqlitePushRepository } from "../../../packages/store/src/push-repo.js";
 import { bootstrap, INTERNAL_TURN_EVENT_PATH } from "./bootstrap.js";
 import { createAdminRoutes } from "./admin-routes.js";
 import { createBridgeHttpServer } from "./http-server.js";
@@ -79,9 +80,32 @@ type BridgeRuntimeHandle = {
   adminUrl: string;
 };
 
+type RuntimeShutdownDeps = {
+  stopWorker(): void;
+  ingresses: Array<{ stop?: () => Promise<void> | void }>;
+  managedServices: Array<{ shutdown(): Promise<void> }>;
+  closeHttpServer(): Promise<void>;
+};
+
+export function createRuntimeShutdown(deps: RuntimeShutdownDeps): () => Promise<void> {
+  let shutdownPromise: Promise<void> | null = null;
+  return () => {
+    shutdownPromise ??= (async () => {
+      deps.stopWorker();
+      await Promise.allSettled([
+        ...deps.ingresses.map((ingress) => Promise.resolve().then(() => ingress.stop?.())),
+        ...deps.managedServices.map((service) => service.shutdown())
+      ]);
+      await deps.closeHttpServer();
+    })();
+    return shutdownPromise;
+  };
+}
+
 export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
   const app = bootstrap();
   const adminRepository = new AdminRepository(app.db);
+  const pushTargetRepository = app.push?.repository ?? new SqlitePushRepository(app.db);
   const startedAt = new Date().toISOString();
   const managedServices: Array<Pick<WeixinGatewayServiceHandle, "shutdown">> = [];
   const configuredAccountKeys = Object.keys(app.orchestrators.byAccountKey);
@@ -134,12 +158,35 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       })
     };
   });
+  const feishuIngress = app.adapters.feishu && app.orchestrators.feishu
+    ? (() => {
+        const threadCommandHandler = new ThreadCommandHandler({
+          sessionStore: app.sessionStore,
+          transcriptStore: app.transcriptStore,
+          desktopDriver: app.adapters.codexDesktop,
+          qqEgress: app.adapters.feishu.egress,
+          chatgptDriver: app.chatgptDriver,
+          accountKeys: configuredAccountKeys
+        });
+        return {
+          accountKey: `feishu:${app.config.feishu.accountId}`,
+          adapter: app.adapters.feishu,
+          ingressHandler: createIngressMessageHandler({
+            threadCommandHandler,
+            orchestrator: app.orchestrators.feishu,
+            errorEgress: app.adapters.feishu.egress,
+            runtimeEvents: adminRepository
+          })
+        };
+      })()
+    : null;
   const bridgeHttpServer = createBridgeHttpServer([
     ...createAdminRoutes({
       config: app.config,
       repository: adminRepository,
       startedAt,
-      getChannels: () => channels
+      getChannels: () => channels,
+      pushTargets: pushTargetRepository
     }),
     ...(app.push
       ? createPushApiRoutes({
@@ -197,89 +244,103 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
           });
         });
       }
-    }))
+      }))
   ]);
-
-  await new Promise<void>((resolve, reject) => {
-    bridgeHttpServer.once("error", reject);
-    bridgeHttpServer.listen(app.config.runtime.listenPort, app.config.runtime.listenHost, () => {
-      bridgeHttpServer.off("error", reject);
-      resolve();
-    });
-  });
-  await app.push?.worker.start();
-
-  for (const entry of qqIngressHandlers) {
-    await entry.adapter.ingress.onMessage(entry.ingressHandler);
-    await entry.adapter.ingress.start();
-  }
-
-  const channelSet = new Set(qqIngressHandlers.map((entry) => entry.accountKey));
-  if (app.config.weixin.enabled) {
-    const weixinService = await startWeixinGatewayService();
-    managedServices.push(weixinService);
-    channelSet.add(`weixin:${weixinService.status.accountId}`);
-    console.log("[qq-codex-bridge] channel ready", {
-      channel: "weixin",
-      listenHost: weixinService.status.listenHost,
-      listenPort: weixinService.status.listenPort,
-      loggedIn: weixinService.status.loggedIn,
-      accountId: weixinService.status.accountId
-    });
-  }
-  for (const route of weixinRoutes) {
-    channelSet.add(route.accountKey);
-  }
-  channels = [...channelSet];
-  const adminUrl = `http://${app.config.runtime.listenHost}:${app.config.runtime.listenPort}/admin`;
-  await adminRepository.recordEvent({
-    level: "info",
-    source: "runtime",
-    message: "bridge daemon ready",
-    details: {
-      channels,
-      listenHost: app.config.runtime.listenHost,
-      listenPort: app.config.runtime.listenPort,
-      adminUrl
+  const startedIngresses: Array<{ stop?: () => Promise<void> | void }> = [];
+  const shutdownStartedServices = createRuntimeShutdown({
+    stopWorker: () => app.push?.worker.stop(),
+    ingresses: startedIngresses,
+    managedServices,
+    closeHttpServer: async () => {
+      if (bridgeHttpServer.listening) {
+        await new Promise<void>((resolve) => bridgeHttpServer.close(() => resolve()));
+      }
     }
   });
 
-  console.log("[qq-codex-bridge] admin ready", {
-    adminUrl
-  });
+  let adminUrl = "";
+  try {
+    await new Promise<void>((resolve, reject) => {
+      bridgeHttpServer.once("error", reject);
+      bridgeHttpServer.listen(app.config.runtime.listenPort, app.config.runtime.listenHost, () => {
+        bridgeHttpServer.off("error", reject);
+        resolve();
+      });
+    });
+    await app.push?.worker.start();
 
-  console.log("[qq-codex-bridge] ready", {
-    transport: "qq-gateway-websocket",
-    accountKeys: channels,
-    conversationProvider: app.config.conversationProvider,
-    listenHost: app.config.runtime.listenHost,
-    listenPort: app.config.runtime.listenPort,
-    adminUrl,
-    internalTurnEventPath: INTERNAL_TURN_EVENT_PATH,
-    ...(weixinRoutes.length > 0
-      ? {
-          weixinWebhookPaths: weixinRoutes.map((route) => route.adapter.webhook.routePath)
-        }
-      : {}),
-    channels
-  });
+    for (const entry of qqIngressHandlers) {
+      startedIngresses.push(entry.adapter.ingress);
+      await entry.adapter.ingress.onMessage(entry.ingressHandler);
+      await entry.adapter.ingress.start();
+    }
+    if (feishuIngress) {
+      startedIngresses.push(feishuIngress.adapter.ingress);
+      feishuIngress.adapter.ingress.onMessage(feishuIngress.ingressHandler);
+      await feishuIngress.adapter.ingress.start();
+    }
+
+    const channelSet = new Set(qqIngressHandlers.map((entry) => entry.accountKey));
+    if (feishuIngress) {
+      channelSet.add(feishuIngress.accountKey);
+    }
+    if (app.config.weixin.enabled) {
+      const weixinService = await startWeixinGatewayService();
+      managedServices.push(weixinService);
+      channelSet.add(`weixin:${weixinService.status.accountId}`);
+      console.log("[qq-codex-bridge] channel ready", {
+        channel: "weixin",
+        listenHost: weixinService.status.listenHost,
+        listenPort: weixinService.status.listenPort,
+        loggedIn: weixinService.status.loggedIn,
+        accountId: weixinService.status.accountId
+      });
+    }
+    for (const route of weixinRoutes) {
+      channelSet.add(route.accountKey);
+    }
+    channels = [...channelSet];
+    adminUrl = `http://${app.config.runtime.listenHost}:${app.config.runtime.listenPort}/admin`;
+    await adminRepository.recordEvent({
+      level: "info",
+      source: "runtime",
+      message: "bridge daemon ready",
+      details: {
+        channels,
+        listenHost: app.config.runtime.listenHost,
+        listenPort: app.config.runtime.listenPort,
+        adminUrl
+      }
+    });
+
+    console.log("[qq-codex-bridge] admin ready", {
+      adminUrl
+    });
+
+    console.log("[qq-codex-bridge] ready", {
+      transport: "qq-gateway-websocket",
+      accountKeys: channels,
+      conversationProvider: app.config.conversationProvider,
+      listenHost: app.config.runtime.listenHost,
+      listenPort: app.config.runtime.listenPort,
+      adminUrl,
+      internalTurnEventPath: INTERNAL_TURN_EVENT_PATH,
+      ...(weixinRoutes.length > 0
+        ? {
+            weixinWebhookPaths: weixinRoutes.map((route) => route.adapter.webhook.routePath)
+          }
+        : {}),
+      channels
+    });
+  } catch (error) {
+    await shutdownStartedServices();
+    throw error;
+  }
 
   return {
     channels,
     adminUrl,
-    shutdown: async () => {
-      app.push?.worker.stop();
-      await Promise.allSettled([
-        ...qqIngressHandlers.map((entry) =>
-          new Promise<void>((resolve) => {
-            const maybeClose = entry.adapter.ingress as { stop?: () => Promise<void> | void };
-            Promise.resolve(maybeClose.stop?.()).finally(() => resolve());
-          })
-        ),
-        ...managedServices.map((service) => service.shutdown())
-      ]);
-      await new Promise<void>((resolve) => bridgeHttpServer.close(() => resolve()));
-    }
+    shutdown: shutdownStartedServices
   };
 }
 

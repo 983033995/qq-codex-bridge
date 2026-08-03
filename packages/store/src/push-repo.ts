@@ -168,6 +168,13 @@ export class SqlitePushRepository implements PushRepositoryPort, PushTargetRegis
     });
   }
 
+  async listAllTargets(): Promise<PublicPushTarget[]> {
+    const rows = this.db.prepare(
+      `SELECT * FROM push_targets ORDER BY alias ASC`
+    ).all() as PushTargetRow[];
+    return rows.map(toPublicTarget);
+  }
+
   async saveTarget(target: Omit<PushTarget, "createdAt" | "updatedAt">): Promise<PushTarget> {
     const now = this.now();
     this.db.prepare(
@@ -237,4 +244,9 @@ function mapTarget(row: PushTargetRow): PushTarget {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function toPublicTarget(row: PushTargetRow): PublicPushTarget {
+  const { providerTargetId: _hidden, ...publicTarget } = mapTarget(row);
+  return publicTarget;
 }

@@ -4,6 +4,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AppConfig } from "./config.js";
 import type { BridgeHttpRoute } from "./http-server.js";
 import { AdminRepository, redactConfig } from "../../../packages/store/src/admin-repo.js";
+import type { AdminSessionRow } from "../../../packages/store/src/admin-repo.js";
+import type { SqlitePushRepository } from "../../../packages/store/src/push-repo.js";
+import type { PublicPushTarget, PushChannel, PushTargetType } from "../../../packages/ports/src/push.js";
 import { ADMIN_HTML } from "./admin-html.js";
 
 const KEEP_SECRET_VALUE = "__QQ_CODEX_KEEP_SECRET__";
@@ -13,6 +16,10 @@ type AdminRoutesDeps = {
   repository: AdminRepository;
   startedAt: string;
   getChannels: () => string[];
+  pushTargets?: Pick<
+    SqlitePushRepository,
+    "listAllTargets" | "saveTarget" | "disableTarget"
+  >;
 };
 
 export function createAdminRoutes(deps: AdminRoutesDeps): BridgeHttpRoute[] {
@@ -116,6 +123,68 @@ export function createAdminRoutes(deps: AdminRoutesDeps): BridgeHttpRoute[] {
       }
     },
     {
+      routePath: "/admin/api/push-targets",
+      methods: ["GET", "POST"],
+      allowOnlyLocal: true,
+      handleRequest: async (request, response) => {
+        if (!deps.pushTargets) {
+          writeJson(response, 503, { error: "push target registry unavailable" });
+          return;
+        }
+        if (request.method === "GET") {
+          writeJson(response, 200, { targets: await deps.pushTargets.listAllTargets() });
+          return;
+        }
+
+        let input: ReturnType<typeof parseTargetInput>;
+        try {
+          input = parseTargetInput(await readJson(request));
+        } catch (error) {
+          writeJson(response, 400, {
+            error: error instanceof Error ? error.message : "invalid target request"
+          });
+          return;
+        }
+        const sessions = await deps.repository.listSessions(500);
+        const session = sessions.find((candidate) => candidate.sessionKey === input.sessionKey);
+        if (!session) {
+          writeJson(response, 404, { error: "session not found" });
+          return;
+        }
+        const resolved = resolveTargetFromSession(session);
+        if (!resolved) {
+          writeJson(response, 400, { error: "session channel cannot be registered for push" });
+          return;
+        }
+        const saved = await deps.pushTargets.saveTarget({
+          alias: input.alias,
+          ...resolved,
+          enabled: input.enabled
+        });
+        writeJson(response, 201, { target: toPublicTarget(saved) });
+      }
+    },
+    {
+      routePath: "/admin/api/push-targets/:alias",
+      methods: ["DELETE"],
+      allowOnlyLocal: true,
+      handleRequest: async (request, response) => {
+        if (!deps.pushTargets) {
+          writeJson(response, 503, { error: "push target registry unavailable" });
+          return;
+        }
+        const alias = decodeURIComponent(
+          new URL(request.url ?? "/", "http://127.0.0.1").pathname.split("/").at(-1) ?? ""
+        );
+        if (!isValidAlias(alias)) {
+          writeJson(response, 400, { error: "invalid target alias" });
+          return;
+        }
+        const disabled = await deps.pushTargets.disableTarget(alias);
+        writeJson(response, disabled ? 200 : 404, disabled ? { ok: true } : { error: "target not found" });
+      }
+    },
+    {
       routePath: "/admin/api/messages",
       methods: ["GET"],
       allowOnlyLocal: true,
@@ -143,6 +212,83 @@ export function createAdminRoutes(deps: AdminRoutesDeps): BridgeHttpRoute[] {
       }
     }
   ];
+}
+
+function parseTargetInput(value: unknown): {
+  alias: string;
+  sessionKey: string;
+  enabled: boolean;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid target request");
+  }
+  const record = value as Record<string, unknown>;
+  const alias = String(record.alias ?? "").trim();
+  const sessionKey = String(record.sessionKey ?? "").trim();
+  if (!isValidAlias(alias) || !sessionKey) {
+    throw new Error("alias and sessionKey are required");
+  }
+  return { alias, sessionKey, enabled: record.enabled !== false };
+}
+
+function isValidAlias(alias: string): boolean {
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(alias);
+}
+
+function resolveTargetFromSession(session: AdminSessionRow): {
+  channel: PushChannel;
+  accountKey: string;
+  targetType: PushTargetType;
+  providerTargetId: string;
+} | null {
+  const [accountKey, scope, ...extra] = session.sessionKey.split("::");
+  if (!accountKey || !scope || extra.length > 0 || accountKey !== session.accountKey || scope !== session.peerKey) {
+    return null;
+  }
+  const [marker, chatType, ...targetParts] = scope.split(":");
+  const providerTargetId = targetParts.join(":").trim();
+  if ((chatType !== "c2c" && chatType !== "group")
+    || chatType !== session.chatType
+    || !providerTargetId) {
+    return null;
+  }
+  const channel = channelForSession(accountKey, marker);
+  if (!channel) {
+    return null;
+  }
+  return {
+    channel,
+    accountKey,
+    targetType: chatType === "group" ? "group" : "user",
+    providerTargetId
+  };
+}
+
+function channelForSession(accountKey: string, marker: string): PushChannel | null {
+  if (accountKey.startsWith("qqbot:") && marker === "qq") {
+    return "qq";
+  }
+  if (accountKey.startsWith("weixin:") && marker === "wx") {
+    return "weixin";
+  }
+  if (accountKey.startsWith("feishu:") && marker === "fs") {
+    return "feishu";
+  }
+  return null;
+}
+
+function toPublicTarget(target: {
+  alias: string;
+  channel: PushChannel;
+  accountKey: string;
+  targetType: PushTargetType;
+  providerTargetId: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}): PublicPushTarget {
+  const { providerTargetId: _hidden, ...publicTarget } = target;
+  return publicTarget;
 }
 
 function writeJson(response: ServerResponse, statusCode: number, value: unknown): void {
