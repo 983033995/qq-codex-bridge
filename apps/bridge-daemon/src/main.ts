@@ -5,6 +5,7 @@ import { AdminRepository } from "../../../packages/store/src/admin-repo.js";
 import { bootstrap, INTERNAL_TURN_EVENT_PATH } from "./bootstrap.js";
 import { createAdminRoutes } from "./admin-routes.js";
 import { createBridgeHttpServer } from "./http-server.js";
+import { createPushApiRoutes } from "../../../packages/push/src/push-api-routes.js";
 import { ThreadCommandHandler } from "./thread-command-handler.js";
 import { startWeixinGatewayService, type WeixinGatewayServiceHandle } from "../../weixin-gateway/src/cli.js";
 
@@ -140,6 +141,12 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       startedAt,
       getChannels: () => channels
     }),
+    ...(app.push
+      ? createPushApiRoutes({
+          token: app.push.token,
+          orchestrator: app.push.orchestrator
+        })
+      : []),
     {
       routePath: INTERNAL_TURN_EVENT_PATH,
       allowOnlyLocal: true,
@@ -200,6 +207,7 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       resolve();
     });
   });
+  await app.push?.worker.start();
 
   for (const entry of qqIngressHandlers) {
     await entry.adapter.ingress.onMessage(entry.ingressHandler);
@@ -260,6 +268,7 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     channels,
     adminUrl,
     shutdown: async () => {
+      app.push?.worker.stop();
       await Promise.allSettled([
         ...qqIngressHandlers.map((entry) =>
           new Promise<void>((resolve) => {

@@ -58,7 +58,34 @@ export const appConfigSchema = z.object({
     transport: z.enum(["auto", "app-server", "cdp"]),
     probeIntervalMs: z.number().int().nonnegative()
   }),
+  push: z.object({
+    enabled: z.boolean(),
+    token: z.string().nullable(),
+    allowRemote: z.boolean(),
+    outboxRoot: z.string().min(1),
+    maxRequestsPerMinute: z.number().int().positive(),
+    workerPollIntervalMs: z.number().int().positive(),
+    staleSendingAfterMs: z.number().int().positive()
+  }),
   conversationProvider: z.enum(["codex-desktop", "chatgpt-desktop"])
+}).superRefine((config, context) => {
+  if (!config.push.enabled) {
+    return;
+  }
+  if (!config.push.token || Buffer.byteLength(config.push.token, "utf8") < 32) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["push", "token"],
+      message: "PUSH_TOKEN must contain at least 32 bytes when push is enabled"
+    });
+  }
+  if (!isLoopbackHost(config.runtime.listenHost) && !config.push.allowRemote) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["push", "allowRemote"],
+      message: "PUSH_ALLOW_REMOTE=true is required when push is enabled on a non-loopback host"
+    });
+  }
 });
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
@@ -98,8 +125,25 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
       transport: resolveDesktopTransport(env),
       probeIntervalMs: Number(env.DESKTOP_DRIVER_PROBE_INTERVAL_MS ?? "300000")
     },
+    push: {
+      enabled: booleanEnv(env.PUSH_ENABLED, false),
+      token: nullableString(env.PUSH_TOKEN),
+      allowRemote: booleanEnv(env.PUSH_ALLOW_REMOTE, false),
+      outboxRoot: env.PUSH_OUTBOX_ROOT ?? "runtime/media/push-outbox",
+      maxRequestsPerMinute: Number(env.PUSH_RATE_LIMIT_PER_MINUTE ?? "60"),
+      workerPollIntervalMs: Number(env.PUSH_WORKER_POLL_INTERVAL_MS ?? "1000"),
+      staleSendingAfterMs: Number(env.PUSH_STALE_SENDING_AFTER_MS ?? "300000")
+    },
     conversationProvider: "codex-desktop"
   });
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "[::1]"
+    || normalized === "localhost";
 }
 
 function resolveDesktopTransport(

@@ -6,6 +6,9 @@ import {
   createWeixinChannelAdapter,
   type WeixinChannelAdapter
 } from "../../../packages/adapters/weixin/src/weixin-channel-adapter.js";
+import { WeixinHttpClient } from "../../../packages/adapters/weixin/src/weixin-http-client.js";
+import { WeixinPushEgress } from "../../../packages/adapters/weixin/src/weixin-push-egress.js";
+import { QqPushEgress } from "../../../packages/adapters/qq/src/qq-push-egress.js";
 import { CdpSession } from "../../../packages/adapters/codex-desktop/src/cdp-session.js";
 import { CodexAppServerDriver } from "../../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
 import { CodexDesktopAppUiNotificationForwarder } from "../../../packages/adapters/codex-desktop/src/codex-app-ui-notification-forwarder.js";
@@ -31,6 +34,12 @@ import type { DriverBinding } from "../../../packages/domain/src/driver.js";
 import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.js";
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
+import { SqlitePushRepository } from "../../../packages/store/src/push-repo.js";
+import { PushChannelRegistry } from "../../../packages/push/src/channel-registry.js";
+import { PushMediaGuard } from "../../../packages/push/src/media-guard.js";
+import { PushOrchestrator } from "../../../packages/push/src/push-orchestrator.js";
+import { PushRateLimiter } from "../../../packages/push/src/push-rate-limiter.js";
+import { PushWorker } from "../../../packages/push/src/push-worker.js";
 import { loadConfigFromEnv } from "./config.js";
 
 const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
@@ -277,6 +286,15 @@ export function bootstrap() {
     )
   };
 
+  const push = config.push.enabled
+    ? createPushRuntime({
+        config,
+        db,
+        qqAccountKeys: qqAdapters.map((entry) => entry.accountKey),
+        weixinAccounts: config.weixinAccounts
+      })
+    : null;
+
   return {
     config,
     db,
@@ -285,8 +303,53 @@ export function bootstrap() {
     adapters: allAdapters,
     orchestrator: channelOrchestrators.qq,
     orchestrators: channelOrchestrators,
+    push,
     qqGatewaySessionStore: defaultQqAdapter.sessionStore,
     chatgptDriver: undefined
+  };
+}
+
+function createPushRuntime(input: {
+  config: ReturnType<typeof loadConfigFromEnv>;
+  db: ReturnType<typeof createSqliteDatabase>;
+  qqAccountKeys: string[];
+  weixinAccounts: ReturnType<typeof loadConfigFromEnv>["weixinAccounts"];
+}) {
+  const repository = new SqlitePushRepository(input.db);
+  const mediaGuard = new PushMediaGuard(path.resolve(input.config.push.outboxRoot));
+  const channels = new PushChannelRegistry();
+  for (const accountKey of input.qqAccountKeys) {
+    channels.register("qq", accountKey, new QqPushEgress());
+  }
+  for (const account of input.weixinAccounts) {
+    if (!account.enabled || !account.egressBaseUrl || !account.egressToken) {
+      continue;
+    }
+    const accountKey = `weixin:${account.accountId}`;
+    channels.register(
+      "weixin",
+      accountKey,
+      new WeixinPushEgress(new WeixinHttpClient(account.egressBaseUrl, account.egressToken))
+    );
+  }
+  const orchestrator = new PushOrchestrator({
+    repository,
+    targets: repository,
+    mediaGuard,
+    rateLimiter: new PushRateLimiter(input.config.push.maxRequestsPerMinute)
+  });
+  return {
+    token: input.config.push.token!,
+    repository,
+    orchestrator,
+    worker: new PushWorker({
+      repository,
+      targets: repository,
+      channels,
+      mediaGuard,
+      pollIntervalMs: input.config.push.workerPollIntervalMs,
+      staleSendingAfterMs: input.config.push.staleSendingAfterMs
+    })
   };
 }
 

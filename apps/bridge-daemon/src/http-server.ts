@@ -69,7 +69,7 @@ function createJsonServer(deps: JsonServerDeps): Server {
   return createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const requestPath = normalizePathname(requestUrl.pathname);
-    const route = deps.routes.find((candidate) => normalizePathname(candidate.routePath) === requestPath);
+    const route = deps.routes.find((candidate) => routeMatches(candidate.routePath, requestPath));
     if (!route) {
       response.statusCode = 404;
       response.end("not found");
@@ -137,6 +137,13 @@ function normalizePathname(pathname: string): string {
     return pathname.slice(0, -1);
   }
   return pathname;
+}
+
+function routeMatches(routePath: string, requestPath: string): boolean {
+  const routeParts = normalizePathname(routePath).split("/");
+  const requestParts = normalizePathname(requestPath).split("/");
+  return routeParts.length === requestParts.length
+    && routeParts.every((part, index) => part.startsWith(":") || part === requestParts[index]);
 }
 
 function isLocalRequest(request: IncomingMessage): boolean {

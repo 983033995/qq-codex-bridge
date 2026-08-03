@@ -12,6 +12,10 @@ export type SqliteDatabase = {
     all(...params: unknown[]): unknown[];
     run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   };
+  transaction<T>(work: () => T): {
+    (): T;
+    immediate(): T;
+  };
   close(): void;
 };
 
@@ -81,6 +85,39 @@ export function createSqliteDatabase(filePath: string): SqliteDatabase {
       details_json TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS push_targets (
+      alias TEXT PRIMARY KEY,
+      channel TEXT NOT NULL CHECK (channel IN ('qq', 'weixin', 'feishu')),
+      account_key TEXT NOT NULL,
+      target_type TEXT NOT NULL CHECK (target_type IN ('user', 'group')),
+      provider_target_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS push_jobs (
+      push_id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      target_alias TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'sending', 'retry_wait', 'delivered', 'failed')),
+      payload_json TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count BETWEEN 0 AND 4),
+      next_attempt_at TEXT,
+      provider_message_id TEXT,
+      last_error TEXT,
+      failure_code TEXT,
+      claimed_by TEXT,
+      claimed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      delivered_at TEXT,
+      FOREIGN KEY (target_alias) REFERENCES push_targets(alias)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_push_jobs_claim
+      ON push_jobs(status, next_attempt_at, created_at);
   `);
 
   ensureColumn(db, "bridge_sessions", "skill_context_key", "TEXT");

@@ -26,6 +26,15 @@ describe("bridge config", () => {
         egressBaseUrl: "http://127.0.0.1:3200"
       })
     ]);
+    expect(config.push).toEqual({
+      enabled: false,
+      token: null,
+      allowRemote: false,
+      outboxRoot: "runtime/media/push-outbox",
+      maxRequestsPerMinute: 60,
+      workerPollIntervalMs: 1000,
+      staleSendingAfterMs: 300000
+    });
   });
 
   it("loads multiple qq and weixin accounts from structured env json", () => {
@@ -101,5 +110,30 @@ describe("bridge config", () => {
       transport: "app-server",
       probeIntervalMs: 60000
     });
+  });
+
+  it("requires a token of at least 32 bytes when push is enabled", () => {
+    expect(() => loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      PUSH_ENABLED: "true",
+      PUSH_TOKEN: "too-short"
+    })).toThrow(/PUSH_TOKEN must contain at least 32 bytes/);
+  });
+
+  it("requires explicit remote opt-in when push is enabled off loopback", () => {
+    const env = {
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      QQ_CODEX_LISTEN_HOST: "0.0.0.0",
+      PUSH_ENABLED: "true",
+      PUSH_TOKEN: "0123456789abcdef0123456789abcdef"
+    };
+
+    expect(() => loadConfigFromEnv(env)).toThrow(/PUSH_ALLOW_REMOTE=true/);
+    expect(loadConfigFromEnv({
+      ...env,
+      PUSH_ALLOW_REMOTE: "true"
+    }).push.allowRemote).toBe(true);
   });
 });
