@@ -137,4 +137,39 @@ describe("internal turn event server", () => {
     expect(response.statusCode).toBe(202);
     expect(payloads).toEqual([{ route: "weixin", payload: { text: "hello" } }]);
   });
+
+  it("supports local GET request routes alongside webhook routes", async () => {
+    const server = createBridgeHttpServer([
+      {
+        routePath: "/admin",
+        methods: ["GET"],
+        allowOnlyLocal: true,
+        handleRequest: async (_request, response) => {
+          response.statusCode = 200;
+          response.end("admin ok");
+        }
+      }
+    ]);
+    servers.push(server);
+
+    const response = await new Promise<{ statusCode: number; body: string }>((resolve) => {
+      server.emit(
+        "request",
+        {
+          method: "GET",
+          url: "/admin?tab=status",
+          socket: { remoteAddress: "127.0.0.1" },
+          [Symbol.asyncIterator]: async function* () {}
+        } as never,
+        {
+          statusCode: 200,
+          end: function (body: string) {
+            resolve({ statusCode: this.statusCode, body });
+          }
+        }
+      );
+    });
+
+    expect(response).toEqual({ statusCode: 200, body: "admin ok" });
+  });
 });

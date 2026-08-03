@@ -1,7 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { InboundMessage, OutboundDraft, TurnEvent } from "../../../packages/domain/src/message.js";
+import { AdminRepository } from "../../../packages/store/src/admin-repo.js";
 import { bootstrap, INTERNAL_TURN_EVENT_PATH } from "./bootstrap.js";
+import { createAdminRoutes } from "./admin-routes.js";
 import { createBridgeHttpServer } from "./http-server.js";
 import { ThreadCommandHandler } from "./thread-command-handler.js";
 import { startWeixinGatewayService, type WeixinGatewayServiceHandle } from "../../weixin-gateway/src/cli.js";
@@ -14,6 +16,7 @@ type IngressMessageHandlerDeps = {
   errorEgress?: {
     deliver(draft: OutboundDraft): Promise<unknown>;
   };
+  runtimeEvents?: Pick<AdminRepository, "recordEvent">;
 };
 
 export function createIngressMessageHandler(deps: IngressMessageHandlerDeps) {
@@ -33,6 +36,21 @@ export function createIngressMessageHandler(deps: IngressMessageHandlerDeps) {
       });
       if (error instanceof Error && error.stack) {
         console.error("  stack:", error.stack);
+      }
+      try {
+        await deps.runtimeEvents?.recordEvent({
+          level: "error",
+          source: "ingress",
+          message: errorMessage,
+          details: {
+            messageId: message.messageId,
+            sessionKey: message.sessionKey
+          }
+        });
+      } catch (eventError) {
+        console.warn("[qq-codex-bridge] failed to record runtime event", {
+          error: eventError instanceof Error ? eventError.message : String(eventError)
+        });
       }
       if (deps.errorEgress) {
         try {
@@ -57,12 +75,16 @@ export function createIngressMessageHandler(deps: IngressMessageHandlerDeps) {
 type BridgeRuntimeHandle = {
   shutdown(): Promise<void>;
   channels: string[];
+  adminUrl: string;
 };
 
 export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
   const app = bootstrap();
+  const adminRepository = new AdminRepository(app.db);
+  const startedAt = new Date().toISOString();
   const managedServices: Array<Pick<WeixinGatewayServiceHandle, "shutdown">> = [];
   const configuredAccountKeys = Object.keys(app.orchestrators.byAccountKey);
+  let channels: string[] = [];
   const qqIngressHandlers = Object.entries(app.adapters.qqByAccountKey).map(([accountKey, adapter]) => {
     const orchestrator = app.orchestrators.byAccountKey[accountKey];
     if (!orchestrator) {
@@ -82,7 +104,8 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       ingressHandler: createIngressMessageHandler({
         threadCommandHandler,
         orchestrator,
-        errorEgress: adapter.egress
+        errorEgress: adapter.egress,
+        runtimeEvents: adminRepository
       })
     };
   });
@@ -105,11 +128,18 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       ingressHandler: createIngressMessageHandler({
         threadCommandHandler,
         orchestrator,
-        errorEgress: adapter.egress
+        errorEgress: adapter.egress,
+        runtimeEvents: adminRepository
       })
     };
   });
   const bridgeHttpServer = createBridgeHttpServer([
+    ...createAdminRoutes({
+      config: app.config,
+      repository: adminRepository,
+      startedAt,
+      getChannels: () => channels
+    }),
     {
       routePath: INTERNAL_TURN_EVENT_PATH,
       allowOnlyLocal: true,
@@ -121,6 +151,16 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
         console.warn("[qq-codex-bridge] internal turn event dispatch failed", {
           error: error.message,
           payload
+        });
+        void adminRepository.recordEvent({
+          level: "warn",
+          source: "internal-turn-event",
+          message: error.message,
+          details: payload
+        }).catch((eventError) => {
+          console.warn("[qq-codex-bridge] failed to record runtime event", {
+            error: eventError instanceof Error ? eventError.message : String(eventError)
+          });
         });
       }
     },
@@ -135,6 +175,19 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
           accountKey: route.accountKey,
           error: error.message,
           payload
+        });
+        void adminRepository.recordEvent({
+          level: "warn",
+          source: "weixin-webhook",
+          message: error.message,
+          details: {
+            accountKey: route.accountKey,
+            payload
+          }
+        }).catch((eventError) => {
+          console.warn("[qq-codex-bridge] failed to record runtime event", {
+            error: eventError instanceof Error ? eventError.message : String(eventError)
+          });
         });
       }
     }))
@@ -169,7 +222,23 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
   for (const route of weixinRoutes) {
     channelSet.add(route.accountKey);
   }
-  const channels = [...channelSet];
+  channels = [...channelSet];
+  const adminUrl = `http://${app.config.runtime.listenHost}:${app.config.runtime.listenPort}/admin`;
+  await adminRepository.recordEvent({
+    level: "info",
+    source: "runtime",
+    message: "bridge daemon ready",
+    details: {
+      channels,
+      listenHost: app.config.runtime.listenHost,
+      listenPort: app.config.runtime.listenPort,
+      adminUrl
+    }
+  });
+
+  console.log("[qq-codex-bridge] admin ready", {
+    adminUrl
+  });
 
   console.log("[qq-codex-bridge] ready", {
     transport: "qq-gateway-websocket",
@@ -177,6 +246,7 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     conversationProvider: app.config.conversationProvider,
     listenHost: app.config.runtime.listenHost,
     listenPort: app.config.runtime.listenPort,
+    adminUrl,
     internalTurnEventPath: INTERNAL_TURN_EVENT_PATH,
     ...(weixinRoutes.length > 0
       ? {
@@ -188,6 +258,7 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
 
   return {
     channels,
+    adminUrl,
     shutdown: async () => {
       await Promise.allSettled([
         ...qqIngressHandlers.map((entry) =>

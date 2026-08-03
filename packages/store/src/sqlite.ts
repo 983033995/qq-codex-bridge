@@ -66,6 +66,21 @@ export function createSqliteDatabase(filePath: string): SqliteDatabase {
       locked_at TEXT NOT NULL,
       expires_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS runtime_events (
+      event_id TEXT PRIMARY KEY,
+      level TEXT NOT NULL,
+      source TEXT NOT NULL,
+      message TEXT NOT NULL,
+      details_json TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn(db, "bridge_sessions", "skill_context_key", "TEXT");

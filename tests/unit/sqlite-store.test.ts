@@ -2,11 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { describe, expect, it, afterEach } from "vitest";
+import { MediaArtifactKind } from "../../packages/domain/src/message.js";
 import { BridgeSessionStatus } from "../../packages/domain/src/session.js";
 import { buildPeerKey, buildSessionKey } from "../../packages/orchestrator/src/session-key.js";
 import { createSqliteDatabase } from "../../packages/store/src/sqlite.js";
 import { SqliteSessionStore } from "../../packages/store/src/session-repo.js";
 import { SqliteTranscriptStore } from "../../packages/store/src/message-repo.js";
+import { AdminRepository } from "../../packages/store/src/admin-repo.js";
 
 describe("sqlite store", () => {
   const tempDirs: string[] = [];
@@ -220,5 +222,100 @@ describe("sqlite store", () => {
       .prepare(`SELECT COUNT(*) AS count FROM session_locks WHERE session_key = ?`)
       .get(sessionKey) as { count: number };
     expect(remainingLocks.count).toBe(0);
+  });
+
+  it("stores admin config drafts and runtime events in sqlite", async () => {
+    const dbPath = createTempDbPath();
+    const db = createSqliteDatabase(dbPath);
+    const adminRepository = new AdminRepository(db);
+
+    await adminRepository.saveConfigDraft({
+      runtime: {
+        listenPort: 3100
+      },
+      qqBots: [{ accountId: "default", appId: "app-1" }]
+    });
+    await adminRepository.recordEvent({
+      level: "error",
+      source: "test",
+      message: "demo failure",
+      details: { sessionKey: "session-1" },
+      createdAt: "2026-04-27T10:00:00.000Z"
+    });
+
+    await expect(adminRepository.getConfigDraft()).resolves.toMatchObject({
+      runtime: {
+        listenPort: 3100
+      }
+    });
+    await expect(adminRepository.listRuntimeEvents()).resolves.toEqual([
+      {
+        eventId: expect.any(String),
+        level: "error",
+        source: "test",
+        message: "demo failure",
+        details: { sessionKey: "session-1" },
+        createdAt: "2026-04-27T10:00:00.000Z"
+      }
+    ]);
+  });
+
+  it("lists recent admin messages across inbound ledger and outbound jobs", async () => {
+    const dbPath = createTempDbPath();
+    const db = createSqliteDatabase(dbPath);
+    const transcriptStore = new SqliteTranscriptStore(db);
+    const adminRepository = new AdminRepository(db);
+    const sessionKey = "qqbot:default::qq:c2c:abc-123";
+
+    await transcriptStore.recordInbound({
+      messageId: "msg-admin-1",
+      accountKey: "qqbot:default",
+      sessionKey,
+      peerKey: "qq:c2c:abc-123",
+      chatType: "c2c",
+      senderId: "abc-123",
+      text: "hello admin",
+      mediaArtifacts: [
+        {
+          kind: MediaArtifactKind.Image,
+          sourceUrl: "https://example.com/cat.png",
+          localPath: "/tmp/qq-media/cat.png",
+          mimeType: "image/png",
+          fileSize: 2048,
+          originalName: "cat.png"
+        }
+      ],
+      receivedAt: "2026-04-27T10:00:00.000Z"
+    });
+    await transcriptStore.recordOutbound({
+      draftId: "draft-admin-1",
+      sessionKey,
+      text: "reply admin\n<qqmedia>/tmp/result.png</qqmedia>",
+      createdAt: "2026-04-27T10:00:01.000Z"
+    });
+
+    await expect(adminRepository.listMessages({ sessionKey })).resolves.toMatchObject([
+      {
+        id: "draft-admin-1",
+        direction: "outbound",
+        text: "reply admin\n<qqmedia>/tmp/result.png</qqmedia>",
+        mediaReferences: ["/tmp/result.png"]
+      },
+      {
+        id: "msg-admin-1",
+        direction: "inbound",
+        text: "hello admin",
+        mediaArtifacts: [
+          expect.objectContaining({
+            kind: "image",
+            originalName: "cat.png",
+            mimeType: "image/png"
+          })
+        ]
+      }
+    ]);
+    await expect(adminRepository.hasKnownMediaPath("/tmp/qq-media/cat.png")).resolves.toBe(true);
+    await expect(adminRepository.hasKnownMediaPath("/tmp/result.png")).resolves.toBe(true);
+    await expect(adminRepository.hasKnownMediaPath("/etc/passwd")).resolves.toBe(false);
   });
 });

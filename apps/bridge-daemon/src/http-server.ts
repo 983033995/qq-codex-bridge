@@ -1,14 +1,23 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-type JsonRoute = {
+export type JsonRoute = {
   routePath: string;
   dispatchPayload(payload: unknown): Promise<void>;
   onDispatchError?: (error: Error, payload: unknown) => void;
   allowOnlyLocal?: boolean;
 };
 
+export type RequestRoute = {
+  routePath: string;
+  methods?: string[];
+  allowOnlyLocal?: boolean;
+  handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> | void;
+};
+
+export type BridgeHttpRoute = JsonRoute | RequestRoute;
+
 type JsonServerDeps = {
-  routes: JsonRoute[];
+  routes: BridgeHttpRoute[];
 };
 
 type QqWebhookServerDeps = {
@@ -52,13 +61,15 @@ export function createInternalTurnEventServer(deps: InternalTurnEventServerDeps)
   });
 }
 
-export function createBridgeHttpServer(routes: JsonRoute[]): Server {
+export function createBridgeHttpServer(routes: BridgeHttpRoute[]): Server {
   return createJsonServer({ routes });
 }
 
 function createJsonServer(deps: JsonServerDeps): Server {
   return createServer(async (request, response) => {
-    const route = deps.routes.find((candidate) => candidate.routePath === request.url);
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    const requestPath = normalizePathname(requestUrl.pathname);
+    const route = deps.routes.find((candidate) => normalizePathname(candidate.routePath) === requestPath);
     if (!route) {
       response.statusCode = 404;
       response.end("not found");
@@ -68,6 +79,22 @@ function createJsonServer(deps: JsonServerDeps): Server {
     if (route.allowOnlyLocal && !isLocalRequest(request)) {
       response.statusCode = 403;
       response.end("forbidden");
+      return;
+    }
+
+    if ("handleRequest" in route) {
+      if (route.methods && !route.methods.includes(request.method ?? "GET")) {
+        response.statusCode = 405;
+        response.end("method not allowed");
+        return;
+      }
+
+      try {
+        await route.handleRequest(request, response);
+      } catch (error) {
+        response.statusCode = 500;
+        response.end(error instanceof Error ? error.message : "internal server error");
+      }
       return;
     }
 
@@ -103,6 +130,13 @@ function createJsonServer(deps: JsonServerDeps): Server {
     response.statusCode = 202;
     response.end("accepted");
   });
+}
+
+function normalizePathname(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    return pathname.slice(0, -1);
+  }
+  return pathname;
 }
 
 function isLocalRequest(request: IncomingMessage): boolean {
