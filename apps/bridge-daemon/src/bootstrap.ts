@@ -12,6 +12,7 @@ import { CodexDesktopAppUiNotificationForwarder } from "../../../packages/adapte
 import { CodexLocalRolloutReader } from "../../../packages/adapters/codex-desktop/src/codex-local-rollout-reader.js";
 import { CodexLocalSubmissionReader } from "../../../packages/adapters/codex-desktop/src/codex-local-submission-reader.js";
 import { CodexDesktopDriver } from "../../../packages/adapters/codex-desktop/src/codex-desktop-driver.js";
+import { UnifiedDesktopDriver } from "../../../packages/adapters/unified-desktop/src/unified-driver.js";
 import { BridgeSessionStatus } from "../../../packages/domain/src/session.js";
 import type { TurnEvent } from "../../../packages/domain/src/message.js";
 import { BridgeOrchestrator } from "../../../packages/orchestrator/src/bridge-orchestrator.js";
@@ -31,8 +32,6 @@ import { SqliteTranscriptStore } from "../../../packages/store/src/message-repo.
 import { SqliteSessionStore } from "../../../packages/store/src/session-repo.js";
 import { createSqliteDatabase } from "../../../packages/store/src/sqlite.js";
 import { loadConfigFromEnv } from "./config.js";
-import { ChatgptDesktopProvider } from "../../../packages/adapters/chatgpt-desktop/src/bridge-provider.js";
-import type { ChatgptDesktopDriver } from "../../../packages/adapters/chatgpt-desktop/src/driver.js";
 
 const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
 
@@ -64,7 +63,7 @@ export function bootstrap() {
   const sessionStore = new SqliteSessionStore(db);
   const transcriptStore = new SqliteTranscriptStore(db);
   const runtimeDir = path.dirname(config.databasePath);
-  const useDomTransport = process.env.CODEX_DESKTOP_TRANSPORT === "dom";
+  const useDomTransport = config.desktopDriver.transport === "cdp";
   const forwardAppServerUiEvents = process.env.CODEX_APP_SERVER_FORWARD_UI_EVENTS === "1";
   const cdpSession = new CdpSession({
     appName: config.codexDesktop.appName,
@@ -77,15 +76,18 @@ export function bootstrap() {
       localSubmissionReader: new CodexLocalSubmissionReader()
     }
   );
-  const codexDriver =
-    useDomTransport
-      ? legacyDomDriver
-      : new CodexAppServerDriver({
-          controlFallback: legacyDomDriver,
-          notificationForwarder: forwardAppServerUiEvents
-            ? new CodexDesktopAppUiNotificationForwarder(cdpSession)
-            : null
-        });
+  const appServerDriver = new CodexAppServerDriver({
+    controlFallback: legacyDomDriver,
+    notificationForwarder: forwardAppServerUiEvents
+      ? new CodexDesktopAppUiNotificationForwarder(cdpSession)
+      : null
+  });
+  const codexDriver = new UnifiedDesktopDriver({
+    appServer: appServerDriver,
+    cdp: legacyDomDriver,
+    transport: config.desktopDriver.transport,
+    probeIntervalMs: config.desktopDriver.probeIntervalMs
+  });
   const qqAdapters = config.qqBots.map((bot) => {
     const accountKey = `qqbot:${bot.accountId}`;
     const qqApiClient = new QqApiClient(bot.appId, bot.clientSecret, {
@@ -145,79 +147,72 @@ export function bootstrap() {
       options?: ConversationRunOptions
     ) =>
       runCodexTurn(async () => {
-        await adapters.codexDesktop.ensureAppReady();
-        const session = await sessionStore.getSession(message.sessionKey);
-        const currentBinding = session
-          && session.status === BridgeSessionStatus.Active
-          ? {
-              sessionKey: session.sessionKey,
-              codexThreadRef: session.codexThreadRef
-            }
-          : null;
-        const binding = await adapters.codexDesktop.openOrBindSession(
-          message.sessionKey,
-          currentBinding
-        );
-        const skillContextKey = shouldInjectQqbotSkillContext(message)
-          ? `${binding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
-          : null;
-        const shouldIncludeSkillContext =
-          skillContextKey !== null && session?.skillContextKey !== skillContextKey;
-        await adapters.codexDesktop.sendUserMessage(binding, {
-          ...message,
-          text: buildCodexInboundText(message, {
-            includeSkillContext: shouldIncludeSkillContext
-          })
-        });
-        const stableBinding = await resolveStableBinding(adapters.codexDesktop, binding);
-        if (session?.codexThreadRef !== stableBinding.codexThreadRef) {
-          await sessionStore.updateBinding(message.sessionKey, stableBinding.codexThreadRef);
-        }
-        if (shouldIncludeSkillContext) {
-          const stableSkillContextKey =
-            skillContextKey !== null
-              ? `${stableBinding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
-              : null;
-          await sessionStore.updateSkillContextKey(message.sessionKey, stableSkillContextKey);
-        }
-        const drafts = await adapters.codexDesktop.collectAssistantReply(stableBinding, {
-          onDraft: options?.onDraft
-            ? async (draft) => {
-                await options.onDraft!({
-                  ...draft,
-                  replyToMessageId: message.messageId
-                });
+        try {
+          await adapters.codexDesktop.ensureAppReady();
+          const session = await sessionStore.getSession(message.sessionKey);
+          const currentBinding = session
+            && session.status === BridgeSessionStatus.Active
+            ? {
+                sessionKey: session.sessionKey,
+                codexThreadRef: session.codexThreadRef
               }
-            : undefined,
-          onTurnEvent: async (event) => {
-            await postTurnEvent(config.runtime.listenPort, {
-              ...event,
-              payload: {
-                ...event.payload,
-                replyToMessageId: message.messageId
-              }
-            });
+            : null;
+          const binding = await adapters.codexDesktop.openOrBindSession(
+            message.sessionKey,
+            currentBinding
+          );
+          const skillContextKey = shouldInjectQqbotSkillContext(message)
+            ? `${binding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
+            : null;
+          const shouldIncludeSkillContext =
+            skillContextKey !== null && session?.skillContextKey !== skillContextKey;
+          await adapters.codexDesktop.sendUserMessage(binding, {
+            ...message,
+            text: buildCodexInboundText(message, {
+              includeSkillContext: shouldIncludeSkillContext
+            })
+          });
+          const stableBinding = await resolveStableBinding(adapters.codexDesktop, binding);
+          if (session?.codexThreadRef !== stableBinding.codexThreadRef) {
+            await sessionStore.updateBinding(message.sessionKey, stableBinding.codexThreadRef);
           }
-        });
-        return drafts.map((draft) => ({
-          ...draft,
-          replyToMessageId: message.messageId
-        }));
+          if (shouldIncludeSkillContext) {
+            const stableSkillContextKey =
+              skillContextKey !== null
+                ? `${stableBinding.codexThreadRef ?? "unbound"}:qqbot-skill-v2`
+                : null;
+            await sessionStore.updateSkillContextKey(message.sessionKey, stableSkillContextKey);
+          }
+          const drafts = await adapters.codexDesktop.collectAssistantReply(stableBinding, {
+            onDraft: options?.onDraft
+              ? async (draft) => {
+                  await options.onDraft!({
+                    ...draft,
+                    replyToMessageId: message.messageId
+                  });
+                }
+              : undefined,
+            onTurnEvent: async (event) => {
+              await postTurnEvent(config.runtime.listenPort, {
+                ...event,
+                payload: {
+                  ...event.payload,
+                  replyToMessageId: message.messageId
+                }
+              });
+            }
+          });
+          return drafts.map((draft) => ({
+            ...draft,
+            replyToMessageId: message.messageId
+          }));
+        } finally {
+          codexDriver.releaseSessionTurn(message.sessionKey);
+        }
       })
   };
 
-  const chatgptProvider = new ChatgptDesktopProvider({ outDir: "runtime/media/chatgpt" });
-
-  const conversationProvider: ConversationProviderPort = {
-    runTurn: async (message, options) => {
-      const session = await sessionStore.getSession(message.sessionKey);
-      const effectiveProvider = session?.conversationProvider ?? config.conversationProvider;
-      if (effectiveProvider === "chatgpt-desktop") {
-        return chatgptProvider.runTurn(message, options);
-      }
-      return codexConversationProvider.runTurn(message, options);
-    }
-  };
+  const conversationProvider: ConversationProviderPort = codexConversationProvider;
 
   const createChannelOrchestrator = (
     egress: ChatEgressPort,
@@ -291,7 +286,7 @@ export function bootstrap() {
     orchestrator: channelOrchestrators.qq,
     orchestrators: channelOrchestrators,
     qqGatewaySessionStore: defaultQqAdapter.sessionStore,
-    chatgptDriver: chatgptProvider.desktopDriver
+    chatgptDriver: undefined
   };
 }
 

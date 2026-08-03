@@ -54,6 +54,10 @@ export const appConfigSchema = z.object({
     appName: z.string().min(1),
     remoteDebuggingPort: z.number().int().positive()
   }),
+  desktopDriver: z.object({
+    transport: z.enum(["auto", "app-server", "cdp"]),
+    probeIntervalMs: z.number().int().nonnegative()
+  }),
   conversationProvider: z.enum(["codex-desktop", "chatgpt-desktop"])
 });
 
@@ -90,10 +94,30 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
       appName: env.CODEX_APP_NAME ?? "Codex",
       remoteDebuggingPort: Number(env.CODEX_REMOTE_DEBUGGING_PORT ?? "9229")
     },
-    conversationProvider: (env.BRIDGE_CONVERSATION_PROVIDER === "chatgpt-desktop"
-      ? "chatgpt-desktop"
-      : "codex-desktop") as "codex-desktop" | "chatgpt-desktop"
+    desktopDriver: {
+      transport: resolveDesktopTransport(env),
+      probeIntervalMs: Number(env.DESKTOP_DRIVER_PROBE_INTERVAL_MS ?? "300000")
+    },
+    conversationProvider: "codex-desktop"
   });
+}
+
+function resolveDesktopTransport(
+  env: NodeJS.ProcessEnv
+): "auto" | "app-server" | "cdp" {
+  const configured = env.DESKTOP_DRIVER_TRANSPORT?.trim().toLowerCase();
+  if (configured === "app-server" || configured === "cdp" || configured === "auto") {
+    return configured;
+  }
+
+  const legacy = env.CODEX_DESKTOP_TRANSPORT?.trim().toLowerCase();
+  if (legacy === "dom" || legacy === "cdp") {
+    return "cdp";
+  }
+  if (legacy === "app-server") {
+    return "app-server";
+  }
+  return "auto";
 }
 
 function resolveQqBotConfigs(

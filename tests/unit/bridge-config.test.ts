@@ -79,4 +79,27 @@ describe("bridge config", () => {
       })
     );
   });
+
+  it("loads the unified desktop transport and maps legacy settings", () => {
+    const legacy = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      CODEX_DESKTOP_TRANSPORT: "dom",
+      BRIDGE_CONVERSATION_PROVIDER: "chatgpt-desktop"
+    });
+    expect(legacy.desktopDriver.transport).toBe("cdp");
+    expect(legacy.conversationProvider).toBe("codex-desktop");
+
+    const current = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      CODEX_DESKTOP_TRANSPORT: "dom",
+      DESKTOP_DRIVER_TRANSPORT: "app-server",
+      DESKTOP_DRIVER_PROBE_INTERVAL_MS: "60000"
+    });
+    expect(current.desktopDriver).toEqual({
+      transport: "app-server",
+      probeIntervalMs: 60000
+    });
+  });
 });

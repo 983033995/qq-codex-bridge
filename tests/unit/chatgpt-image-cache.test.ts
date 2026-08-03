@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   diffCache,
+  resolveDefaultImageCacheDir,
   snapshotCache
 } from "../../packages/adapters/chatgpt-desktop/src/image-cache.js";
 
@@ -40,6 +41,17 @@ describe("chatgpt image cache", () => {
     process.env.CHATGPT_DESKTOP_CACHE_DIR = dir;
     return dir;
   }
+
+  it("prefers the merged app cache before the legacy bundle cache", () => {
+    const visited: string[] = [];
+    const resolved = resolveDefaultImageCacheDir((candidate) => {
+      visited.push(candidate);
+      return visited.length === 2;
+    });
+
+    expect(visited[0]).toContain("com.openai.codex");
+    expect(resolved).toContain("Library/Caches/com.openai.codex");
+  });
 
   it("returns only images that were absent from the pre-send snapshot", async () => {
     const dir = createCacheDir();

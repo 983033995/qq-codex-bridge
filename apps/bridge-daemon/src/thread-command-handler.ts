@@ -94,22 +94,37 @@ export class ThreadCommandHandler {
 
       const sourceMatch = text.match(/^\/source\s+(codex|chatgpt)$/);
       if (sourceMatch) {
-        const target = sourceMatch[1] === "chatgpt" ? "chatgpt-desktop" : "codex-desktop";
-        await this.deps.sessionStore.updateConversationProvider(message.sessionKey, target);
-        if (target === "chatgpt-desktop") {
+        const legacyChatgptEnabled =
+          sourceMatch[1] === "chatgpt" && Boolean(this.deps.chatgptDriver);
+        if (legacyChatgptEnabled) {
+          await this.deps.sessionStore.updateConversationProvider(
+            message.sessionKey,
+            "chatgpt-desktop"
+          );
           this.chatgptThreadListRefreshSessionKeys.add(message.sessionKey);
-        } else {
-          this.chatgptThreadListRefreshSessionKeys.delete(message.sessionKey);
+          await this.deliverControlReply(
+            message,
+            "已切换到旧版 ChatGPT AX 兼容驱动。该兼容路径将在 v0.3 移除。"
+          );
+          return;
         }
-        const label = target === "chatgpt-desktop" ? "ChatGPT Desktop" : "Codex Desktop";
-        await this.deliverControlReply(message, `已切换对话源：${label}\n后续消息将通过 ${label} 回复。`);
+        await this.deps.sessionStore.updateConversationProvider(
+          message.sessionKey,
+          "codex-desktop"
+        );
+        this.chatgptThreadListRefreshSessionKeys.delete(message.sessionKey);
+        await this.deliverControlReply(
+          message,
+          "Codex 与 ChatGPT Desktop 已合并，当前会话已使用统一桌面驱动。\n/source 命令将在 v0.3 移除。"
+        );
         return;
       }
 
       if (text === "/source") {
-        const session = await this.deps.sessionStore.getSession(message.sessionKey);
-        const current = session?.conversationProvider ?? "codex-desktop（全局默认）";
-        await this.deliverControlReply(message, `当前对话源：${current}\n切换：/source codex 或 /source chatgpt`);
+        await this.deliverControlReply(
+          message,
+          "当前对话源：统一桌面驱动（AppServer 优先，CDP 降级）\n/source 命令将在 v0.3 移除。"
+        );
         return;
       }
 
@@ -119,9 +134,11 @@ export class ThreadCommandHandler {
         return;
       }
 
-      if (text === "/cgpt" || text === "/cgpt threads") {
-        const session = await this.deps.sessionStore.getSession(message.sessionKey);
-        await this.deliverChatgptThreads(message, session);
+      if (text === "/cgpt" || text.startsWith("/cgpt ")) {
+        await this.deliverControlReply(
+          message,
+          "Codex 与 ChatGPT Desktop 已合并，请改用 /threads、/thread new 或 /thread use。\n/cgpt 命令将在 v0.3 移除。"
+        );
         return;
       }
 
@@ -397,7 +414,13 @@ export class ThreadCommandHandler {
   }
 
   private currentProvider(session: BridgeSession | null): ConversationProviderKind {
-    return session?.conversationProvider ?? "codex-desktop";
+    if (
+      session?.conversationProvider === "chatgpt-desktop"
+      && this.deps.chatgptDriver
+    ) {
+      return "chatgpt-desktop";
+    }
+    return "codex-desktop";
   }
 
   private async deliverChatgptThreads(

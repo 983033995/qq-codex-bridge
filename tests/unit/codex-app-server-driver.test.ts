@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { CodexAppServerDriver } from "../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
+import {
+  CodexAppServerDriver,
+  resolveDefaultCodexBinaryPath
+} from "../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
 
 class FakeAppServerSocket extends EventEmitter {
   readyState = 0;
@@ -43,6 +46,20 @@ class FakeAppServerSocket extends EventEmitter {
 }
 
 describe("codex app-server driver", () => {
+  it("prefers the merged ChatGPT app binary before the legacy Codex app", () => {
+    const visited: string[] = [];
+    const resolved = resolveDefaultCodexBinaryPath((candidate) => {
+      visited.push(candidate);
+      return candidate.includes("/Codex.app/");
+    });
+
+    expect(resolved).toBe("/Applications/Codex.app/Contents/Resources/codex");
+    expect(visited).toEqual([
+      "/Applications/ChatGPT.app/Contents/Resources/codex",
+      "/Applications/Codex.app/Contents/Resources/codex"
+    ]);
+  });
+
   it("routes replies by thread id and turn id instead of the active desktop UI", async () => {
     const socket = new FakeAppServerSocket();
     socket.onRequest("initialize", (message) => {

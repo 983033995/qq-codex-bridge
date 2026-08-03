@@ -85,7 +85,7 @@
 | 0.1 | `ax-client.ts` 中 `BUNDLE_ID` 改为 `com.openai.codex` | 1 文件 |
 | 0.2 | `image-cache.ts` 缓存路径加入 `com.openai.codex` 目录探测 | 1 文件 |
 | 0.3 | `codex-app-server-driver.ts` 中 `resolveDefaultCodexBinaryPath` 兼容 `ChatGPT.app` 路径 | 1 文件 |
-| 0.4 | 运行现有测试确认不破坏 | 27 个测试文件 |
+| 0.4 | 运行现有测试确认不破坏 | 41 个测试文件 / 216 个用例 |
 
 ### Phase 1 — 统一驱动 + 兼容层（1 周）
 
@@ -105,7 +105,7 @@
 | 1.10 | 编写 FeatureProbe 单元测试 | tests/unit/feature-probe.test.ts |
 
 **验收标准**：
-- 所有现有 27 个测试通过
+- 所有现有 41 个测试文件、216 个用例通过
 - UnifiedDriver 通过 AppServer 可完成完整对话轮次
 - AppServer 不可用时自动降级到 CDP
 - `.env` 不配置新变量时行为与 v0.1.x 一致
@@ -201,7 +201,7 @@
 
 ### 4.2 回归测试
 
-现有 27 个测试文件全部保持通过，特别关注：
+现有 41 个测试文件、216 个用例全部保持通过，特别关注：
 - `bridge-orchestrator.test.ts`：验证 egress 接口泛化不破坏现有逻辑
 - `http-server.test.ts`：验证新路由不影响现有路由
 - `session-key.test.ts`：验证 session 兼容性
@@ -290,4 +290,3 @@ qq-codex-bridge/
 | Phase 2C（韧性） | ~800 行 | ~400 行 | 0 | 2 天 |
 | Phase 3（清理） | ~200 行 | ~300 行 | ~900 行 | 3-5 天 |
 | **合计** | **~6500 行** | **~1600 行** | **~900 行** | **~4 周** |
-

@@ -951,9 +951,14 @@ type RateLimitWindow = {
   resetsAt?: number | null;
 };
 
-function resolveDefaultCodexBinaryPath(): string {
-  const appBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
-  return fs.existsSync(appBundleBinary) ? appBundleBinary : "codex";
+export function resolveDefaultCodexBinaryPath(
+  exists: (filePath: string) => boolean = fs.existsSync
+): string {
+  const candidates = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex"
+  ];
+  return candidates.find((candidate) => exists(candidate)) ?? "codex";
 }
 
 function stripAnsi(text: string): string {

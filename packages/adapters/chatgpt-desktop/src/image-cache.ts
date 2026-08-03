@@ -1,13 +1,19 @@
-import { createReadStream, readdirSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
 
-const DEFAULT_CACHE_DIR = join(
-  homedir(),
-  "Library/Caches/com.openai.chat",
-  "com.onevcat.Kingfisher.ImageCache",
-  "com.onevcat.Kingfisher.ImageCache.com.openai.chat"
+const DEFAULT_CACHE_DIRS = [
+  ["com.openai.codex", "com.openai.codex"],
+  ["com.openai.codex", "com.openai.chat"],
+  ["com.openai.chat", "com.openai.chat"]
+].map(([bundleId, cacheId]) =>
+  join(
+    homedir(),
+    `Library/Caches/${bundleId}`,
+    "com.onevcat.Kingfisher.ImageCache",
+    `com.onevcat.Kingfisher.ImageCache.${cacheId}`
+  )
 );
 
 const MIN_IMAGE_BYTES = 50_000;
@@ -15,7 +21,15 @@ const MIN_IMAGE_BYTES = 50_000;
 export type CacheSnapshot = { files: Set<string>; timestamp: number };
 
 function cacheDir(): string {
-  return process.env.CHATGPT_DESKTOP_CACHE_DIR ?? DEFAULT_CACHE_DIR;
+  return process.env.CHATGPT_DESKTOP_CACHE_DIR
+    ?? resolveDefaultImageCacheDir();
+}
+
+export function resolveDefaultImageCacheDir(
+  exists: (candidate: string) => boolean = existsSync
+): string {
+  return DEFAULT_CACHE_DIRS.find((candidate) => exists(candidate))
+    ?? DEFAULT_CACHE_DIRS[0];
 }
 
 async function listCacheFiles(dir = cacheDir()): Promise<Array<{ name: string; path: string }>> {

@@ -23,6 +23,22 @@ export interface DesktopDriverPort {
   markSessionBroken(sessionKey: string, reason: string): Promise<void>;
 }
 
+export type DesktopTransportMode = "auto" | "app-server" | "cdp";
+export type DesktopTransportName = Exclude<DesktopTransportMode, "auto">;
+
+export type DesktopTransportStatus = {
+  configured: DesktopTransportMode;
+  active: DesktopTransportName | null;
+  appServerAvailable: boolean | null;
+  cdpAvailable: boolean | null;
+  lastProbedAt: string | null;
+  lastError: string | null;
+};
+
+export interface DesktopTransportStatusPort {
+  getTransportStatus(): DesktopTransportStatus;
+}
+
 export interface ConversationProviderPort {
   runTurn(
     message: InboundMessage,

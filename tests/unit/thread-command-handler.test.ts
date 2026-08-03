@@ -360,7 +360,7 @@ describe("thread command handler", () => {
     );
   });
 
-  it("shows ChatGPT-focused help when the current source is chatgpt", async () => {
+  it("maps a stored ChatGPT source to unified desktop help when AX is disabled", async () => {
     const sessionStore = createSessionStore();
     vi.mocked(sessionStore.getSession).mockResolvedValue({
       sessionKey: "qqbot:default::qq:c2c:OPENID123",
@@ -391,17 +391,17 @@ describe("thread command handler", () => {
 
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("快捷命令（当前源：ChatGPT Desktop）")
+        text: expect.stringContaining("快捷命令（当前源：Codex Desktop）")
       })
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("| 查看 ChatGPT 最近对话 | `/threads` | `/t` |")
+        text: expect.stringContaining("| 查看 Codex 最近线程 | `/threads` | `/t` |")
       })
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.not.stringContaining("| 查看当前模型 | `/model` | `/m` |")
+        text: expect.stringContaining("| 查看当前模型 | `/model` | `/m` |")
       })
     );
   });
@@ -443,7 +443,7 @@ describe("thread command handler", () => {
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("| 当前对话源 | chatgpt-desktop |")
+        text: expect.stringContaining("| 当前对话源 | codex-desktop |")
       })
     );
     expect(qqEgress.deliver).toHaveBeenCalledWith(
