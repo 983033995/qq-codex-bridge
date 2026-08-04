@@ -8,7 +8,8 @@ async function runDev() {
     appName: config.codexDesktop.appName,
     remoteDebuggingPort: config.codexDesktop.remoteDebuggingPort,
     startupTimeoutMs: Number(process.env.CODEX_CDP_STARTUP_TIMEOUT_MS ?? "15000"),
-    startupPollIntervalMs: Number(process.env.CODEX_CDP_POLL_INTERVAL_MS ?? "500")
+    startupPollIntervalMs: Number(process.env.CODEX_CDP_POLL_INTERVAL_MS ?? "500"),
+    transport: config.desktopDriver.transport
   });
 
   console.log("[qq-codex-bridge] codex desktop ready", {

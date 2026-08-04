@@ -90,12 +90,14 @@ describe("dev launch", () => {
           appName: "Codex",
           remoteDebuggingPort: 9229,
           startupTimeoutMs: 1,
-          startupPollIntervalMs: 0
+          startupPollIntervalMs: 0,
+          transport: "cdp"
         },
         {
           fetchFn,
           launchApp,
-          sleep: async () => undefined
+          sleep: async () => undefined,
+          existsSyncFn: () => false
         }
       )
     ).rejects.toThrow("Timed out waiting for Codex desktop CDP endpoint on port 9229");

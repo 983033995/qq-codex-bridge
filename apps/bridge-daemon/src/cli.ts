@@ -67,7 +67,8 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
       appName: config.codexDesktop.appName,
       remoteDebuggingPort: config.codexDesktop.remoteDebuggingPort,
       startupTimeoutMs: Number(env.CODEX_CDP_STARTUP_TIMEOUT_MS ?? "15000"),
-      startupPollIntervalMs: Number(env.CODEX_CDP_POLL_INTERVAL_MS ?? "500")
+      startupPollIntervalMs: Number(env.CODEX_CDP_POLL_INTERVAL_MS ?? "500"),
+      transport: config.desktopDriver.transport
     });
 
     writeStdout(

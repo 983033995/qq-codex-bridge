@@ -1,29 +1,33 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+  import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+  import fs from "node:fs";
+  import path from "node:path";
+  import { resolveDefaultCodexBinaryPath } from "../../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
 
-type FetchLike = typeof fetch;
+  type FetchLike = typeof fetch;
 
-export type DevLaunchConfig = {
-  appName: string;
-  remoteDebuggingPort: number;
-  startupTimeoutMs: number;
-  startupPollIntervalMs: number;
-};
+  export type DevLaunchConfig = {
+    appName: string;
+    remoteDebuggingPort: number;
+    startupTimeoutMs: number;
+    startupPollIntervalMs: number;
+    transport?: "auto" | "app-server" | "cdp";
+    codexBinaryPath?: string | null;
+  };
 
-type LaunchAppFn = (appName: string, port: number) => Promise<void> | void;
+  type LaunchAppFn = (appName: string, port: number) => Promise<void> | void;
 
-type SpawnLike = (
-  command: string,
-  args: string[],
-  options: SpawnOptions
-) => Pick<ChildProcess, "unref">;
+  type SpawnLike = (
+    command: string,
+    args: string[],
+    options: SpawnOptions
+  ) => Pick<ChildProcess, "unref">;
 
-type DevLaunchDeps = {
-  fetchFn?: FetchLike;
-  launchApp?: LaunchAppFn;
-  sleep?: (ms: number) => Promise<void>;
-};
+  type DevLaunchDeps = {
+    fetchFn?: FetchLike;
+    launchApp?: LaunchAppFn;
+    sleep?: (ms: number) => Promise<void>;
+    existsSyncFn?: (candidate: string) => boolean;
+  };
 
 type LaunchCodexDesktopDeps = {
   platform?: NodeJS.Platform;
@@ -61,6 +65,17 @@ export async function ensureCodexDesktopForDev(
     await sleep(config.startupPollIntervalMs);
   }
 
+  const transport = config.transport ?? "auto";
+  if (transport !== "cdp") {
+    const existsSync = deps.existsSyncFn ?? fs.existsSync;
+    const binaryPath = config.codexBinaryPath ?? resolveDefaultCodexBinaryPath(existsSync);
+    if (binaryPath && existsSync(binaryPath)) {
+      console.warn(
+        `[qq-codex-bridge] CDP endpoint on port ${config.remoteDebuggingPort} not reachable, but AppServer binary found at '${binaryPath}'. Proceeding with '${transport}' transport.`
+      );
+      return { launched: true };
+    }
+  }
   throw new Error(
     `Timed out waiting for Codex desktop CDP endpoint on port ${config.remoteDebuggingPort}`
   );
