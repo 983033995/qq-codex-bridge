@@ -29,6 +29,7 @@ type LaunchCodexDesktopDeps = {
   platform?: NodeJS.Platform;
   spawnFn?: SpawnLike;
   appExecutablePath?: string;
+  existsSyncFn?: (candidate: string) => boolean;
 };
 
 type ResolveDarwinExecutableDeps = {
@@ -76,11 +77,23 @@ export function launchCodexDesktop(
 
   if (platform === "darwin") {
     const executablePath =
-      deps.appExecutablePath ?? resolveDarwinAppExecutablePath(appName);
+      deps.appExecutablePath ??
+      resolveDarwinAppExecutablePath(appName, { existsSyncFn: deps.existsSyncFn });
     const child = spawnFn(executablePath, [portArg], {
       detached: true,
       stdio: "ignore"
     });
+    if (child && typeof (child as unknown as Record<string, unknown>).on === "function") {
+      (child as unknown as { on: (event: string, listener: (err: Error) => void) => void }).on(
+        "error",
+        (err: Error) => {
+          console.error(
+            `[qq-codex-bridge] failed to launch desktop app at '${executablePath}':`,
+            err.message
+          );
+        }
+      );
+    }
     child.unref();
     return;
   }
@@ -123,7 +136,7 @@ export function resolveDarwinAppExecutablePath(
     path.join(process.env.HOME ?? "", "Applications")
   ];
   const existsSyncFn = deps.existsSyncFn ?? fs.existsSync;
-  const appNames = Array.from(new Set([appName, "Codex"]));
+  const appNames = Array.from(new Set([appName, "ChatGPT", "Codex"]));
 
   for (const searchRoot of searchRoots) {
     for (const candidateName of appNames) {

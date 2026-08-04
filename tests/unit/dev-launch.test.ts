@@ -133,4 +133,14 @@ describe("dev launch", () => {
 
     expect(executablePath).toBe("/Applications/Codex.app/Contents/MacOS/Codex");
   });
+
+  it("falls back to ChatGPT.app when Codex.app does not exist", () => {
+    const executablePath = resolveDarwinAppExecutablePath("Codex", {
+      searchRoots: ["/Applications"],
+      existsSyncFn: (candidate) =>
+        candidate === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+    });
+
+    expect(executablePath).toBe("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT");
+  });
 });
