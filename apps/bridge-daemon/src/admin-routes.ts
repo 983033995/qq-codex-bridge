@@ -225,8 +225,11 @@ function parseTargetInput(value: unknown): {
   const record = value as Record<string, unknown>;
   const alias = String(record.alias ?? "").trim();
   const sessionKey = String(record.sessionKey ?? "").trim();
-  if (!isValidAlias(alias) || !sessionKey) {
+  if (!alias || !sessionKey) {
     throw new Error("alias and sessionKey are required");
+  }
+  if (!isValidAlias(alias)) {
+    throw new Error("invalid target alias format (only lowercase letters, numbers, dots, dashes, and underscores allowed, e.g. wx-bot)");
   }
   return { alias, sessionKey, enabled: record.enabled !== false };
 }

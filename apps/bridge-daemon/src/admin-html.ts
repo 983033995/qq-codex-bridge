@@ -380,7 +380,8 @@ export const ADMIN_HTML = `<!doctype html>
                 </div>
                 <div class="field">
                   <label for="push-target-alias">目标别名</label>
-                  <input id="push-target-alias" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="daily-report-group" autocomplete="off">
+                  <input id="push-target-alias" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="weixin-bot" autocomplete="off">
+                  <span class="muted" style="font-size:12px;margin-top:4px;display:block;">仅支持小写英文字母、数字、点(.)、连字符(-)和下划线(_)，例如 <code>weixin-bot</code></span>
                 </div>
                 <button class="primary" type="submit">保存并启用</button>
                 <span class="toast" id="push-target-result"></span>
@@ -670,13 +671,22 @@ export const ADMIN_HTML = `<!doctype html>
       event.preventDefault();
       const result = document.querySelector("#push-target-result");
       result.classList.remove("error");
+      const alias = value("push-target-alias").trim();
+      const sessionKey = value("push-target-session");
+
+      if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(alias)) {
+        result.classList.add("error");
+        result.textContent = "目标别名格式不符合要求：仅支持小写字母、数字、点、划线和下划线（例如 wx-bot）";
+        return;
+      }
+
       try {
         await api("/admin/api/push-targets", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            alias: value("push-target-alias"),
-            sessionKey: value("push-target-session"),
+            alias,
+            sessionKey,
             enabled: true
           })
         });
