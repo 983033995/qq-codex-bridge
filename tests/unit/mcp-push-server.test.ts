@@ -1,7 +1,9 @@
+import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PushApiClient } from "../../apps/mcp-server/src/push-api-client.js";
+import { resolveMcpPushOptions } from "../../apps/mcp-server/src/cli.js";
 import { createPushMcpServer } from "../../apps/mcp-server/src/server.js";
 
 describe("MCP push server", () => {
@@ -91,5 +93,22 @@ describe("MCP push server", () => {
       baseUrl: "http://127.0.0.2:3100",
       token
     })).not.toThrow();
+  });
+
+  it("auto-discovers base URL and token from bridge daemon state file when env is not set", () => {
+    const tempDir = fs.mkdtempSync("/tmp/mcp-test-");
+    const runtimeDir = `${tempDir}/runtime`;
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(`${runtimeDir}/bridge-daemon-state.json`, JSON.stringify({
+      baseUrl: "http://127.0.0.1:3109",
+      pushToken: "0123456789abcdef0123456789abcdef"
+    }));
+
+    const resolved = resolveMcpPushOptions({}, tempDir);
+    expect(resolved).toEqual({
+      baseUrl: "http://127.0.0.1:3109",
+      token: "0123456789abcdef0123456789abcdef"
+    });
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 });

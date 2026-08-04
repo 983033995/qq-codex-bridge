@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { InboundMessage, OutboundDraft, TurnEvent } from "../../../packages/domain/src/message.js";
@@ -301,6 +303,30 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     }
     channels = [...channelSet];
     adminUrl = `http://${app.config.runtime.listenHost}:${app.config.runtime.listenPort}/admin`;
+    const stateFilePath = path.join(path.dirname(app.config.databasePath), "bridge-daemon-state.json");
+    try {
+      fs.writeFileSync(
+        stateFilePath,
+        JSON.stringify(
+          {
+            pid: process.pid,
+            listenHost: app.config.runtime.listenHost,
+            listenPort: app.config.runtime.listenPort,
+            baseUrl: `http://${app.config.runtime.listenHost}:${app.config.runtime.listenPort}`,
+            pushEnabled: app.config.push.enabled,
+            pushToken: app.config.push.token ?? null,
+            updatedAt: new Date().toISOString()
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+    } catch (stateError) {
+      console.warn("[qq-codex-bridge] failed to write bridge daemon state file", {
+        error: stateError instanceof Error ? stateError.message : String(stateError)
+      });
+    }
     await adminRepository.recordEvent({
       level: "info",
       source: "runtime",
