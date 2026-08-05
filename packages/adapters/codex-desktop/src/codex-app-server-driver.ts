@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
 import {
   type CodexControlState,
@@ -59,6 +59,12 @@ type ThreadRecord = {
   name?: string | null;
   cwd?: string;
   updatedAt?: number;
+  // Added by newer Codex app-server builds: reflects when the thread was
+  // actually surfaced/interacted with, which is what the app's own sidebar
+  // uses for "recent" ordering. `updatedAt` can be bumped by silent
+  // background writes (title generation, token accounting, etc.) and no
+  // longer tracks the same thing on current app-server versions.
+  recencyAt?: number;
   turns?: Array<{
     id?: string;
     status?: string;
@@ -136,6 +142,7 @@ type CodexAppServerDriverOptions = {
   staleTurnInterruptMs?: number;
   sleep?: (ms: number) => Promise<void>;
   createWebSocket?: (url: string) => CodexAppServerSocket;
+  spawnFn?: typeof spawn;
   controlFallback?: Pick<
     DesktopDriverPort,
     "getControlState" | "getQuotaSummary" | "switchModel"
@@ -152,6 +159,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
   private readonly staleTurnInterruptMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly createWebSocket: (url: string) => CodexAppServerSocket;
+  private readonly spawnFn: typeof spawn;
   private readonly controlFallback: CodexAppServerDriverOptions["controlFallback"];
   private readonly notificationForwarder: NonNullable<
     CodexAppServerDriverOptions["notificationForwarder"]
@@ -164,6 +172,13 @@ export class CodexAppServerDriver implements DesktopDriverPort {
   private connectPromise: Promise<void> | null = null;
   private nextRequestId = 1;
   private initialized = false;
+  /**
+   * Cached result of probing which `thread/list` sortKey variant the
+   * connected app-server accepts. `null` means "not probed yet" (try
+   * `recency_at` first); once a variant is confirmed to work (or to be
+   * rejected) we stick with it to avoid re-probing on every call.
+   */
+  private threadListSortKey: "recency_at" | "updated_at" | null = null;
   private readonly pendingRequests = new Map<
     JsonRpcId,
     {
@@ -194,12 +209,34 @@ export class CodexAppServerDriver implements DesktopDriverPort {
     this.createWebSocket =
       options.createWebSocket ??
       ((url) => new WebSocket(url) as unknown as CodexAppServerSocket);
+    this.spawnFn = options.spawnFn ?? spawn;
     this.controlFallback = options.controlFallback ?? null;
     this.notificationForwarder = options.notificationForwarder ?? null;
   }
 
   async ensureAppReady(): Promise<void> {
     await this.ensureConnected();
+  }
+
+  /**
+   * Tears down the managed app-server process this driver spawned (if any).
+   * Does nothing when connected to an externally managed app-server
+   * (`CODEX_APP_SERVER_URL`/`appServerUrl` option) since that process's
+   * lifecycle is owned by whoever started it, not by this driver.
+   */
+  dispose(): void {
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new DesktopDriverError("Codex app-server driver disposed", "app_not_ready"));
+    }
+    this.pendingRequests.clear();
+    this.socket?.close();
+    this.socket = null;
+    this.initialized = false;
+    if (this.child && !this.externalAppServerUrl) {
+      this.child.kill();
+    }
+    this.child = null;
   }
 
   async getControlState(binding: DriverBinding | null = null): Promise<CodexControlState> {
@@ -257,14 +294,33 @@ export class CodexAppServerDriver implements DesktopDriverPort {
   }
 
   async switchModel(model: string): Promise<CodexControlState> {
-    if (this.controlFallback) {
-      return this.controlFallback.switchModel(model);
+    const trimmed = model.trim();
+    if (!trimmed) {
+      throw new DesktopDriverError("model name is required", "control_not_found");
     }
 
-    throw new DesktopDriverError(
-      "Codex app-server model switching is not enabled in bridge yet",
-      "control_not_found"
-    );
+    try {
+      await this.ensureConnected();
+      // Current Codex app-server builds expose config/value/write (not a
+      // dedicated model/set RPC). This updates ~/.codex/config.toml the same
+      // way the desktop app does, without needing CDP/DOM automation.
+      await this.request("config/value/write", {
+        keyPath: "model",
+        value: trimmed,
+        mergeStrategy: "replace"
+      });
+      return this.getControlState();
+    } catch (error) {
+      if (this.controlFallback) {
+        return this.controlFallback.switchModel(trimmed);
+      }
+      throw error instanceof DesktopDriverError
+        ? error
+        : new DesktopDriverError(
+          `Codex app-server model switch failed: ${error instanceof Error ? error.message : String(error)}`,
+          "control_not_found"
+        );
+    }
   }
 
   async openOrBindSession(
@@ -300,17 +356,48 @@ export class CodexAppServerDriver implements DesktopDriverPort {
 
   async listRecentThreads(limit: number): Promise<CodexThreadSummary[]> {
     await this.ensureConnected();
-    const response = await this.request<ThreadListResponse>("thread/list", {
-      limit,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-      sourceKinds: [],
-      archived: false
-    });
-
-    return (response.data ?? [])
+    const threads = await this.fetchThreadList(limit);
+    return threads
       .slice(0, limit)
       .map((thread, index) => this.threadToSummary(thread, index + 1));
+  }
+
+  /**
+   * Fetches the thread list sorted the same way the Codex app's own sidebar
+   * does. Current app-server builds expose a `recency_at` sort key that
+   * reflects real user activity (as opposed to `updated_at`, which can be
+   * bumped by silent background writes and no longer matches what the app
+   * UI shows as "recent"). Older app-server builds only understand
+   * `updated_at`, so we probe `recency_at` first and transparently fall back
+   * if the server rejects it as an unknown sort key variant.
+   */
+  private async fetchThreadList(limit: number): Promise<ThreadRecord[]> {
+    const request = (sortKey: "recency_at" | "updated_at") =>
+      this.request<ThreadListResponse>("thread/list", {
+        limit,
+        sortKey,
+        sortDirection: "desc",
+        sourceKinds: [],
+        archived: false
+      });
+
+    if (this.threadListSortKey === "updated_at") {
+      const response = await request("updated_at");
+      return response.data ?? [];
+    }
+
+    try {
+      const response = await request("recency_at");
+      this.threadListSortKey = "recency_at";
+      return response.data ?? [];
+    } catch (error) {
+      if (!isUnknownSortKeyError(error)) {
+        throw error;
+      }
+      this.threadListSortKey = "updated_at";
+      const response = await request("updated_at");
+      return response.data ?? [];
+    }
   }
 
   async switchToThread(sessionKey: string, threadRef: string): Promise<DriverBinding> {
@@ -343,6 +430,22 @@ export class CodexAppServerDriver implements DesktopDriverPort {
     if (!thread?.id) {
       throw new DesktopDriverError("Codex app-server did not return a thread id", "session_not_found");
     }
+
+    // Seed prompts from /tn use "线程标题：…"; without thread/name/set the
+    // sidebar keeps name=null and only shows a preview snippet.
+    const title = extractThreadTitleFromSeed(seedPrompt);
+    if (title) {
+      await this.request("thread/name/set", {
+        threadId: thread.id,
+        name: title
+      }).catch(() => undefined);
+      thread.name = title;
+    }
+
+    // Push into the desktop UI if CDP forwarding is wired. Bridge usually
+    // talks to a managed headless app-server, so the ChatGPT/Codex window
+    // will not learn about the new thread unless we forward thread/started.
+    await this.forwardThreadSnapshotToApp(thread.id);
 
     const summary = this.threadToSummary(thread, 1);
     const binding = {
@@ -466,7 +569,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
   }
 
   private async connect(): Promise<void> {
-    const url = this.externalAppServerUrl ?? await this.startManagedAppServer();
+    const url = await this.resolveAppServerUrl();
     const startedAt = Date.now();
     let lastError: Error | null = null;
 
@@ -484,6 +587,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
           }
         });
         this.initialized = true;
+        console.info("[qq-codex-bridge] codex app-server connected", { url, managed: !this.externalAppServerUrl && this.child != null });
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -499,6 +603,42 @@ export class CodexAppServerDriver implements DesktopDriverPort {
     );
   }
 
+  private async resolveAppServerUrl(): Promise<string> {
+    if (this.externalAppServerUrl) {
+      return this.externalAppServerUrl;
+    }
+    // 优先发现桌面 App 已经启动的真实 app-server（用户可见的 Codex/ChatGPT 上下文）
+    const discovered = this.discoverRunningAppServerUrls();
+    if (discovered.length > 0) {
+      const chosen = discovered[0];
+      this.appServerUrl = chosen;
+      console.info("[qq-codex-bridge] discovered running desktop codex app-server (real touch)", { url: chosen });
+      return chosen;
+    }
+    return await this.startManagedAppServer();
+  }
+
+  private discoverRunningAppServerUrls(): string[] {
+    try {
+      // 扫描当前系统正在运行的 "codex app-server --listen" 进程（桌面 App 自己启动的真实实例）
+      const output = execSync(
+        "ps -eo pid,command | grep -E 'codex app-server --listen' | grep -v grep",
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      );
+      const urls: string[] = [];
+      for (const line of output.trim().split("\n")) {
+        if (!line.trim()) continue;
+        const match = line.match(/--listen\s+(ws:\/\/\S+)/);
+        if (match?.[1]) {
+          urls.push(match[1]);
+        }
+      }
+      return urls;
+    } catch {
+      return [];
+    }
+  }
+
   private async startManagedAppServer(): Promise<string> {
     if (this.appServerUrl) {
       return this.appServerUrl;
@@ -506,7 +646,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
 
     const port = await getFreePort();
     const url = `ws://127.0.0.1:${port}`;
-    this.child = spawn(
+    this.child = this.spawnFn(
       this.codexBinaryPath,
       ["app-server", "--listen", url, "-c", "analytics.enabled=false"],
       {
@@ -804,15 +944,8 @@ export class CodexAppServerDriver implements DesktopDriverPort {
   }
 
   private async getLatestThread(): Promise<ThreadRecord | null> {
-    const response = await this.request<ThreadListResponse>("thread/list", {
-      limit: 1,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-      sourceKinds: [],
-      archived: false
-    });
-
-    return response.data?.[0] ?? null;
+    const threads = await this.fetchThreadList(1);
+    return threads[0] ?? null;
   }
 
   private async getControlThread(threadRef: string | null | undefined): Promise<ThreadRecord | null> {
@@ -910,7 +1043,7 @@ export class CodexAppServerDriver implements DesktopDriverPort {
       index,
       title,
       projectName,
-      relativeTime: formatRelativeTime(thread.updatedAt),
+      relativeTime: formatRelativeTime(thread.recencyAt ?? thread.updatedAt),
       isCurrent: false,
       threadRef: this.encodeThreadRef(thread.id, title, projectName)
     };
@@ -977,6 +1110,10 @@ function isNoisyCodexBackendWebsocketError(text: string): boolean {
   );
 }
 
+function isUnknownSortKeyError(error: unknown): boolean {
+  return error instanceof Error && /unknown variant/i.test(error.message) && /sortKey|recency_at|updated_at/i.test(error.message);
+}
+
 function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
   return (
     typeof value === "object"
@@ -997,6 +1134,12 @@ function isJsonRpcNotification(value: unknown): value is JsonRpcNotification & {
 
 function buildTurnKey(threadId: string, turnId: string): string {
   return `${threadId}:${turnId}`;
+}
+
+function extractThreadTitleFromSeed(seedPrompt: string): string | null {
+  const match = /^\s*线程标题：\s*(.+)\s*$/m.exec(seedPrompt);
+  const title = match?.[1]?.trim();
+  return title ? title : null;
 }
 
 function getLastMapValue(map: Map<string, string>): string {
