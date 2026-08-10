@@ -5,6 +5,7 @@ import {
   CodexAppServerAdapter,
   DefaultAppServerEndpointProvider,
   discoverRunningAppServerUrlsFromProcessList,
+  discoverUsableRunningAppServerUrlsFromProcessList,
   validateLocalAppServerUrl
 } from "../../packages/codex-appserver/src/index.js";
 import { FakeCodexAppServer } from "../support/fake-app-server.js";
@@ -209,6 +210,49 @@ describe("vNext Codex AppServer adapter", () => {
     });
     await adapter.dispose();
   });
+
+  it("reconciles the AppServer interrupt response race only after confirming interrupted state", async () => {
+    const { adapter, server } = createHarness();
+    const thread = await adapter.createThread({ title: "interrupt-race" });
+    const interrupted = await adapter.startTurn(turnInput(thread.threadId, "interrupt-race"));
+    server.socket.onRequest("turn/interrupt", (request) => {
+      server.socket.respondError(request.id, {
+        code: -32600,
+        message: "no active turn to interrupt"
+      });
+      setTimeout(() => {
+        server.threads.get(thread.threadId)!.turns[0]!.status = "interrupted";
+        server.socket.notify("turn/completed", {
+          threadId: thread.threadId,
+          turn: { id: interrupted.turnId, status: "interrupted" }
+        });
+      }, 10);
+    });
+    const interruptedCompletion = expect(interrupted.completion).rejects.toMatchObject({
+      code: "turn_interrupted",
+      accepted: true
+    });
+
+    await expect(adapter.interruptTurn(thread.threadId, interrupted.turnId)).resolves.toBeUndefined();
+    await interruptedCompletion;
+
+    const completed = await adapter.startTurn(turnInput(thread.threadId, "completed-race"));
+    server.socket.onRequest("turn/interrupt", (request) => {
+      server.threads.get(thread.threadId)!.turns[1]!.status = "completed";
+      server.socket.respond(request.id, {});
+    });
+    const disposedCompletion = expect(completed.completion).rejects.toMatchObject({
+      code: "disposed",
+      accepted: true
+    });
+
+    await expect(adapter.interruptTurn(thread.threadId, completed.turnId)).rejects.toMatchObject({
+      code: "interrupt_not_confirmed",
+      accepted: true
+    });
+    await adapter.dispose();
+    await disposedCompletion;
+  });
 });
 
 describe("vNext AppServer endpoint discovery", () => {
@@ -228,6 +272,17 @@ describe("vNext AppServer endpoint discovery", () => {
     ].join("\n"))).toEqual(["ws://127.0.0.1:4500"]);
   });
 
+  it("skips discovered macOS AppServers whose process cwd no longer exists", async () => {
+    const readCwd = vi.fn(async (pid: number) => pid === 101
+      ? "/Volumes/deleted-worktree"
+      : "/Volumes/live-worktree");
+    await expect(discoverUsableRunningAppServerUrlsFromProcessList([
+      "101 /Applications/Codex.app/codex app-server --listen ws://127.0.0.1:4500",
+      "202 /Applications/Codex.app/codex app-server --listen ws://127.0.0.1:4501"
+    ].join("\n"), readCwd, (value) => value === "/Volumes/live-worktree"))
+      .resolves.toEqual(["ws://127.0.0.1:4501"]);
+  });
+
   it("starts and owns a managed AppServer when discovery fails", async () => {
     const child = new EventEmitter() as EventEmitter & {
       exitCode: number | null;
@@ -243,13 +298,15 @@ describe("vNext AppServer endpoint discovery", () => {
       return true;
     });
     const spawnFn = vi.fn(() => child as never);
+    const waitForReady = vi.fn(async () => undefined);
     const provider = new DefaultAppServerEndpointProvider({
       codexBinaryPath: "/bin/echo",
       discover: async () => {
         throw new Error("ps unavailable");
       },
       getFreePort: async () => 4567,
-      spawnFn
+      spawnFn,
+      waitForReady
     });
 
     await expect(provider.resolve()).resolves.toEqual({
@@ -261,7 +318,36 @@ describe("vNext AppServer endpoint discovery", () => {
       ["app-server", "--listen", "ws://127.0.0.1:4567", "-c", "analytics.enabled=false"],
       { stdio: ["ignore", "ignore", "pipe"] }
     );
+    expect(waitForReady).toHaveBeenCalledWith(4567, child);
     provider.dispose();
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
+
+  it("terminates its managed AppServer when readiness probing fails", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      killed: boolean;
+      stderr: EventEmitter;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.exitCode = null;
+    child.killed = false;
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn(() => {
+      child.killed = true;
+      return true;
+    });
+    const provider = new DefaultAppServerEndpointProvider({
+      codexBinaryPath: "/bin/echo",
+      discover: async () => [],
+      getFreePort: async () => 4568,
+      spawnFn: () => child as never,
+      waitForReady: async () => {
+        throw new Error("listener unavailable");
+      }
+    });
+
+    await expect(provider.resolve()).rejects.toThrow("listener unavailable");
     expect(child.kill).toHaveBeenCalledOnce();
   });
 });

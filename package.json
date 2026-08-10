@@ -53,6 +53,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc -p tsconfig.json --noEmit",
+    "smoke:vnext:codex": "tsx apps/control-daemon/src/codex-smoke.ts",
     "prepare-release": "pnpm run build && npm pack --dry-run",
     "prepublishOnly": "pnpm run build"
   },

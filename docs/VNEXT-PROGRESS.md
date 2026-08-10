@@ -4,7 +4,7 @@
 
 - Updated: 2026-08-10
 - Branch / Worktree: `codex/vnext` / `/Volumes/13759427003/AI/qq-codex-bridge-vnext`
-- Current milestone: M2 — Codex、Binding 与并发
+- Current milestone: M3 — 管理 API 与管理台
 - Overall status: on_track
 
 ## Completed
@@ -27,14 +27,16 @@
 - [x] M2-03 — 实现 `ThreadCoordinator` 并接入 Binding/Control 用例：新 Space 默认独占真实 Thread ID，支持 Active/共享/独占 Binding、创建/切换/重命名/分叉/解绑、标题缓存刷新、冲突前置检查与替换回滚；AppServer Thread 消失时将旧 Binding 标记 `broken` 并重建。
 - [x] M2-04 — 以有界 `ThreadScheduler` 替换无界 Promise Tail：同 Space 与同 Thread 均严格 FIFO，不同 Thread 默认最多并行 3；实现 Space 接收序号校验、Thread/全局队列上限、持久化排队事件、队列取消、运行中断和失败释放；新增显式 `unknown` Turn 状态、SQLite v2 无损 Migration，并通过稳定 `thread/read(includeTurns)` 对遗留 Turn 做 AppServer 状态对账。
 - [x] M2-05 — 实现独立 `CodexRecoveryPort`、`CdpRecoveryAdapter` 和 `CodexTransportCoordinator`：仅支持已知线程选择、纯文本单次提交、最终回复与基本状态；Recovery 全局互斥且始终报告 `degraded`，只在 AppServer 明确 `accepted: false` 时进入，UI 点击后必须再次确认提交且绝不自动重发；Turn 持久化记录真实 transport。
+- [x] M2-06 — 实现并运行真实 Codex Smoke：安全跳过 cwd 已失效的陈旧 AppServer、等待受管 listener 就绪；创建 A/B/C 三线程并行回收唯一 marker，使用隔离 readiness probe 验证真实运行中断，并仅在通知或状态确认 `interrupted` 后成功。最终 run `m2-06-20260810-2035` 通过，测试线程保留并列入 M2 Gate 报告。
+- [x] M2 Gate — Fake 时序、A/B/C 并发与同线程 FIFO、断线无重提、Recovery 限制和真实 Codex Smoke 均通过；报告见 `docs/reports/vnext/M2-GATE.md`。
 
 ## In Progress
 
-- [ ] M2-06 — 运行无需真实联系人或渠道凭据的真实 Codex Smoke Test。
+- [ ] M3-01 — 实现 Control Daemon Composition Root、组件生命周期、Health Registry 与 Structured Event Bus。
 
 ## Next
 
-- [ ] M2 Gate — 汇总 Fake、并发、断线无重提、Recovery 限制与真实 Codex Smoke 证据。
+- [ ] M3-02 — 实现带 Loopback、CSRF、本地 Session、Zod 校验和稳定错误响应的 `/api/v1` 管理 API。
 
 ## Verification
 
@@ -107,6 +109,15 @@
 | M2-05 `git diff --check` | PASS | 2026-08-10 |
 | M2-05 CodeGraph 同步与影响复核 | PASS；228 files / 3,990 nodes / 11,608 edges，索引最新；Recovery 未扩展为完整 `CodexPort` | 2026-08-10 |
 | M2-05 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M2-06 AppServer/Smoke 精确回归 | PASS；3 files / 16 tests | 2026-08-10 |
+| M2-06 真实 Codex Smoke | PASS；run `m2-06-20260810-2035`；3 个独立 Thread/Turn marker 对应，中断 Turn 状态 `interrupted`，测试 Thread 全部保留 | 2026-08-10 |
+| M2 Gate vNext Unit/Contract/Integration | PASS；18 files / 112 tests | 2026-08-10 |
+| M2 Gate `pnpm check` | PASS | 2026-08-10 |
+| M2 Gate `pnpm test` | PASS；70 files / 369 tests | 2026-08-10 |
+| M2 Gate `pnpm build` | PASS | 2026-08-10 |
+| M2 Gate `git diff --check` | PASS | 2026-08-10 |
+| M2 Gate CodeGraph 同步与影响复核 | PASS；231 files / 4,057 nodes / 11,789 edges，索引最新；改动调用面均由对应 vNext Unit/Contract/Integration 覆盖 | 2026-08-10 |
+| M2 Gate 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 
@@ -115,6 +126,7 @@
 | R-M0-01 原工作区含 57 项用户修改 | 极高：误操作会覆盖用户工作 | 所有业务开发只在 sibling worktree；每次 M0 关键写操作后复核状态指纹 | Codex |
 | R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 已关闭：全量测试恢复绿色 | Fake 仅在连接创建后异步触发 `open`；精确 8/8、全量 319/319 通过 | Codex |
 | R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
+| R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
 | R-EXT-01 真实渠道、Router 与 Apple 凭据尚未提供 | 后续真实 E2E、24 小时 Gate、签名发布将阻塞 | 先完成全部 Fake/Contract/Integration、本地安装和无需凭据的工作，届时集中请求最小输入 | User |
 
 ## Decisions
@@ -126,3 +138,4 @@
 | 代码理解和现有 Symbol 影响分析仅使用 CodeGraph | 用户明确要求后续不再使用 GitNexus；新 worktree CodeGraph 已初始化且索引最新 |
 | 遗留 Turn 使用稳定 `thread/read(includeTurns)` 对账 | 官方 OpenAI Docs 与本机生成 Schema 均确认可按真实 Thread ID 读取完整 Turn 历史；避免依赖实验性 `thread/turns/list` |
 | CDP Recovery 仅按唯一精确缓存标题操作桌面 UI | AppServer 的真实 `threadId` 仍是持久化身份；桌面 UI 不暴露可靠 ID 时，标题无匹配或重复均明确失败，避免猜测导致跨线程错投递 |
+| `turn/interrupt` 必须以真实终态确认 | 本机 AppServer 存在 RPC 成功但 Turn 继续完成，以及实际已中断但 RPC 返回 `no active turn` 两种竞态；请求响应本身不能代表业务终态 |

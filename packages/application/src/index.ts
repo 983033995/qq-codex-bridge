@@ -6,6 +6,7 @@ export * from "./execute-control-action.js";
 export * from "./receive-inbound-message.js";
 export * from "./reconcile-recoverable-turns.js";
 export * from "./run-health-check.js";
+export * from "./run-codex-smoke.js";
 export * from "./start-conversation-turn.js";
 export * from "./thread-scheduler.js";
 export * from "./thread-coordinator.js";

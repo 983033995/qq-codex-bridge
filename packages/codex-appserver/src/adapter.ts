@@ -50,6 +50,7 @@ type PendingRequest = {
 type PendingTurn = {
   threadId: string;
   turnId: string;
+  completion: Promise<CodexTurnResult>;
   deltaText: string;
   finalText: string | null;
   mediaReferences: Set<string>;
@@ -68,6 +69,7 @@ export type AppServerErrorCode =
   | "protocol_error"
   | "thread_not_found"
   | "turn_interrupted"
+  | "interrupt_not_confirmed"
   | "turn_failed";
 
 export class AppServerError extends Error {
@@ -175,7 +177,6 @@ export class CodexAppServerAdapter implements CodexPort {
     await this.ensureConnected();
     const response = asRecord(await this.request("thread/start", {
       ...(input.cwd ? { cwd: input.cwd } : {}),
-      persistExtendedHistory: true,
       experimentalRawEvents: false
     }));
     const thread = toCodexThread(response.thread);
@@ -228,6 +229,7 @@ export class CodexAppServerAdapter implements CodexPort {
     const pending: PendingTurn = {
       threadId: input.threadId,
       turnId,
+      completion,
       deltaText: "",
       finalText: null,
       mediaReferences: new Set<string>(),
@@ -288,11 +290,37 @@ export class CodexAppServerAdapter implements CodexPort {
     requireNonEmpty(threadId, "threadId");
     requireNonEmpty(turnId, "turnId");
     await this.ensureConnected();
-    await this.request("turn/interrupt", { threadId, turnId });
-    const pending = this.pendingTurns.get(turnKey(threadId, turnId));
-    if (pending && !pending.settled) {
+    let requestError: unknown = null;
+    try {
+      await this.request("turn/interrupt", { threadId, turnId });
+    } catch (error) {
+      if (!isNoActiveTurnToInterruptError(error)) {
+        throw error;
+      }
+      requestError = error;
+    }
+    const key = turnKey(threadId, turnId);
+    const pending = this.pendingTurns.get(key);
+    const status = await this.getTurnStatus(threadId, turnId).catch(() => null);
+    const interrupted = status === "interrupted"
+      || ((status === "running" || status === "not_found" || status === null)
+        && pending !== undefined
+        && await this.waitForInterruptedCompletion(pending));
+    if (!interrupted) {
+      if (requestError) {
+        throw requestError;
+      }
+      const finalStatus = await this.getTurnStatus(threadId, turnId).catch(() => status);
+      throw new AppServerError(
+        `Codex turn '${turnId}' interruption was not confirmed (status ${finalStatus ?? "unknown"})`,
+        "interrupt_not_confirmed",
+        true
+      );
+    }
+    const unsettled = this.pendingTurns.get(key);
+    if (unsettled && !unsettled.settled) {
       this.rejectTurn(
-        pending,
+        unsettled,
         new AppServerError(`Codex turn '${turnId}' was interrupted`, "turn_interrupted", true)
       );
     }
@@ -607,6 +635,31 @@ export class CodexAppServerAdapter implements CodexPort {
     this.earlyTurnNotifications.clear();
   }
 
+  private async waitForInterruptedCompletion(pending: PendingTurn): Promise<boolean> {
+    let timeout: NodeJS.Timeout | null = null;
+    try {
+      const interruptedByNotification = await Promise.race([
+        pending.completion.then(
+          () => false,
+          (error) => isTurnInterruptedError(error)
+        ),
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), this.requestTimeoutMs);
+          timeout.unref?.();
+        })
+      ]);
+      if (interruptedByNotification) {
+        return true;
+      }
+      return await this.getTurnStatus(pending.threadId, pending.turnId).catch(() => null)
+        === "interrupted";
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.disposed || this.reconnectTimer || this.connectPromise) {
       return;
@@ -775,6 +828,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function isNoActiveTurnToInterruptError(error: unknown): boolean {
+  return error instanceof AppServerError
+    && error.code === "rpc_error"
+    && error.message.includes("no active turn to interrupt");
+}
+
+function isTurnInterruptedError(error: unknown): boolean {
+  return error instanceof AppServerError && error.code === "turn_interrupted";
 }
 
 function requireNonEmpty(value: string, field: string): string {
