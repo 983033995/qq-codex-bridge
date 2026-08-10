@@ -14,15 +14,16 @@
 - [x] M0-03 — 捕获环境、CodeGraph、Codex 可发现性以及 `check/test/build` 工程基线；旧测试基线为 5 个 AppServer Fake 时序超时。
 - [x] M0-04 — 建立 `docs/decisions/vnext/`。
 - [x] M0 Gate — 通过；报告见 `docs/reports/vnext/M0-GATE.md`。
+- [x] M1-01 — 建立 4 个 vNext App 与 10 个 Adapter/Application/Infrastructure 包的最小入口；现有 `domain`/`ports` 目录保留并将在后续任务内增量替换语义。
 
 ## In Progress
 
-- [ ] M1-01 — 建立 vNext 包结构和最小工作区脚手架。
+- [ ] M1-02 — 实现领域模型、状态机和关键不变量。
 
 ## Next
 
-- [ ] M1-02 — 实现领域模型、状态机和关键不变量。
 - [ ] M1-03 — 实现 Ports 与可复用 Contract Suite。
+- [ ] M1-04 — 实现配置 Schema、Revision、Apply Planner 与 Keychain。
 
 ## Verification
 
@@ -37,6 +38,8 @@
 | `pnpm build` | PASS | 2026-08-10 |
 | `pnpm test` | BASELINE FAIL；50/51 test files、247/252 tests 通过；5 个 AppServer Fake 时序超时 | 2026-08-10 |
 | Codex/AppServer 可发现性 | PASS；CLI `0.147.0-alpha.6.5`，默认 binary 存在且运行中进程可见 | 2026-08-10 |
+| M1-01 `pnpm check` | PASS | 2026-08-10 |
+| M1-01 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 
