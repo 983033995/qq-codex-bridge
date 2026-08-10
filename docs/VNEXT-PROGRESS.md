@@ -37,14 +37,15 @@
 - [x] M3-06 — 完成管理台可访问性与响应式加固：Skip Link、路由与表单焦点管理、原生数据表、异步 `aria-live`、非颜色状态文本、Secret Reference 限界、键盘核心路径、200% Zoom 与窄屏单列验收。
 - [x] M3 Gate — 打通生产 `ControlApiServices`、Composition Root、SQLite/Codex/Config/Keychain Adapter、静态 UI 与启动 CLI；六个一级页面均接入真实 API，Config Apply 仅在 Active Revision 更新后成功，Binding/SSE/诊断导出与键盘、窄屏路径完成验收；无运行 Adapter 的渠道与 Router 操作明确失败，不伪造成功。
 - [x] M4-01 — 实现隔离微信 Worker IPC：32-byte 随机本地鉴权、严格消息 Schema、协议/Worker 版本协商、心跳与 ping、优雅停机、握手/心跳超时、连续崩溃有界退避和稳定运行后重置；单 Worker 承载多个微信账户，首次添加账号的 Config Apply 可动态启动 Worker，Health/渠道操作/结构化事件均接入生产 Runtime。
+- [x] M4-02 — 完成微信登录体验：真实 iLink 二维码获取/轮询协议、待扫码/已扫描/待确认/已登录/过期/失效状态机、强制重登与注销；登录凭据仅写入 macOS Keychain，0600 状态文件只保存脱敏状态与 Secret Reference；Control API、生产 Worker IPC、管理台二维码和响应式操作闭环均已接通。
 
 ## In Progress
 
-- [ ] M4-02 — 微信登录体验。
+- [ ] M4-03 — 微信文本、图片、文件、语音与视频消息闭环。
 
 ## Next
 
-- [ ] M4-03 — 微信文本、图片、文件、语音与视频消息闭环。
+- [ ] M4-04 — 微信断线重连、去重、限流退避与媒体失败隔离。
 
 ## Verification
 
@@ -189,6 +190,14 @@
 | M4-01 Production Runtime Smoke | PASS；构建产物启动于 `127.0.0.1:3100`；无账号时不派生 Worker 进程，Health 明确显示 disabled；Codex、Worker、Router、Push、Queues、Management API 共 6 个组件可见 | 2026-08-11 |
 | M4-01 CodeGraph 影响复核 | PASS；265 files / 4,875 nodes / 14,154 edges，索引最新；Worker Runtime/Supervisor、Apply Planner 与生产 Runtime 调用面由 Unit/Integration 覆盖 | 2026-08-11 |
 | M4-01 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-02 Login/API/UI 精确回归 | PASS；7 files / 30 tests；完整登录状态机、并发账号持久化串行、HTTP Provider、脱敏持久化、Worker IPC、Control API、Application Services 与 UI 数据契约均覆盖 | 2026-08-11 |
+| M4-02 Production Runtime + Fake iLink | PASS；真实隔离 Worker 经本地 HTTP Server 完成二维码、已扫描、待确认、强制重登和注销；状态文件与诊断事件均不含 QR 内容 | 2026-08-11 |
+| M4-02 `pnpm check` | PASS | 2026-08-11 |
+| M4-02 `pnpm test` | PASS；81 files / 411 tests | 2026-08-11 |
+| M4-02 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
+| M4-02 Browser Desktop / Mobile / Zoom QA | PASS；生产管理台显示 1 个本地微信账户与未登录操作；隔离 Fake iLink 环境验证 QR Data URL、强制重登、注销；390×844 与 200% 等效 640px 布局可操作，页面控制台 0 error / 0 warning | 2026-08-11 |
+| M4-02 CodeGraph 影响复核 | PASS；270 files / 5,055 nodes / 14,727 edges，索引最新；登录状态机、Worker IPC、Control API 与 UI 调用面均有对应 Unit/Contract/Integration/Browser 验证 | 2026-08-11 |
+| M4-02 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
 
 ## Risks and Blockers
 
@@ -215,3 +224,4 @@
 | `turn/interrupt` 必须以真实终态确认 | 本机 AppServer 存在 RPC 成功但 Turn 继续完成，以及实际已中断但 RPC 返回 `no active turn` 两种竞态；请求响应本身不能代表业务终态 |
 | 微信使用单个受监督 Worker 承载多个账号 | 实施计划要求隔离 Worker，且 Config Apply 原本指向运行时不存在的逐账号组件；固定 `weixin-worker` 使首次添加/删除账号可被 Composition Root 重启，同时为 M4-02/03 保留多账号协议载荷 |
 | Worker 鉴权 Token 仅通过子进程环境注入并在 Worker 启动后立即删除 | Node IPC 已限定父子本地通道；随机 32-byte Token 防止错误/伪造子进程完成握手，且不进入 argv、事件、日志或持久化配置；Worker 只继承 locale/timezone，不继承 Daemon 的其他环境 Secret |
+| QR 内容只在 Worker→Daemon 命令响应与当前 UI 内存中短暂存在 | `qrcode` 仅在浏览器内生成 Data URL；二维码不写状态文件、Keychain、结构化事件或诊断包，Worker 事件只上报账号、状态和时间 |

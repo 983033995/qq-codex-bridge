@@ -17,7 +17,17 @@ describe("vNext Weixin worker IPC", () => {
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: path.resolve("apps/weixin-worker/src/cli.ts"),
       execArgv: ["--import", "tsx"],
-      configuration: () => ({ accounts: ["weixin:personal", "weixin:work"] }),
+      configuration: () => ({
+        accounts: ["weixin:personal", "weixin:work"],
+        login: {
+          stateFilePath: `/tmp/qqcb-vnext-weixin-login-ipc-${process.pid}.json`,
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          botType: "3",
+          qrFetchTimeoutMs: 10_000,
+          qrPollTimeoutMs: 35_000,
+          qrTotalTimeoutMs: 480_000
+        }
+      }),
       heartbeatIntervalMs: 20,
       heartbeatTimeoutMs: 200,
       handshakeTimeoutMs: 2_000,

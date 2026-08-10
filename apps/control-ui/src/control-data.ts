@@ -34,6 +34,26 @@ export type ChannelSummary = {
   message: string;
   lastActivityAt: string | null;
   suggestedAction?: string;
+  login?: WeixinLoginState;
+};
+
+export type WeixinLoginStatus =
+  | "logged_out"
+  | "requesting_qr"
+  | "awaiting_scan"
+  | "scanned"
+  | "awaiting_confirmation"
+  | "logged_in"
+  | "expired"
+  | "invalid";
+
+export type WeixinLoginState = {
+  accountId: string;
+  status: WeixinLoginStatus;
+  message: string;
+  updatedAt: string;
+  qrCodeContent?: string;
+  expiresAt?: string;
 };
 
 export type ActivitySummary = {
@@ -85,6 +105,24 @@ export async function testChannel(id: string, client: ControlClient = controlApi
 
 export async function restartChannel(id: string, client: ControlClient = controlApi): Promise<void> {
   await client.post(`/channels/${encodeURIComponent(required(id, "channel id"))}/restart`, {});
+}
+
+export async function startChannelLogin(
+  id: string,
+  force: boolean,
+  client: ControlClient = controlApi
+): Promise<WeixinLoginState> {
+  return parseWeixinLoginState(await client.post(
+    `/channels/${encodeURIComponent(required(id, "channel id"))}/login`,
+    { force }
+  ), "channel login");
+}
+
+export async function logoutChannel(id: string, client: ControlClient = controlApi): Promise<WeixinLoginState> {
+  return parseWeixinLoginState(
+    await client.delete(`/channels/${encodeURIComponent(required(id, "channel id"))}/login`),
+    "channel login"
+  );
 }
 
 export async function deleteChannel(id: string, client: ControlClient = controlApi): Promise<void> {
@@ -148,11 +186,37 @@ function parseChannels(value: unknown): ChannelSummary[] {
       status,
       message: optionalString(record.message) ?? statusLabel(status),
       lastActivityAt: optionalIsoDate(record.lastActivityAt ?? record.lastSuccessAt ?? record.updatedAt),
+      ...(record.login === undefined ? {} : { login: parseWeixinLoginState(record.login, `channels[${index}].login`) }),
       ...(optionalString(record.suggestedAction)
         ? { suggestedAction: optionalString(record.suggestedAction)! }
         : {})
     };
   });
+}
+
+function parseWeixinLoginState(value: unknown, field: string): WeixinLoginState {
+  const record = requiredRecord(value, field);
+  const status = record.status;
+  if (
+    status !== "logged_out"
+    && status !== "requesting_qr"
+    && status !== "awaiting_scan"
+    && status !== "scanned"
+    && status !== "awaiting_confirmation"
+    && status !== "logged_in"
+    && status !== "expired"
+    && status !== "invalid"
+  ) {
+    throw new Error(`${field}.status is invalid`);
+  }
+  return {
+    accountId: requiredString(record.accountId, `${field}.accountId`),
+    status,
+    message: requiredString(record.message, `${field}.message`),
+    updatedAt: requiredIsoDate(record.updatedAt, `${field}.updatedAt`),
+    ...(optionalString(record.qrCodeContent) ? { qrCodeContent: optionalString(record.qrCodeContent)! } : {}),
+    ...(optionalIsoDate(record.expiresAt) ? { expiresAt: optionalIsoDate(record.expiresAt)! } : {})
+  };
 }
 
 function parseActivities(value: unknown): ActivitySummary[] {

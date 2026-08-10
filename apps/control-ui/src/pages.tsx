@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -7,6 +8,7 @@ import {
   type ReactNode
 } from "react";
 import { Link, isRouteErrorResponse, useRouteError } from "react-router";
+import QRCode from "qrcode";
 import { ControlApiError, controlApi } from "./api-client.js";
 import {
   channelLabel,
@@ -15,13 +17,16 @@ import {
   loadChannels,
   loadOverview,
   restartChannel,
+  startChannelLogin,
   statusLabel,
   testChannel,
+  logoutChannel,
   type ActivitySummary,
   type ChannelCreateInput,
   type ChannelSummary,
   type HealthStatus,
-  type OverviewData
+  type OverviewData,
+  type WeixinLoginState
 } from "./control-data.js";
 
 type ResourceState<T> = {
@@ -127,6 +132,16 @@ export function ChannelsPage() {
               pendingAction={pendingAction}
               onTest={(channel) => performAction(`test:${channel.id}`, `${channel.displayName} 测试完成`, () => testChannel(channel.id))}
               onRestart={(channel) => performAction(`restart:${channel.id}`, `${channel.displayName} 已重启`, () => restartChannel(channel.id))}
+              onStartLogin={(channel, force) => performAction(
+                `login:${channel.id}`,
+                force ? `${channel.displayName} 已生成新的登录二维码` : `${channel.displayName} 已开始登录`,
+                () => startChannelLogin(channel.id, force).then(() => undefined)
+              )}
+              onLogout={(channel) => performAction(
+                `logout:${channel.id}`,
+                `${channel.displayName} 已注销`,
+                () => logoutChannel(channel.id).then(() => undefined)
+              )}
               onDelete={(channel) => {
                 if (window.confirm(`确定删除“${channel.displayName}”吗？此操作会应用新的渠道配置。`)) {
                   void performAction(`delete:${channel.id}`, `${channel.displayName} 已删除`, () => deleteChannel(channel.id));
@@ -221,6 +236,8 @@ function ChannelTable({
   pendingAction,
   onTest,
   onRestart,
+  onStartLogin,
+  onLogout,
   onDelete
 }: {
   channels: ChannelSummary[];
@@ -228,6 +245,8 @@ function ChannelTable({
   pendingAction?: string | null;
   onTest?: (channel: ChannelSummary) => void;
   onRestart?: (channel: ChannelSummary) => void;
+  onStartLogin?: (channel: ChannelSummary, force: boolean) => void;
+  onLogout?: (channel: ChannelSummary) => void;
   onDelete?: (channel: ChannelSummary) => void;
 }) {
   if (channels.length === 0) {
@@ -241,27 +260,122 @@ function ChannelTable({
         </thead>
         <tbody>
           {channels.map((channel) => (
-            <tr key={channel.id}>
-              <td><div className="channel-identity"><span className={`channel-mark channel-mark-${channel.channel}`} aria-hidden="true">{channelLabel(channel.channel).slice(0, 1)}</span><span><strong>{channel.displayName}</strong><small translate="no">{channel.accountId}</small></span></div></td>
-              <td><span className={`status-text status-text-${toneForStatus(channel.status)}`}><span className="status-dot" aria-hidden="true" />{channel.enabled ? statusLabel(channel.status) : "已停用"}</span><small className="cell-detail">{channel.message}</small></td>
-              <td>{channel.lastActivityAt ? <time dateTime={channel.lastActivityAt}>{formatDateTime(channel.lastActivityAt)}</time> : "暂无活动"}</td>
-              <td>
-                <div className="row-actions">
-                  {compact
-                    ? <Link to="/channels" aria-label={`查看 ${channel.displayName}`}>查看</Link>
-                    : <>
-                        <button type="button" aria-label={`测试 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onTest?.(channel)}>{pendingAction === `test:${channel.id}` ? "测试中…" : "测试"}</button>
-                        <button type="button" aria-label={`重启 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onRestart?.(channel)}>{pendingAction === `restart:${channel.id}` ? "重启中…" : "重启"}</button>
-                        <button className="danger-link" type="button" aria-label={`删除 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onDelete?.(channel)}>{pendingAction === `delete:${channel.id}` ? "删除中…" : "删除"}</button>
-                      </>}
-                </div>
-              </td>
-            </tr>
+            <Fragment key={channel.id}>
+              <tr>
+                <td><div className="channel-identity"><span className={`channel-mark channel-mark-${channel.channel}`} aria-hidden="true">{channelLabel(channel.channel).slice(0, 1)}</span><span><strong>{channel.displayName}</strong><small translate="no">{channel.accountId}</small></span></div></td>
+                <td><span className={`status-text status-text-${toneForStatus(channel.status)}`}><span className="status-dot" aria-hidden="true" />{channel.enabled ? statusLabel(channel.status) : "已停用"}</span><small className="cell-detail">{channel.message}</small></td>
+                <td>{channel.lastActivityAt ? <time dateTime={channel.lastActivityAt}>{formatDateTime(channel.lastActivityAt)}</time> : "暂无活动"}</td>
+                <td>
+                  <div className="row-actions">
+                    {compact
+                      ? <Link to="/channels" aria-label={`查看 ${channel.displayName}`}>查看</Link>
+                      : <>
+                          <button type="button" aria-label={`测试 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onTest?.(channel)}>{pendingAction === `test:${channel.id}` ? "测试中…" : "测试"}</button>
+                          <button type="button" aria-label={`重启 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onRestart?.(channel)}>{pendingAction === `restart:${channel.id}` ? "重启中…" : "重启"}</button>
+                          <button className="danger-link" type="button" aria-label={`删除 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onDelete?.(channel)}>{pendingAction === `delete:${channel.id}` ? "删除中…" : "删除"}</button>
+                        </>}
+                  </div>
+                </td>
+              </tr>
+              {!compact && channel.channel === "weixin" && channel.login
+                ? <tr className="channel-login-row">
+                    <td colSpan={4}>
+                      <WeixinLoginPanel
+                        channel={channel}
+                        login={channel.login}
+                        pending={pendingAction === `login:${channel.id}` || pendingAction === `logout:${channel.id}`}
+                        onStart={(force) => onStartLogin?.(channel, force)}
+                        onLogout={() => onLogout?.(channel)}
+                      />
+                    </td>
+                  </tr>
+                : null}
+            </Fragment>
           ))}
         </tbody>
       </table>
     </div>
   );
+}
+
+function WeixinLoginPanel({
+  channel,
+  login,
+  pending,
+  onStart,
+  onLogout
+}: {
+  channel: ChannelSummary;
+  login: WeixinLoginState;
+  pending: boolean;
+  onStart(force: boolean): void;
+  onLogout(): void;
+}) {
+  const canStart = login.status === "logged_out" || login.status === "expired" || login.status === "invalid";
+  const showLogout = login.status !== "logged_out";
+  return (
+    <section className="weixin-login-panel" aria-label={`${channel.displayName} 登录`} aria-live="polite" aria-atomic="true">
+      <div className="weixin-login-copy">
+        <span className={`login-status login-status-${loginTone(login.status)}`}>{loginStatusLabel(login.status)}</span>
+        <strong>{login.message}</strong>
+        <small>更新于 <time dateTime={login.updatedAt}>{formatDateTime(login.updatedAt)}</time>{login.expiresAt ? <> · 二维码有效至 <time dateTime={login.expiresAt}>{formatDateTime(login.expiresAt)}</time></> : null}</small>
+        <div className="login-actions">
+          {canStart
+            ? <button className="button button-primary" type="button" disabled={pending} onClick={() => onStart(false)}>{pending ? "处理中…" : login.status === "logged_out" ? "开始扫码登录" : "重新生成二维码"}</button>
+            : null}
+          <button className="button button-secondary" type="button" disabled={pending} onClick={() => onStart(true)}>{pending ? "处理中…" : "强制重新登录"}</button>
+          {showLogout ? <button className="button button-secondary danger-link" type="button" disabled={pending} onClick={onLogout}>{pending ? "处理中…" : "注销"}</button> : null}
+        </div>
+      </div>
+      {login.qrCodeContent ? <WeixinQrCode content={login.qrCodeContent} /> : null}
+    </section>
+  );
+}
+
+function WeixinQrCode({ content }: { content: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    setDataUrl(null);
+    setError(null);
+    void QRCode.toDataURL(content, {
+      width: 224,
+      margin: 2,
+      errorCorrectionLevel: "M",
+      color: { dark: "#111827", light: "#ffffff" }
+    }).then((value) => {
+      if (active) setDataUrl(value);
+    }).catch(() => {
+      if (active) setError("二维码渲染失败，请强制重新登录");
+    });
+    return () => {
+      active = false;
+    };
+  }, [content]);
+  if (error) return <span className="qr-error" role="alert">{error}</span>;
+  if (!dataUrl) return <span className="qr-loading">正在绘制二维码…</span>;
+  return <img className="weixin-login-qr" src={dataUrl} alt="微信登录二维码" width={224} height={224} />;
+}
+
+function loginStatusLabel(status: WeixinLoginState["status"]): string {
+  return {
+    logged_out: "未登录",
+    requesting_qr: "生成中",
+    awaiting_scan: "待扫码",
+    scanned: "已扫描",
+    awaiting_confirmation: "待确认",
+    logged_in: "已登录",
+    expired: "已过期",
+    invalid: "已失效"
+  }[status];
+}
+
+function loginTone(status: WeixinLoginState["status"]): "ready" | "warning" | "danger" | "neutral" {
+  if (status === "logged_in") return "ready";
+  if (status === "invalid") return "danger";
+  if (status === "expired" || status === "awaiting_confirmation" || status === "scanned") return "warning";
+  return "neutral";
 }
 
 function ActivityList({ activities }: { activities: ActivitySummary[] }) {

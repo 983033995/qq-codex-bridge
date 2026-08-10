@@ -60,6 +60,9 @@ const pushTargetSchema = z.object({
   spaceId: idSchema,
   enabled: z.boolean().default(true)
 }).strict();
+const channelLoginStartSchema = z.object({
+  force: z.boolean().default(false)
+}).strict();
 
 export const controlApiOperations = [
   "health.get",
@@ -68,6 +71,9 @@ export const controlApiOperations = [
   "channels.create",
   "channels.test",
   "channels.restart",
+  "channels.login.status",
+  "channels.login.start",
+  "channels.login.logout",
   "channels.delete",
   "spaces.list",
   "spaces.get",
@@ -121,6 +127,9 @@ const routes: readonly RouteDefinition[] = [
   route("POST", "/channels", "channels.create", channelConfigSchema),
   route("POST", "/channels/:id/test", "channels.test", emptySchema),
   route("POST", "/channels/:id/restart", "channels.restart", emptySchema),
+  route("GET", "/channels/:id/login", "channels.login.status"),
+  route("POST", "/channels/:id/login", "channels.login.start", channelLoginStartSchema),
+  route("DELETE", "/channels/:id/login", "channels.login.logout"),
   route("DELETE", "/channels/:id", "channels.delete"),
   route("GET", "/spaces", "spaces.list", undefined, paginationSchema),
   route("GET", "/spaces/:id", "spaces.get"),

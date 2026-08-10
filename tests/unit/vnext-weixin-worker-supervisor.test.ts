@@ -15,7 +15,7 @@ describe("vNext Weixin worker supervisor", () => {
     const events: WeixinWorkerEvent[] = [];
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: "/fake/weixin-worker.js",
-      configuration: () => ({ accounts: ["weixin:personal"] }),
+      configuration: () => configuration(["weixin:personal"]),
       heartbeatIntervalMs: 10,
       heartbeatTimeoutMs: 200,
       handshakeTimeoutMs: 100,
@@ -35,6 +35,13 @@ describe("vNext Weixin worker supervisor", () => {
     await supervisor.start();
     await eventually(async () => (await supervisor.health()).status === "ready");
     await expect(supervisor.ping()).resolves.toBeUndefined();
+    await expect(supervisor.loginStatus("weixin:personal")).resolves.toMatchObject({ status: "logged_out" });
+    await expect(supervisor.startLogin("weixin:personal")).resolves.toMatchObject({
+      status: "awaiting_scan",
+      qrCodeContent: "qr-content"
+    });
+    await expect(supervisor.logout("weixin:personal")).resolves.toMatchObject({ status: "logged_out" });
+    expect(JSON.stringify(events)).not.toContain("qr-content");
 
     children[0]!.crash();
     await eventually(() => children.length === 2);
@@ -58,7 +65,7 @@ describe("vNext Weixin worker supervisor", () => {
     let spawnCount = 0;
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: "/fake/weixin-worker.js",
-      configuration: () => ({ accounts: ["weixin:personal"] }),
+      configuration: () => configuration(["weixin:personal"]),
       heartbeatIntervalMs: 10,
       heartbeatTimeoutMs: 100,
       handshakeTimeoutMs: 50,
@@ -83,7 +90,7 @@ describe("vNext Weixin worker supervisor", () => {
     let spawnCount = 0;
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: "/fake/weixin-worker.js",
-      configuration: () => ({ accounts: ["weixin:personal"] }),
+      configuration: () => configuration(["weixin:personal"]),
       heartbeatIntervalMs: 10,
       heartbeatTimeoutMs: 100,
       handshakeTimeoutMs: 50,
@@ -109,7 +116,7 @@ describe("vNext Weixin worker supervisor", () => {
     const events: WeixinWorkerEvent[] = [];
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: "/fake/weixin-worker.js",
-      configuration: () => ({ accounts: ["weixin:personal"] }),
+      configuration: () => configuration(["weixin:personal"]),
       heartbeatIntervalMs: 10,
       heartbeatTimeoutMs: 30,
       handshakeTimeoutMs: 100,
@@ -137,7 +144,7 @@ describe("vNext Weixin worker supervisor", () => {
   it("stays ready without spawning when no Weixin account is enabled", async () => {
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: "/fake/weixin-worker.js",
-      configuration: () => ({ accounts: [] }),
+      configuration: () => configuration([]),
       spawnWorker() {
         throw new Error("must not spawn");
       }
@@ -183,6 +190,16 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
         this.emit("message", { type: "heartbeat", sequence: this.sequence++, occurredAt: new Date().toISOString() });
       } else if (message.type === "ping") {
         this.emit("message", { type: "pong", id: message.id, occurredAt: new Date().toISOString() });
+      } else if (message.type === "login.status") {
+        this.emit("message", { type: "command.result", requestId: message.requestId, ok: true, state: loginState("logged_out") });
+      } else if (message.type === "login.start") {
+        const state = loginState("awaiting_scan");
+        this.emit("message", { type: "login.state", state });
+        this.emit("message", { type: "command.result", requestId: message.requestId, ok: true, state });
+      } else if (message.type === "login.logout") {
+        const state = loginState("logged_out");
+        this.emit("message", { type: "login.state", state });
+        this.emit("message", { type: "command.result", requestId: message.requestId, ok: true, state });
       } else {
         this.connected = false;
         this.emit("exit", 0, null);
@@ -211,4 +228,30 @@ async function eventually(check: () => boolean | Promise<boolean>, timeoutMs = 1
     if (Date.now() >= deadline) throw new Error("Condition was not met before timeout");
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
+}
+
+function configuration(accounts: string[]) {
+  return {
+    accounts,
+    login: {
+      stateFilePath: "/tmp/qqcb-vnext-weixin-login-unit.json",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      botType: "3",
+      qrFetchTimeoutMs: 10_000,
+      qrPollTimeoutMs: 35_000,
+      qrTotalTimeoutMs: 480_000
+    }
+  };
+}
+
+function loginState(status: "logged_out" | "awaiting_scan") {
+  return {
+    accountId: "weixin:personal",
+    status,
+    message: status,
+    updatedAt: new Date().toISOString(),
+    ...(status === "awaiting_scan"
+      ? { qrCodeContent: "qr-content", expiresAt: new Date(Date.now() + 60_000).toISOString() }
+      : {})
+  };
 }

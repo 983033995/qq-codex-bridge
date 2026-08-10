@@ -516,6 +516,50 @@ a { color: inherit; }
 }
 .channel-form .button { align-self: end; justify-self: start; }
 
+.channel-table .channel-login-row > td {
+  height: auto;
+  padding: 0 18px 18px;
+  background: #fbfcfd;
+}
+.weixin-login-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 20px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #fff;
+}
+.weixin-login-copy { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.weixin-login-copy > strong { font-size: 16px; }
+.weixin-login-copy > small { color: var(--muted); font-size: 12px; }
+.login-status {
+  display: inline-flex;
+  width: max-content;
+  padding: 4px 8px;
+  border: 1px solid #d7dce3;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.login-status-ready { border-color: #b8dec4; background: #f1faf4; color: var(--ready); }
+.login-status-warning { border-color: #efd6a7; background: #fff8e9; color: var(--warning); }
+.login-status-danger { border-color: #efc4bf; background: #fff8f7; color: var(--danger); }
+.login-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.login-actions .danger-link { border-color: #efc4bf; color: var(--danger); }
+.weixin-login-qr {
+  width: 224px;
+  height: 224px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+.qr-loading, .qr-error { width: 224px; color: var(--muted); font-size: 12px; text-align: center; }
+.qr-error { color: var(--danger); }
+
 .record-list { display: grid; gap: 16px; }
 .record-card {
   padding: 22px;
@@ -669,6 +713,8 @@ a { color: inherit; }
   .activity-row > span:not(.activity-indicator) { display: none; }
   .channel-form { grid-template-columns: 1fr; padding: 18px; }
   .form-heading { grid-column: auto; }
+  .weixin-login-panel { align-items: stretch; flex-direction: column; }
+  .weixin-login-qr, .qr-loading, .qr-error { align-self: center; }
   .load-error { align-items: stretch; flex-direction: column; }
   .record-card { padding: 18px; }
   .record-card-heading { flex-direction: column; gap: 10px; }

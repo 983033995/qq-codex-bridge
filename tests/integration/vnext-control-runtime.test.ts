@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -91,11 +92,15 @@ describe("vNext production control runtime", () => {
       value: config,
       revision: calculateConfigRevision(config)
     });
+    const fakeLogin = await startFakeWeixinLoginServer();
     const runtime = await createProductionControlDaemon({
       dataDirectory,
       staticRoot,
       weixinWorkerScriptPath: path.resolve("apps/weixin-worker/src/cli.ts"),
-      weixinWorkerExecArgv: ["--import", "tsx"]
+      weixinWorkerExecArgv: ["--import", "tsx"],
+      weixinLoginBaseUrl: fakeLogin.baseUrl,
+      weixinQrPollTimeoutMs: 1_000,
+      weixinQrTotalTimeoutMs: 10_000
     });
     try {
       await runtime.start();
@@ -131,6 +136,44 @@ describe("vNext production control runtime", () => {
         data: { ok: true, message: "Weixin worker IPC round-trip succeeded" }
       });
 
+      fakeLogin.pollResponses.push("wait");
+      const loginResponse = await fetch(`${runtime.baseUrl}/api/v1/channels/weixin%3Apersonal/login`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ force: false })
+      });
+      expect(loginResponse.status).toBe(200);
+      await expect(loginResponse.json()).resolves.toMatchObject({
+        data: { status: "awaiting_scan", qrCodeContent: "weixin-test-qr-content" }
+      });
+
+      fakeLogin.pollResponses.push("scaned", "scaned_but_redirect", "wait");
+      const forceResponse = await fetch(`${runtime.baseUrl}/api/v1/channels/weixin%3Apersonal/login`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ force: true })
+      });
+      expect(forceResponse.status).toBe(200);
+      await eventually(async () => {
+        const response = await fetch(`${runtime.baseUrl}/api/v1/channels/weixin%3Apersonal/login`, {
+          headers: { Cookie: cookie }
+        });
+        const body = await response.json() as { data: { status: string } };
+        return body.data.status === "awaiting_confirmation";
+      });
+
+      const persistedLoginState = await import("node:fs/promises").then(({ readFile }) =>
+        readFile(path.join(dataDirectory, "weixin-login-state.json"), "utf8")
+      );
+      expect(persistedLoginState).not.toContain("weixin-test-qr-content");
+
+      const logoutResponse = await fetch(`${runtime.baseUrl}/api/v1/channels/weixin%3Apersonal/login`, {
+        method: "DELETE",
+        headers
+      });
+      expect(logoutResponse.status).toBe(200);
+      await expect(logoutResponse.json()).resolves.toMatchObject({ data: { status: "logged_out" } });
+
       const restartResponse = await fetch(`${runtime.baseUrl}/api/v1/channels/weixin%3Apersonal/restart`, {
         method: "POST",
         headers,
@@ -149,8 +192,10 @@ describe("vNext production control runtime", () => {
       const events = await eventsResponse.json() as { data: { items: Array<{ type: string }> } };
       expect(events.data.items.map((event) => event.type)).toEqual(expect.arrayContaining([
         "weixin.worker.authenticated",
-        "weixin.worker.ready"
+        "weixin.worker.ready",
+        "weixin.login.state_changed"
       ]));
+      expect(JSON.stringify(events)).not.toContain("weixin-test-qr-content");
 
       const deleteResponse = await fetch(`${runtime.baseUrl}/api/v1/channels/weixin%3Apersonal`, {
         method: "DELETE",
@@ -173,8 +218,9 @@ describe("vNext production control runtime", () => {
       });
     } finally {
       await runtime.stop();
+      await fakeLogin.close();
     }
-  });
+  }, 15_000);
 });
 
 async function freePort(): Promise<number> {
@@ -191,6 +237,48 @@ async function freePort(): Promise<number> {
   const port = address.port;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
+}
+
+async function startFakeWeixinLoginServer(): Promise<{
+  baseUrl: string;
+  pollResponses: string[];
+  close(): Promise<void>;
+}> {
+  const pollResponses: string[] = [];
+  let qrSequence = 0;
+  const server = createHttpServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    response.setHeader("Content-Type", "application/json");
+    if (url.pathname === "/ilink/bot/get_bot_qrcode") {
+      qrSequence += 1;
+      response.end(JSON.stringify({
+        qrcode: `session-${qrSequence}`,
+        qrcode_img_content: "weixin-test-qr-content"
+      }));
+      return;
+    }
+    if (url.pathname === "/ilink/bot/get_qrcode_status") {
+      response.end(JSON.stringify({ status: pollResponses.shift() ?? "wait" }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not start fake Weixin login server");
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    pollResponses,
+    close: () => closeHttpServer(server)
+  };
+}
+
+function closeHttpServer(server: HttpServer): Promise<void> {
+  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
 async function eventually(check: () => Promise<boolean>, timeoutMs = 3_000): Promise<void> {

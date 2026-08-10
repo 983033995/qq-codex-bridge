@@ -2,6 +2,7 @@ import { timingSafeEqual, randomBytes, randomUUID } from "node:crypto";
 import { fork, type ForkOptions } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { ComponentHealth } from "../../domain/src/vnext/index.js";
+import type { WeixinLoginState } from "./login-types.js";
 import {
   WEIXIN_WORKER_AUTH_ENV,
   WEIXIN_WORKER_PROTOCOL_VERSION,
@@ -12,6 +13,16 @@ import {
 
 export type WeixinWorkerConfiguration = {
   accounts: string[];
+  login: WeixinWorkerLoginConfiguration;
+};
+
+export type WeixinWorkerLoginConfiguration = {
+  stateFilePath: string;
+  baseUrl: string;
+  botType: string;
+  qrFetchTimeoutMs: number;
+  qrPollTimeoutMs: number;
+  qrTotalTimeoutMs: number;
 };
 
 export type WeixinWorkerEvent = {
@@ -42,6 +53,7 @@ export type WeixinWorkerSupervisorOptions = {
   heartbeatTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   pingTimeoutMs?: number;
+  commandTimeoutMs?: number;
   stopTimeoutMs?: number;
   stableUptimeMs?: number;
   restartBackoffMs?: readonly number[];
@@ -65,6 +77,7 @@ export class WeixinWorkerSupervisor {
   private readonly heartbeatTimeoutMs: number;
   private readonly handshakeTimeoutMs: number;
   private readonly pingTimeoutMs: number;
+  private readonly commandTimeoutMs: number;
   private readonly stopTimeoutMs: number;
   private readonly stableUptimeMs: number;
   private readonly restartBackoffMs: readonly number[];
@@ -73,7 +86,7 @@ export class WeixinWorkerSupervisor {
   private stateSince: string;
   private desiredRunning = false;
   private child: WeixinWorkerChild | null = null;
-  private configuration: WeixinWorkerConfiguration = { accounts: [] };
+  private configuration!: WeixinWorkerConfiguration;
   private authToken = "";
   private workerVersion: string | null = null;
   private lastHeartbeatAt: number | null = null;
@@ -89,6 +102,7 @@ export class WeixinWorkerSupervisor {
   private stableTimer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   private readonly pendingPings = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  private readonly pendingCommands = new Map<string, { resolve(state: WeixinLoginState): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
 
   constructor(private readonly options: WeixinWorkerSupervisorOptions) {
     if (!options.workerScriptPath.trim()) throw new Error("workerScriptPath is required");
@@ -99,6 +113,7 @@ export class WeixinWorkerSupervisor {
     this.heartbeatTimeoutMs = positiveInteger(options.heartbeatTimeoutMs ?? 15_000, "heartbeatTimeoutMs");
     this.handshakeTimeoutMs = positiveInteger(options.handshakeTimeoutMs ?? 10_000, "handshakeTimeoutMs");
     this.pingTimeoutMs = positiveInteger(options.pingTimeoutMs ?? 2_000, "pingTimeoutMs");
+    this.commandTimeoutMs = positiveInteger(options.commandTimeoutMs ?? 15_000, "commandTimeoutMs");
     this.stopTimeoutMs = positiveInteger(options.stopTimeoutMs ?? 3_000, "stopTimeoutMs");
     this.stableUptimeMs = positiveInteger(options.stableUptimeMs ?? 60_000, "stableUptimeMs");
     if (this.heartbeatTimeoutMs <= this.heartbeatIntervalMs) {
@@ -153,6 +168,18 @@ export class WeixinWorkerSupervisor {
         reject(normalizeError(error));
       }
     });
+  }
+
+  startLogin(accountId: string, force = false): Promise<WeixinLoginState> {
+    return this.loginCommand("login.start", accountId, force);
+  }
+
+  loginStatus(accountId: string): Promise<WeixinLoginState> {
+    return this.loginCommand("login.status", accountId);
+  }
+
+  logout(accountId: string): Promise<WeixinLoginState> {
+    return this.loginCommand("login.logout", accountId);
   }
 
   async health(): Promise<ComponentHealth> {
@@ -214,6 +241,7 @@ export class WeixinWorkerSupervisor {
     this.terminalFailure = false;
     this.clearTimers();
     this.rejectPendingPings(new Error("Weixin worker is stopping"));
+    this.rejectPendingCommands(new Error("Weixin worker is stopping"));
     const child = this.child;
     if (!child) {
       this.setState("stopped");
@@ -297,7 +325,8 @@ export class WeixinWorkerSupervisor {
         protocolVersion: WEIXIN_WORKER_PROTOCOL_VERSION,
         daemonVersion: this.options.daemonVersion ?? "0.2.0",
         heartbeatIntervalMs: this.heartbeatIntervalMs,
-        accounts: [...this.configuration.accounts]
+        accounts: [...this.configuration.accounts],
+        login: { ...this.configuration.login }
       });
       this.publish("weixin.worker.authenticated", { pid: message.pid, workerVersion: message.workerVersion });
       return;
@@ -336,6 +365,24 @@ export class WeixinWorkerSupervisor {
         this.lastSuccessAt = message.occurredAt;
         pending.resolve();
       }
+      return;
+    }
+    if (message.type === "login.state") {
+      this.publish("weixin.login.state_changed", {
+        accountId: message.state.accountId,
+        status: message.state.status,
+        updatedAt: message.state.updatedAt,
+        expiresAt: message.state.expiresAt ?? null
+      });
+      return;
+    }
+    if (message.type === "command.result") {
+      const pending = this.pendingCommands.get(message.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pendingCommands.delete(message.requestId);
+      if (message.ok) pending.resolve(structuredClone(message.state));
+      else pending.reject(new Error(message.error.message));
     }
   }
 
@@ -351,6 +398,7 @@ export class WeixinWorkerSupervisor {
     this.child = null;
     this.clearChildTimers();
     this.rejectPendingPings(new Error("Weixin worker exited"));
+    this.rejectPendingCommands(new Error("Weixin worker exited"));
     this.publish("weixin.worker.exited", { code, signal, expected: !this.desiredRunning });
     if (!this.desiredRunning) return;
     if (this.terminalFailure) return;
@@ -444,6 +492,45 @@ export class WeixinWorkerSupervisor {
     this.pendingPings.clear();
   }
 
+  private rejectPendingCommands(error: Error): void {
+    for (const pending of this.pendingCommands.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pendingCommands.clear();
+  }
+
+  private async loginCommand(
+    type: "login.start" | "login.status" | "login.logout",
+    accountId: string,
+    force?: boolean
+  ): Promise<WeixinLoginState> {
+    const child = this.child;
+    const normalized = required(accountId, "accountId");
+    if (!child || this.state !== "ready") throw new Error("Weixin worker is not ready");
+    if (!this.configuration.accounts.includes(normalized)) {
+      throw new Error(`Weixin account '${normalized}' is not configured in the worker`);
+    }
+    const requestId = this.randomId();
+    return new Promise<WeixinLoginState>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCommands.delete(requestId);
+        reject(new Error(`Weixin worker ${type} timed out`));
+      }, this.commandTimeoutMs);
+      timer.unref();
+      this.pendingCommands.set(requestId, { resolve, reject, timer });
+      try {
+        this.send(child, type === "login.start"
+          ? { type, requestId, accountId: normalized, force: force ?? false }
+          : { type, requestId, accountId: normalized });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingCommands.delete(requestId);
+        reject(normalizeError(error));
+      }
+    });
+  }
+
   private setFailure(state: SupervisorState, code: string, error: unknown): void {
     this.lastError = normalizeError(error).message;
     this.errorCode = code;
@@ -472,7 +559,18 @@ function normalizeConfiguration(value: WeixinWorkerConfiguration): WeixinWorkerC
   const accounts = value.accounts.map((account) => required(account, "Weixin worker account"));
   if (accounts.length > 32) throw new Error("Weixin worker supports at most 32 accounts");
   if (new Set(accounts).size !== accounts.length) throw new Error("Weixin worker accounts must be unique");
-  return { accounts: [...accounts].sort() };
+  if (!value.login || typeof value.login !== "object") throw new Error("Weixin worker login configuration is required");
+  return {
+    accounts: [...accounts].sort(),
+    login: {
+      stateFilePath: required(value.login.stateFilePath, "Weixin login stateFilePath"),
+      baseUrl: required(value.login.baseUrl, "Weixin login baseUrl"),
+      botType: required(value.login.botType, "Weixin login botType"),
+      qrFetchTimeoutMs: positiveInteger(value.login.qrFetchTimeoutMs, "Weixin login qrFetchTimeoutMs"),
+      qrPollTimeoutMs: positiveInteger(value.login.qrPollTimeoutMs, "Weixin login qrPollTimeoutMs"),
+      qrTotalTimeoutMs: positiveInteger(value.login.qrTotalTimeoutMs, "Weixin login qrTotalTimeoutMs")
+    }
+  };
 }
 
 function secureEqual(left: string, right: string): boolean {
@@ -502,7 +600,7 @@ function normalizeError(error: unknown): Error {
 
 function workerEnvironment(authToken: string): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { [WEIXIN_WORKER_AUTH_ENV]: authToken };
-  for (const name of ["LANG", "LC_ALL", "TZ"] as const) {
+  for (const name of ["HOME", "LANG", "LC_ALL", "TZ"] as const) {
     const value = process.env[name];
     if (value) environment[name] = value;
   }

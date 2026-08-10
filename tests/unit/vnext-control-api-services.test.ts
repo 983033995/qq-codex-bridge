@@ -83,6 +83,45 @@ describe("vNext control API application services", () => {
     expect((await fixture.configStore.read())?.revision).toBe(plan.revision);
   });
 
+  it("returns and controls the Weixin login state through the channel runtime", async () => {
+    const loginState = {
+      accountId: "weixin:personal",
+      status: "awaiting_scan",
+      message: "请使用微信扫码",
+      updatedAt: "2026-08-10T06:00:00.000Z",
+      qrCodeContent: "test-qr-content",
+      expiresAt: "2026-08-10T06:08:00.000Z"
+    };
+    const runtime = {
+      health: async () => ({ status: "ready", message: "worker ready", lastActivityAt: null }),
+      loginStatus: async () => loginState,
+      startLogin: async (_id: string, force: boolean) => ({ ...loginState, force }),
+      logout: async () => ({ ...loginState, status: "logged_out", message: "尚未登录" })
+    };
+    const config = {
+      ...createDefaultConfig(),
+      channels: [{ channel: "weixin" as const, accountId: "personal", enabled: true }]
+    };
+    const fixture = await createFixture({ config, channels: runtime });
+
+    const channels = await fixture.services.execute(invocation("channels.list")) as Array<{ login: unknown }>;
+    const started = await fixture.services.execute(invocation("channels.login.start", {
+      params: { id: "weixin:personal" },
+      body: { force: true }
+    }));
+    const status = await fixture.services.execute(invocation("channels.login.status", {
+      params: { id: "weixin:personal" }
+    }));
+    const loggedOut = await fixture.services.execute(invocation("channels.login.logout", {
+      params: { id: "weixin:personal" }
+    }));
+
+    expect(channels[0]).toMatchObject({ login: loginState });
+    expect(started).toMatchObject({ status: "awaiting_scan", force: true });
+    expect(status).toEqual(loginState);
+    expect(loggedOut).toMatchObject({ status: "logged_out" });
+  });
+
   it("creates a visible binding and persists an interrupted Turn terminal state", async () => {
     const fixture = await createFixture();
     const accountId = createChannelAccountId("weixin", "personal");
@@ -133,8 +172,18 @@ describe("vNext control API application services", () => {
   });
 });
 
-async function createFixture() {
-  const configStore = new MemoryConfigStore(createDefaultConfig());
+async function createFixture(options: {
+  config?: VNextConfig;
+  channels?: {
+    health?(channelId: string): Promise<{ status: string; message: string; lastActivityAt?: string | null }>;
+    test?(channelId: string): Promise<unknown>;
+    restart?(channelId: string): Promise<unknown>;
+    loginStatus?(channelId: string): Promise<unknown>;
+    startLogin?(channelId: string, force: boolean): Promise<unknown>;
+    logout?(channelId: string): Promise<unknown>;
+  };
+} = {}) {
+  const configStore = new MemoryConfigStore(options.config ?? createDefaultConfig());
   const spaces = new MemoryConversationSpaceRepository();
   const bindings = new MemoryThreadBindingRepository();
   const messages = new MemoryMessageLedger();
@@ -177,6 +226,7 @@ async function createFixture() {
     runtimeEvents: events,
     push,
     bindConversationSpace,
+    ...(options.channels ? { channels: options.channels } : {}),
     version: "0.2.0",
     now: () => clock.now()
   });

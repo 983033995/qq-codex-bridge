@@ -4,7 +4,9 @@ import {
   deleteChannel,
   loadChannels,
   loadOverview,
+  logoutChannel,
   restartChannel,
+  startChannelLogin,
   testChannel,
   type ControlClient
 } from "../../apps/control-ui/src/control-data.js";
@@ -26,7 +28,21 @@ describe("vNext control UI data", () => {
       "/system/status": { state: "running", activeRevision: "revision-1234567890", version: "0.2.0" },
       "/channels": {
         items: [
-          { channel: "weixin", accountId: "personal", displayName: "微信 · personal", status: "active", lastSuccessAt: "2026-08-10T11:59:00.000Z" },
+          {
+            channel: "weixin",
+            accountId: "personal",
+            displayName: "微信 · personal",
+            status: "active",
+            lastSuccessAt: "2026-08-10T11:59:00.000Z",
+            login: {
+              accountId: "weixin:personal",
+              status: "awaiting_scan",
+              message: "请使用微信扫码",
+              updatedAt: "2026-08-10T11:59:30.000Z",
+              qrCodeContent: "qr-content",
+              expiresAt: "2026-08-10T12:07:30.000Z"
+            }
+          },
           { id: "feishu:work", channel: "feishu", accountId: "work", displayName: "飞书 · work", status: "action_required", message: "Secret 未配置" }
         ]
       },
@@ -53,7 +69,7 @@ describe("vNext control UI data", () => {
     expect(requested).toEqual(["/health", "/system/status", "/channels", "/diagnostics/events?limit=5"]);
     expect(result.health.status).toBe("degraded");
     expect(result.channels).toMatchObject([
-      { id: "weixin:personal", status: "ready", enabled: true },
+      { id: "weixin:personal", status: "ready", enabled: true, login: { status: "awaiting_scan", qrCodeContent: "qr-content" } },
       { id: "feishu:work", status: "action_required", lastActivityAt: null }
     ]);
     expect(result.activities[0]).toMatchObject({ eventId: "event-1", type: "daemon.state.changed" });
@@ -68,17 +84,27 @@ describe("vNext control UI data", () => {
     await expect(loadChannels(client as unknown as ControlClient)).rejects.toThrow("channels[0].channel is invalid");
   });
 
-  it("uses validated encoded channel routes for create, test, restart, and delete", async () => {
+  it("uses validated encoded channel routes for create, test, restart, login, logout, and delete", async () => {
     const calls: Array<{ method: string; path: string; body?: unknown }> = [];
     const client = {
       get: vi.fn(async <T>(): Promise<T> => undefined as T),
       post: vi.fn(async <T>(path: string, body: unknown): Promise<T> => {
         calls.push({ method: "POST", path, body });
-        return undefined as T;
+        return (path.endsWith("/login") ? {
+          accountId: "weixin:personal",
+          status: "logged_out",
+          message: "尚未登录",
+          updatedAt: "2026-08-10T12:00:00.000Z"
+        } : undefined) as T;
       }),
       delete: vi.fn(async <T>(path: string): Promise<T> => {
         calls.push({ method: "DELETE", path });
-        return undefined as T;
+        return (path.endsWith("/login") ? {
+          accountId: "weixin:personal",
+          status: "logged_out",
+          message: "尚未登录",
+          updatedAt: "2026-08-10T12:00:00.000Z"
+        } : undefined) as T;
       })
     };
 
@@ -86,12 +112,16 @@ describe("vNext control UI data", () => {
     await createChannel({ channel: "qq", accountId: "bot", enabled: true, appId: "app", secretRef: "qq/bot" }, controlClient);
     await testChannel("qq:bot/primary", controlClient);
     await restartChannel("qq:bot/primary", controlClient);
+    await startChannelLogin("weixin:personal/primary", true, controlClient);
+    await logoutChannel("weixin:personal/primary", controlClient);
     await deleteChannel("qq:bot/primary", controlClient);
 
     expect(calls).toEqual([
       { method: "POST", path: "/channels", body: { channel: "qq", accountId: "bot", enabled: true, appId: "app", secretRef: "qq/bot" } },
       { method: "POST", path: "/channels/qq%3Abot%2Fprimary/test", body: {} },
       { method: "POST", path: "/channels/qq%3Abot%2Fprimary/restart", body: {} },
+      { method: "POST", path: "/channels/weixin%3Apersonal%2Fprimary/login", body: { force: true } },
+      { method: "DELETE", path: "/channels/weixin%3Apersonal%2Fprimary/login" },
       { method: "DELETE", path: "/channels/qq%3Abot%2Fprimary" }
     ]);
   });

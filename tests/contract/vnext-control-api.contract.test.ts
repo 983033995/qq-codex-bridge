@@ -33,6 +33,9 @@ describe("vNext control API contract", () => {
       { method: "POST", path: "/channels", operation: "channels.create", body: { channel: "weixin", accountId: "main", enabled: true } },
       { method: "POST", path: "/channels/weixin%3Amain/test", operation: "channels.test", body: {} },
       { method: "POST", path: "/channels/weixin%3Amain/restart", operation: "channels.restart", body: {} },
+      { method: "GET", path: "/channels/weixin%3Amain/login", operation: "channels.login.status" },
+      { method: "POST", path: "/channels/weixin%3Amain/login", operation: "channels.login.start", body: { force: true } },
+      { method: "DELETE", path: "/channels/weixin%3Amain/login", operation: "channels.login.logout" },
       { method: "DELETE", path: "/channels/weixin%3Amain", operation: "channels.delete" },
       { method: "GET", path: "/spaces?limit=25&cursor=next", operation: "spaces.list" },
       { method: "GET", path: "/spaces/space-1", operation: "spaces.get" },
@@ -74,6 +77,8 @@ describe("vNext control API contract", () => {
       );
       expect(invocations.find((item) => item.operation === "channels.test")?.params)
         .toEqual({ id: "weixin:main" });
+      expect(invocations.find((item) => item.operation === "channels.login.start")?.body)
+        .toEqual({ force: true });
       expect(invocations.find((item) => item.operation === "spaces.list")?.query)
         .toEqual({ limit: 25, cursor: "next" });
     } finally {
@@ -117,6 +122,13 @@ describe("vNext control API contract", () => {
       await expect(invalidMediaType.json()).resolves.toMatchObject({
         error: { code: "UNSUPPORTED_MEDIA_TYPE" }
       });
+
+      const invalidLogin = await apiFetch(baseUrl, "/channels/weixin%3Amain/login", auth, {
+        method: "POST",
+        body: JSON.stringify({ force: "yes" })
+      });
+      expect(invalidLogin.status).toBe(400);
+      await expect(invalidLogin.json()).resolves.toMatchObject({ error: { code: "VALIDATION_ERROR" } });
 
       const wrongMethod = await apiFetch(baseUrl, "/health", auth, { method: "POST", body: "{}" });
       expect(wrongMethod.status).toBe(405);

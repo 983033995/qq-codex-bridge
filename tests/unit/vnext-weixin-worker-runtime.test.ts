@@ -10,7 +10,20 @@ import {
 describe("vNext Weixin worker runtime", () => {
   it("authenticates, negotiates, heartbeats, pings, and shuts down over IPC", async () => {
     const port = new FakeWorkerPort("worker-auth-token-with-at-least-32-bytes");
-    const runtime = runWeixinWorker(port, { handshakeTimeoutMs: 1_000 });
+    const state = loginState("logged_out");
+    const stateEmitter: { current?: (state: ReturnType<typeof loginState>) => void } = {};
+    const runtime = runWeixinWorker(port, {
+      handshakeTimeoutMs: 1_000,
+      async createLoginManager(_configuration, onState) {
+        stateEmitter.current = onState;
+        return {
+          getState: () => state,
+          startLogin: async () => loginState("awaiting_scan"),
+          logout: async () => loginState("logged_out"),
+          stop: async () => undefined
+        };
+      }
+    });
 
     expect(port.sent[0]).toMatchObject({
       type: "hello",
@@ -25,8 +38,17 @@ describe("vNext Weixin worker runtime", () => {
       protocolVersion: WEIXIN_WORKER_PROTOCOL_VERSION,
       daemonVersion: "0.2.0",
       heartbeatIntervalMs: 1_000,
-      accounts: ["weixin:personal"]
+      accounts: ["weixin:personal"],
+      login: {
+        stateFilePath: "/tmp/qqcb-vnext-weixin-login-runtime.json",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        botType: "3",
+        qrFetchTimeoutMs: 10_000,
+        qrPollTimeoutMs: 35_000,
+        qrTotalTimeoutMs: 480_000
+      }
     });
+    await tick();
     expect(port.sent).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "ready", accounts: ["weixin:personal"] }),
       expect.objectContaining({ type: "heartbeat", sequence: 0 })
@@ -36,8 +58,23 @@ describe("vNext Weixin worker runtime", () => {
     port.emit("message", { type: "ping", id: pingId, sentAt: new Date().toISOString() });
     expect(port.sent).toContainEqual(expect.objectContaining({ type: "pong", id: pingId }));
 
+    const requestId = "00000000-0000-4000-8000-000000000002";
+    port.emit("message", { type: "login.start", requestId, accountId: "weixin:personal", force: false });
+    await tick();
+    expect(port.sent).toContainEqual(expect.objectContaining({
+      type: "command.result",
+      requestId,
+      ok: true,
+      state: expect.objectContaining({ status: "awaiting_scan" })
+    }));
+    stateEmitter.current?.(loginState("scanned"));
+    expect(port.sent).toContainEqual(expect.objectContaining({
+      type: "login.state",
+      state: expect.objectContaining({ status: "scanned" })
+    }));
+
     runtime.stop();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     expect(port.sent).toContainEqual(expect.objectContaining({ type: "stopped" }));
     expect(port.connected).toBe(false);
   });
@@ -71,4 +108,18 @@ class FakeWorkerPort extends EventEmitter {
     this.connected = false;
     this.emit("disconnect");
   }
+}
+
+function loginState(status: "logged_out" | "awaiting_scan" | "scanned") {
+  return {
+    accountId: "weixin:personal",
+    status,
+    message: status,
+    updatedAt: "2026-08-11T00:00:00.000Z",
+    ...(status === "awaiting_scan" ? { qrCodeContent: "qr-content" } : {})
+  };
+}
+
+async function tick(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }

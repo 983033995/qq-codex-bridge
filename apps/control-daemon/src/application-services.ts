@@ -34,6 +34,9 @@ type ChannelRuntime = {
   health?(channelId: string): Promise<{ status: string; message: string; lastActivityAt?: string | null }>;
   test?(channelId: string): Promise<unknown>;
   restart?(channelId: string): Promise<unknown>;
+  loginStatus?(channelId: string): Promise<unknown>;
+  startLogin?(channelId: string, force: boolean): Promise<unknown>;
+  logout?(channelId: string): Promise<unknown>;
 };
 
 export type ControlApiApplicationServicesOptions = {
@@ -81,6 +84,15 @@ export class ControlApiApplicationServices implements ControlApiServices {
         return this.channelAction("test", requiredParam(invocation, "id"));
       case "channels.restart":
         return this.channelAction("restart", requiredParam(invocation, "id"));
+      case "channels.login.status":
+        return this.channelAction("loginStatus", requiredParam(invocation, "id"));
+      case "channels.login.start":
+        return this.startChannelLogin(
+          requiredParam(invocation, "id"),
+          (invocation.body as { force: boolean }).force
+        );
+      case "channels.login.logout":
+        return this.channelAction("logout", requiredParam(invocation, "id"));
       case "channels.delete":
         return this.deleteChannel(requiredParam(invocation, "id"));
       case "spaces.list":
@@ -182,6 +194,9 @@ export class ControlApiApplicationServices implements ControlApiServices {
     return Promise.all(config.channels.map(async (channel) => {
       const id = channelId(channel);
       const runtime = channel.enabled ? await this.options.channels?.health?.(id) : null;
+      const login = channel.channel === "weixin" && channel.enabled && runtime?.status === "ready"
+        ? await this.options.channels?.loginStatus?.(id)
+        : undefined;
       const hasSecret = channel.channel === "weixin"
         ? true
         : await this.options.secretStore.get(channel.secretRef).then((value) => value !== null);
@@ -197,7 +212,8 @@ export class ControlApiApplicationServices implements ControlApiServices {
         enabled: channel.enabled,
         status,
         message: runtime?.message ?? (!hasSecret ? "Secret Reference 尚未写入 Keychain" : "渠道运行时尚未连接"),
-        lastActivityAt: runtime?.lastActivityAt ?? null
+        lastActivityAt: runtime?.lastActivityAt ?? null,
+        ...(login ? { login } : {})
       };
     }));
   }
@@ -222,12 +238,23 @@ export class ControlApiApplicationServices implements ControlApiServices {
     return { deleted: true, plan };
   }
 
-  private async channelAction(action: "test" | "restart", id: string): Promise<unknown> {
+  private async channelAction(
+    action: "test" | "restart" | "loginStatus" | "logout",
+    id: string
+  ): Promise<unknown> {
     const handler = this.options.channels?.[action];
     if (!handler) {
       throw new Error(`Channel ${action} is unavailable because the runtime adapter is not connected`);
     }
     return handler(id);
+  }
+
+  private async startChannelLogin(id: string, force: boolean): Promise<unknown> {
+    const handler = this.options.channels?.startLogin;
+    if (!handler) {
+      throw new Error("Channel login is unavailable because the runtime adapter is not connected");
+    }
+    return handler(id, force);
   }
 
   private async listSpaces(query: PageQuery): Promise<unknown> {

@@ -46,6 +46,11 @@ export async function createProductionControlDaemon(options: {
   appServerUrl?: string;
   weixinWorkerScriptPath?: string;
   weixinWorkerExecArgv?: string[];
+  weixinLoginBaseUrl?: string;
+  weixinLoginBotType?: string;
+  weixinQrFetchTimeoutMs?: number;
+  weixinQrPollTimeoutMs?: number;
+  weixinQrTotalTimeoutMs?: number;
 } = {}): Promise<ProductionControlDaemon> {
   const dataDirectory = options.dataDirectory ?? path.join(os.homedir(), ".qq-codex-bridge");
   const configStore = new AtomicConfigStore(path.join(dataDirectory, "config.json"));
@@ -78,7 +83,15 @@ export async function createProductionControlDaemon(options: {
       return {
         accounts: snapshot.value.channels
           .filter((channel) => channel.channel === "weixin" && channel.enabled)
-          .map((channel) => `weixin:${channel.accountId}`)
+          .map((channel) => `weixin:${channel.accountId}`),
+        login: {
+          stateFilePath: path.join(dataDirectory, "weixin-login-state.json"),
+          baseUrl: options.weixinLoginBaseUrl ?? "https://ilinkai.weixin.qq.com",
+          botType: options.weixinLoginBotType ?? "3",
+          qrFetchTimeoutMs: options.weixinQrFetchTimeoutMs ?? 10_000,
+          qrPollTimeoutMs: options.weixinQrPollTimeoutMs ?? 35_000,
+          qrTotalTimeoutMs: options.weixinQrTotalTimeoutMs ?? 8 * 60_000
+        }
       };
     },
     onEvent(event) {
@@ -153,6 +166,18 @@ export async function createProductionControlDaemon(options: {
         requireWeixinChannel(channelId);
         await weixinWorker.restart();
         return { restarted: true };
+      },
+      async loginStatus(channelId) {
+        requireWeixinChannel(channelId);
+        return weixinWorker.loginStatus(channelId);
+      },
+      async startLogin(channelId, force) {
+        requireWeixinChannel(channelId);
+        return weixinWorker.startLogin(channelId, force);
+      },
+      async logout(channelId) {
+        requireWeixinChannel(channelId);
+        return weixinWorker.logout(channelId);
       }
     },
     exportDiagnostics: (includeLogs) => exportDiagnostics({
