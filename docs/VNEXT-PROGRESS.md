@@ -34,14 +34,15 @@
 - [x] M3-03 — 在认证后的 `/api/v1/events` 提供有界 Structured Event SSE：先订阅后重放消除连接竞态，支持 Last-Event-ID 精确续传与过期游标保留窗口重放、实时事件、2 秒重试提示、15 秒心跳、慢消费者断开恢复，以及 Daemon 停止前显式关闭全部长连接。
 - [x] M3-04 — 建立 Vite + React + TypeScript 管理台基础：Daemon 安全静态托管与 SPA fallback、七个嵌套路由、响应式 App Shell、同源 Session/CSRF API Client、稳定错误响应和请求去重；Dashboard 仅保留真实加载态，业务数据接入归入 M3-05。
 - [x] M3-05 — Dashboard 与 Channels 接入真实管理 API 数据契约：并行加载 Health/System/Channels/Events、SSE 自动刷新、四态健康与真实空/错/重试状态、渠道添加/测试/重启/删除；修复浏览器原生 `fetch` 错误绑定导致的 `Illegal invocation`。
+- [x] M3-06 — 完成管理台可访问性与响应式加固：Skip Link、路由与表单焦点管理、原生数据表、异步 `aria-live`、非颜色状态文本、Secret Reference 限界、键盘核心路径、200% Zoom 与窄屏单列验收。
 
 ## In Progress
 
-- [ ] M3-06 — 完成可访问性和响应式验收。
+- [ ] M3 Gate — 打通生产 Composition Root、六页操作、Config Apply/Binding/SSE 与键盘验收。
 
 ## Next
 
-- [ ] M3 Gate — 打通生产 Composition Root、六页操作、Config Apply/Binding/SSE 与键盘验收。
+- [ ] M4 — 渠道适配与消息主链路。
 
 ## Verification
 
@@ -161,6 +162,14 @@
 | M3-05 概念图视觉对照 | PASS；最终 1440×960 截图已用 `view_image` 与概念图直接核对文案、布局、字体层级、颜色、状态图标、间距/容器与响应式，无遗留可修视觉偏差 | 2026-08-10 |
 | M3-05 CodeGraph 同步与影响复核 | PASS；250 files / 4,463 nodes / 12,938 edges；调用面限于 Control UI Router/API Client，并由 Unit/Browser QA 覆盖，无 HIGH/CRITICAL | 2026-08-10 |
 | M3-05 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-06 Control UI 精确回归 | PASS；2 files / 6 tests | 2026-08-10 |
+| M3-06 `pnpm check` | PASS | 2026-08-10 |
+| M3-06 `pnpm test` | PASS；75 files / 390 tests | 2026-08-10 |
+| M3-06 `pnpm build` | PASS；Vite JS 304.45 kB（gzip 96.44 kB），CSS 13.44 kB（gzip 3.74 kB） | 2026-08-10 |
+| M3-06 `git diff --check` | PASS | 2026-08-10 |
+| M3-06 Browser 键盘 / 语义 QA | PASS；Skip Link 首个 Tab 可达并聚焦 `main-content`；纯键盘进入渠道页并展开添加表单；路由切换聚焦主内容；真实 DOM 为原生 Table，表单标签、名称、异步播报和非颜色状态文本完整 | 2026-08-10 |
+| M3-06 Browser Zoom / 窄屏 QA | PASS；390×844 与 200% 等效 720px 重排均无整页横向溢出，App Shell 单列，渠道表仅在容器内部滚动；CDP Page Scale 2 已验证并恢复为 1 | 2026-08-10 |
+| M3-06 CodeGraph 与原工作区保护复核 | PASS；250 files / 4,464 nodes / 12,941 edges，索引最新；原工作区仍为 57 项，SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 

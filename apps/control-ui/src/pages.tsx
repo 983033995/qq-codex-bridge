@@ -72,6 +72,7 @@ export function ChannelsPage() {
   const [showForm, setShowForm] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "ready" | "danger"; message: string } | null>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
   useLiveRefresh(resource.reload, resource.data !== null);
 
   const performAction = async (key: string, successMessage: string, action: () => Promise<void>) => {
@@ -97,7 +98,7 @@ export function ChannelsPage() {
         </div>
         <div className="heading-actions">
           <button className="button button-secondary" type="button" onClick={() => void resource.reload()} disabled={resource.loading}>刷新</button>
-          <button className="button button-primary" type="button" onClick={() => setShowForm((visible) => !visible)}>{showForm ? "取消添加" : "添加渠道"}</button>
+          <button ref={addButtonRef} className="button button-primary" type="button" aria-expanded={showForm} aria-controls="channel-create-form" onClick={() => setShowForm((visible) => !visible)}>{showForm ? "取消添加" : "添加渠道"}</button>
         </div>
       </div>
       {showForm
@@ -106,6 +107,7 @@ export function ChannelsPage() {
             onSubmit={(input) => performAction("create", "渠道已添加", async () => {
               await createChannel(input);
               setShowForm(false);
+              window.requestAnimationFrame(() => addButtonRef.current?.focus());
             })}
           />
         : null}
@@ -116,7 +118,7 @@ export function ChannelsPage() {
         <div className="section-header">
           <div>
             <h2 id="channel-accounts-title">渠道账户</h2>
-            <p className="section-description">{resource.data ? `共 ${resource.data.length} 个账户` : "正在读取账户"}</p>
+            <p className="section-description" aria-live="polite" aria-atomic="true">{resource.data ? `共 ${resource.data.length} 个账户` : "正在读取账户…"}</p>
           </div>
         </div>
         {resource.data
@@ -171,7 +173,7 @@ function PageTitle({ title, loading, onRefresh }: { title: string; loading: bool
     <div className="page-heading page-heading-actions">
       <h1>{title}</h1>
       <button className="button button-secondary" type="button" onClick={() => void onRefresh()} disabled={loading}>
-        {loading ? "正在刷新" : "刷新"}
+        {loading ? "正在刷新…" : "刷新"}
       </button>
     </div>
   );
@@ -184,7 +186,7 @@ function SystemStatusBand({ data, streamState }: { data: OverviewData; streamSta
   }, { ready: 0, degraded: 0, action_required: 0, offline: 0 });
   const attentionCount = counts.degraded + counts.action_required + counts.offline;
   return (
-    <div className="status-band" aria-label={`系统${statusLabel(data.health.status)}`}>
+    <div className="status-band" aria-label={`系统${statusLabel(data.health.status)}`} aria-live="polite" aria-atomic="true">
       <StatusSummary
         tone={toneForStatus(data.health.status)}
         label={statusLabel(data.health.status)}
@@ -197,7 +199,7 @@ function SystemStatusBand({ data, streamState }: { data: OverviewData; streamSta
       />
       <StatusSummary
         tone={streamState === "connected" ? "ready" : streamState === "reconnecting" ? "warning" : "neutral"}
-        label={streamState === "connected" ? "实时事件已连接" : streamState === "reconnecting" ? "实时事件重连中" : "正在连接实时事件"}
+        label={streamState === "connected" ? "实时事件已连接" : streamState === "reconnecting" ? "实时事件重连中…" : "正在连接实时事件…"}
         detail={data.system.activeRevision ? `配置 ${shortRevision(data.system.activeRevision)} · ${data.system.state}` : `尚未应用配置 · ${data.system.state}`}
       />
     </div>
@@ -233,23 +235,31 @@ function ChannelTable({
   }
   return (
     <div className={`table-frame${compact ? " table-compact" : ""}`}>
-      <div className="table-header-row"><span>渠道</span><span>状态</span><span>最后活动</span><span>操作</span></div>
-      {channels.map((channel) => (
-        <div className="table-data-row" key={channel.id}>
-          <div className="channel-identity"><span className={`channel-mark channel-mark-${channel.channel}`} aria-hidden="true">{channelLabel(channel.channel).slice(0, 1)}</span><span><strong>{channel.displayName}</strong><small>{channel.accountId}</small></span></div>
-          <div><span className={`status-text status-text-${toneForStatus(channel.status)}`}><span className="status-dot" />{channel.enabled ? statusLabel(channel.status) : "已停用"}</span><small className="cell-detail">{channel.message}</small></div>
-          <span>{channel.lastActivityAt ? formatDateTime(channel.lastActivityAt) : "暂无活动"}</span>
-          <div className="row-actions">
-            {compact
-              ? <Link to="/channels">查看</Link>
-              : <>
-                  <button type="button" disabled={Boolean(pendingAction)} onClick={() => onTest?.(channel)}>{pendingAction === `test:${channel.id}` ? "测试中" : "测试"}</button>
-                  <button type="button" disabled={Boolean(pendingAction)} onClick={() => onRestart?.(channel)}>{pendingAction === `restart:${channel.id}` ? "重启中" : "重启"}</button>
-                  <button className="danger-link" type="button" disabled={Boolean(pendingAction)} onClick={() => onDelete?.(channel)}>{pendingAction === `delete:${channel.id}` ? "删除中" : "删除"}</button>
-                </>}
-          </div>
-        </div>
-      ))}
+      <table className="channel-table">
+        <thead>
+          <tr><th scope="col">渠道</th><th scope="col">状态</th><th scope="col">最后活动</th><th scope="col">操作</th></tr>
+        </thead>
+        <tbody>
+          {channels.map((channel) => (
+            <tr key={channel.id}>
+              <td><div className="channel-identity"><span className={`channel-mark channel-mark-${channel.channel}`} aria-hidden="true">{channelLabel(channel.channel).slice(0, 1)}</span><span><strong>{channel.displayName}</strong><small translate="no">{channel.accountId}</small></span></div></td>
+              <td><span className={`status-text status-text-${toneForStatus(channel.status)}`}><span className="status-dot" aria-hidden="true" />{channel.enabled ? statusLabel(channel.status) : "已停用"}</span><small className="cell-detail">{channel.message}</small></td>
+              <td>{channel.lastActivityAt ? <time dateTime={channel.lastActivityAt}>{formatDateTime(channel.lastActivityAt)}</time> : "暂无活动"}</td>
+              <td>
+                <div className="row-actions">
+                  {compact
+                    ? <Link to="/channels" aria-label={`查看 ${channel.displayName}`}>查看</Link>
+                    : <>
+                        <button type="button" aria-label={`测试 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onTest?.(channel)}>{pendingAction === `test:${channel.id}` ? "测试中…" : "测试"}</button>
+                        <button type="button" aria-label={`重启 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onRestart?.(channel)}>{pendingAction === `restart:${channel.id}` ? "重启中…" : "重启"}</button>
+                        <button className="danger-link" type="button" aria-label={`删除 ${channel.displayName}`} disabled={Boolean(pendingAction)} onClick={() => onDelete?.(channel)}>{pendingAction === `delete:${channel.id}` ? "删除中…" : "删除"}</button>
+                      </>}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -287,14 +297,14 @@ function ChannelForm({ pending, onSubmit }: { pending: boolean; onSubmit(input: 
   };
 
   return (
-    <form className="channel-form" onSubmit={submit}>
+    <form className="channel-form" id="channel-create-form" onSubmit={submit} aria-busy={pending}>
       <div className="form-heading"><h2>添加渠道</h2><p>Secret Reference 指向本机 Keychain，不在页面中填写明文凭据。</p></div>
-      <label>渠道<select value={channel} onChange={(event) => setChannel(event.target.value as ChannelCreateInput["channel"])}><option value="weixin">微信</option><option value="feishu">飞书</option><option value="qq">QQ</option></select></label>
-      <label>账户 ID<input required maxLength={128} value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="例如 personal" /></label>
+      <label>渠道<select autoFocus name="channel" value={channel} onChange={(event) => setChannel(event.target.value as ChannelCreateInput["channel"])}><option value="weixin">微信</option><option value="feishu">飞书</option><option value="qq">QQ</option></select></label>
+      <label>账户 ID<input required name="accountId" autoComplete="off" spellCheck={false} maxLength={128} value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="例如 personal…" /></label>
       {channel !== "weixin"
-        ? <><label>App ID<input required value={appId} onChange={(event) => setAppId(event.target.value)} /></label><label>Secret Reference<input required pattern="[a-z0-9][a-z0-9/_-]*" value={secretRef} onChange={(event) => setSecretRef(event.target.value)} placeholder={`${channel}/personal`} /></label></>
+        ? <><label>App ID<input required name="appId" autoComplete="off" spellCheck={false} value={appId} onChange={(event) => setAppId(event.target.value)} /></label><label>Secret Reference<input required name="secretRef" autoComplete="off" spellCheck={false} pattern="[a-z0-9][a-z0-9/_-]*" value={secretRef} onChange={(event) => setSecretRef(event.target.value)} placeholder={`${channel}/personal…`} /></label></>
         : null}
-      <button className="button button-primary" type="submit" disabled={pending}>{pending ? "正在添加" : "保存并应用"}</button>
+      <button className="button button-primary" type="submit" disabled={pending}>{pending ? "正在添加…" : "保存并应用"}</button>
     </form>
   );
 }
@@ -313,11 +323,11 @@ function InlineNotice({ tone, children }: { tone: "ready" | "danger"; children: 
 }
 
 function StatusLoading() {
-  return <div className="status-band" aria-label="正在读取系统状态"><StatusPlaceholder tone="ready" label="连接管理服务" /><StatusPlaceholder tone="warning" label="读取组件状态" /><StatusPlaceholder tone="neutral" label="等待实时事件" /></div>;
+  return <div className="status-band" role="status" aria-label="正在读取系统状态"><StatusPlaceholder tone="ready" label="连接管理服务" /><StatusPlaceholder tone="warning" label="读取组件状态" /><StatusPlaceholder tone="neutral" label="等待实时事件" /></div>;
 }
 
 function StatusPlaceholder({ tone, label }: { tone: "ready" | "warning" | "neutral"; label: string }) {
-  return <StatusSummary tone={tone} label={label} detail="正在加载" />;
+  return <StatusSummary tone={tone} label={label} detail="正在加载…" />;
 }
 
 function TableLoading() {
