@@ -2,14 +2,16 @@ import type {
   InboundEnvelope,
   StableErrorCode,
   ThreadBinding,
-  Turn
+  Turn,
+  TurnTransport
 } from "../../domain/src/vnext/index.js";
 import { VNextDomainError } from "../../domain/src/vnext/index.js";
 import type {
   Clock,
+  CodexTransportTurnHandle,
   CodexTurnHandle,
   CodexTurnResult,
-  CodexPort,
+  CodexTurnTransportPort,
   IdGenerator,
   ThreadBindingRepository,
   TurnRepository
@@ -26,7 +28,7 @@ export class StartConversationTurn {
   constructor(private readonly deps: {
     bindings: ThreadBindingRepository;
     turns: TurnRepository;
-    codex: CodexPort;
+    codex: CodexTurnTransportPort;
     ids: IdGenerator;
     clock: Clock;
     scheduler: ThreadScheduler;
@@ -40,7 +42,7 @@ export class StartConversationTurn {
         `Conversation space '${message.spaceId}' has no active Codex thread binding`
       );
     }
-    let acceptedHandle: CodexTurnHandle | null = null;
+    let acceptedHandle: AcceptedTurnHandle | null = null;
     let interruptionRequested = false;
     const scheduled = await this.deps.scheduler.enqueue({
       taskId: message.messageId,
@@ -66,7 +68,7 @@ export class StartConversationTurn {
   private async start(
     binding: ThreadBinding,
     message: InboundEnvelope,
-    onAccepted: (handle: CodexTurnHandle) => Promise<void>,
+    onAccepted: (handle: AcceptedTurnHandle) => Promise<void>,
     isInterruptionRequested: () => boolean
   ): Promise<StartConversationTurnResult> {
     const active = await this.deps.turns.listActiveByThread(binding.threadId);
@@ -78,10 +80,11 @@ export class StartConversationTurn {
       );
     }
 
-    let handle: CodexTurnHandle;
+    let handle: AcceptedTurnHandle;
     try {
       handle = await this.deps.codex.startTurn({
         threadId: binding.threadId,
+        threadTitle: binding.threadTitle,
         content: message.content,
         idempotencyKey: message.messageId
       });
@@ -93,7 +96,7 @@ export class StartConversationTurn {
         spaceId: message.spaceId,
         inboundMessageId: message.messageId,
         status: "failed",
-        transport: "app-server",
+        transport: errorTransport(error),
         errorCode: errorCode(error),
         queuedAt: failedAt,
         startedAt: failedAt,
@@ -102,13 +105,14 @@ export class StartConversationTurn {
       throw error;
     }
 
+    const transport = handleTransport(handle);
     const running: Turn = {
       turnId: handle.turnId,
       threadId: binding.threadId,
       spaceId: message.spaceId,
       inboundMessageId: message.messageId,
       status: "running",
-      transport: "app-server",
+      transport,
       errorCode: null,
       queuedAt: handle.acceptedAt,
       startedAt: handle.acceptedAt,
@@ -149,7 +153,7 @@ export class StartConversationTurn {
   private async interruptAccepted(
     binding: ThreadBinding,
     message: InboundEnvelope,
-    handle: CodexTurnHandle
+    handle: AcceptedTurnHandle
   ): Promise<void> {
     const current = await this.deps.turns.get(handle.turnId);
     if (!current || current.inboundMessageId !== message.messageId) {
@@ -165,6 +169,21 @@ export class StartConversationTurn {
       completedAt: this.deps.clock.now().toISOString()
     });
   }
+}
+
+type AcceptedTurnHandle = CodexTurnHandle | CodexTransportTurnHandle;
+
+function handleTransport(handle: AcceptedTurnHandle): TurnTransport {
+  return "transport" in handle ? handle.transport : "app-server";
+}
+
+function errorTransport(error: unknown): TurnTransport {
+  return error
+    && typeof error === "object"
+    && "transport" in error
+    && (error as { transport?: unknown }).transport === "cdp-recovery"
+    ? "cdp-recovery"
+    : "app-server";
 }
 
 function errorCode(error: unknown): StableErrorCode {

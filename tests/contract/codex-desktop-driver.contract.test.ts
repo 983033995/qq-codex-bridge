@@ -374,6 +374,50 @@ describe("codex desktop driver contract", () => {
     }
   });
 
+  it("CDP Recovery one-shot submission never retries with Enter when acceptance is unconfirmed", async () => {
+    const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+    const evaluateOnPage = vi
+      .fn()
+      .mockResolvedValueOnce({ reply: "old reply", isStreaming: false })
+      .mockResolvedValueOnce({ ok: true, reason: "focused_input" })
+      .mockResolvedValueOnce({ ok: true, reason: "clicked_send_button" })
+      .mockResolvedValue({ submitted: false, reason: "submit_not_confirmed" });
+    const driver = new CodexDesktopDriver(
+      {
+        listTargets: vi.fn().mockResolvedValue([{
+          id: "page-1",
+          title: "Codex",
+          type: "page",
+          url: "app://codex"
+        }]),
+        evaluateOnPage,
+        dispatchKeyEvent,
+        insertText: vi.fn().mockResolvedValue(undefined)
+      } as unknown as CdpSession,
+      { composerSubmitPollIntervalMs: 50, sleep: async () => undefined }
+    );
+    const binding = {
+      sessionKey: "cdp-recovery:message-1",
+      codexThreadRef: "cdp-target:page-1"
+    };
+
+    await expect(driver.submitUserMessageOnce(binding, {
+      messageId: "message-1",
+      accountKey: "vnext:cdp-recovery",
+      sessionKey: binding.sessionKey,
+      peerKey: "codex-thread:thread-1",
+      chatType: "c2c",
+      senderId: "vnext",
+      text: "hello",
+      receivedAt: "2026-08-10T06:00:00.000Z"
+    })).rejects.toMatchObject({ reason: "submit_failed" });
+    expect(dispatchKeyEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ key: "Enter" }),
+      "page-1"
+    );
+    expect(evaluateOnPage).toHaveBeenCalledTimes(7);
+  });
+
   it("fails readiness when no inspectable page target exists", async () => {
     const driver = new CodexDesktopDriver({
       connect: vi.fn().mockResolvedValue({

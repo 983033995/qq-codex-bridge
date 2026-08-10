@@ -1,5 +1,6 @@
 export * from "./apply-configuration.js";
 export * from "./bind-conversation-space.js";
+export * from "./codex-transport-coordinator.js";
 export * from "./enqueue-push.js";
 export * from "./execute-control-action.js";
 export * from "./receive-inbound-message.js";

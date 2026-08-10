@@ -311,6 +311,21 @@ export class CodexDesktopDriver implements DesktopDriverPort {
   }
 
   async sendUserMessage(binding: DriverBinding, message: InboundMessage): Promise<void> {
+    return this.submitUserMessage(binding, message, true);
+  }
+
+  async submitUserMessageOnce(
+    binding: DriverBinding,
+    message: InboundMessage
+  ): Promise<void> {
+    return this.submitUserMessage(binding, message, false);
+  }
+
+  private async submitUserMessage(
+    binding: DriverBinding,
+    message: InboundMessage,
+    allowKeyboardRetry: boolean
+  ): Promise<void> {
     const targetId = await this.ensureThreadSelected(binding);
     const baselineReply = await this.readLatestAssistantSnapshot(targetId);
     this.pendingReplyBaselines.set(binding.sessionKey, baselineReply);
@@ -365,7 +380,7 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       targetId
     )) as { ok?: boolean; reason?: string } | undefined;
 
-    if (result?.ok && !submissionCursor) {
+    if (result?.ok && !submissionCursor && allowKeyboardRetry) {
       return;
     }
 
@@ -386,6 +401,15 @@ export class CodexDesktopDriver implements DesktopDriverPort {
       initialResult: result ?? null,
       confirmedAfterInitialSubmit
     });
+
+    if (!allowKeyboardRetry) {
+      this.pendingReplyBaselines.delete(binding.sessionKey);
+      this.pendingLocalRolloutCursors.delete(binding.sessionKey);
+      throw new DesktopDriverError(
+        `Codex desktop composer submit was not confirmed: ${confirmedAfterInitialSubmit.reason ?? result?.reason ?? "unknown"}`,
+        "submit_failed"
+      );
+    }
 
     await this.cdp.dispatchKeyEvent(
       {

@@ -182,6 +182,49 @@ describe("vNext conversation application use cases", () => {
     });
   });
 
+  it("persists the degraded Recovery transport on running and completed turns", async () => {
+    const bindings = new MemoryThreadBindingRepository();
+    const turns = new MemoryTurnRepository();
+    const space = sampleSpace("recovery-transport");
+    await bindings.save(sampleBinding("binding-recovery", space, "thread-recovery"));
+    const codex = {
+      async startTurn(input: { threadId: string }) {
+        return {
+          threadId: input.threadId,
+          turnId: "recovery-turn",
+          acceptedAt: "2026-08-10T06:00:00.000Z",
+          transport: "cdp-recovery" as const,
+          completion: Promise.resolve({
+            threadId: input.threadId,
+            turnId: "recovery-turn",
+            finalText: "recovered",
+            mediaReferences: []
+          })
+        };
+      },
+      async interruptTurn() {}
+    };
+    const start = new StartConversationTurn({
+      bindings,
+      turns,
+      codex,
+      ids: new SequenceIdGenerator("failed-turn"),
+      clock: new FixedClock(),
+      scheduler: createScheduler()
+    });
+
+    const result = await start.execute(sampleMessage("message-recovery", space));
+    expect(result.turn).toMatchObject({
+      turnId: "recovery-turn",
+      status: "completed",
+      transport: "cdp-recovery"
+    });
+    expect(await turns.get("recovery-turn")).toMatchObject({
+      status: "completed",
+      transport: "cdp-recovery"
+    });
+  });
+
   it("records a local failed turn when Codex rejects submission", async () => {
     const bindings = new MemoryThreadBindingRepository();
     const turns = new MemoryTurnRepository();

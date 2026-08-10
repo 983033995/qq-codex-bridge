@@ -26,14 +26,15 @@
 - [x] M2-02 — 实现独立 vNext `CodexAppServerAdapter`：安全的本地进程发现与受管启动、JSON-RPC Request Map、`threadId + turnId` Pending Map、Thread/Turn 路由、增量/最终文本与媒体归一化、断线拒绝且不重发已接受 Turn、自动重连、Dispose 清理、Capability/Health，并通过真实 `CodexPort` Contract。
 - [x] M2-03 — 实现 `ThreadCoordinator` 并接入 Binding/Control 用例：新 Space 默认独占真实 Thread ID，支持 Active/共享/独占 Binding、创建/切换/重命名/分叉/解绑、标题缓存刷新、冲突前置检查与替换回滚；AppServer Thread 消失时将旧 Binding 标记 `broken` 并重建。
 - [x] M2-04 — 以有界 `ThreadScheduler` 替换无界 Promise Tail：同 Space 与同 Thread 均严格 FIFO，不同 Thread 默认最多并行 3；实现 Space 接收序号校验、Thread/全局队列上限、持久化排队事件、队列取消、运行中断和失败释放；新增显式 `unknown` Turn 状态、SQLite v2 无损 Migration，并通过稳定 `thread/read(includeTurns)` 对遗留 Turn 做 AppServer 状态对账。
+- [x] M2-05 — 实现独立 `CodexRecoveryPort`、`CdpRecoveryAdapter` 和 `CodexTransportCoordinator`：仅支持已知线程选择、纯文本单次提交、最终回复与基本状态；Recovery 全局互斥且始终报告 `degraded`，只在 AppServer 明确 `accepted: false` 时进入，UI 点击后必须再次确认提交且绝不自动重发；Turn 持久化记录真实 transport。
 
 ## In Progress
 
-- [ ] M2-05 — 实现独立 CDP Recovery Adapter 与 Capability Set，锁定仅提交前可降级边界。
+- [ ] M2-06 — 运行无需真实联系人或渠道凭据的真实 Codex Smoke Test。
 
 ## Next
 
-- [ ] M2-06 — 运行无需真实联系人或渠道凭据的真实 Codex Smoke Test。
+- [ ] M2 Gate — 汇总 Fake、并发、断线无重提、Recovery 限制与真实 Codex Smoke 证据。
 
 ## Verification
 
@@ -98,6 +99,14 @@
 | M2-04 `git diff --check` | PASS | 2026-08-10 |
 | M2-04 CodeGraph 同步与影响复核 | PASS；222 files / 3,838 nodes / 11,137 edges，索引最新；无 HIGH/CRITICAL 调用面 | 2026-08-10 |
 | M2-04 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M2-05 Recovery/Coordinator/Legacy Driver 精确回归 | PASS；5 files / 65 tests | 2026-08-10 |
+| M2-05 vNext Unit/Contract/Integration | PASS；17 files / 108 tests | 2026-08-10 |
+| M2-05 `pnpm check` | PASS | 2026-08-10 |
+| M2-05 `pnpm test` | PASS；69 files / 365 tests | 2026-08-10 |
+| M2-05 `pnpm build` | PASS | 2026-08-10 |
+| M2-05 `git diff --check` | PASS | 2026-08-10 |
+| M2-05 CodeGraph 同步与影响复核 | PASS；228 files / 3,990 nodes / 11,608 edges，索引最新；Recovery 未扩展为完整 `CodexPort` | 2026-08-10 |
+| M2-05 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 
@@ -116,3 +125,4 @@
 | 新 worktree 使用 `/Volumes/13759427003/AI/qq-codex-bridge-vnext` | 计划推荐路径不存在，满足 sibling 隔离要求 |
 | 代码理解和现有 Symbol 影响分析仅使用 CodeGraph | 用户明确要求后续不再使用 GitNexus；新 worktree CodeGraph 已初始化且索引最新 |
 | 遗留 Turn 使用稳定 `thread/read(includeTurns)` 对账 | 官方 OpenAI Docs 与本机生成 Schema 均确认可按真实 Thread ID 读取完整 Turn 历史；避免依赖实验性 `thread/turns/list` |
+| CDP Recovery 仅按唯一精确缓存标题操作桌面 UI | AppServer 的真实 `threadId` 仍是持久化身份；桌面 UI 不暴露可靠 ID 时，标题无匹配或重复均明确失败，避免猜测导致跨线程错投递 |

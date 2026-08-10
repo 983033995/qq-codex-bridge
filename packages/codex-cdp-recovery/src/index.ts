@@ -1,2 +1,1 @@
-/** vNext submit-before-acceptance CDP recovery adapter. */
-export {};
+export * from "./adapter.js";
