@@ -2,9 +2,9 @@
 
 ## Snapshot
 
-- Updated: 2026-08-10
+- Updated: 2026-08-11
 - Branch / Worktree: `codex/vnext` / `/Volumes/13759427003/AI/qq-codex-bridge-vnext`
-- Current milestone: M3 — 管理 API 与管理台
+- Current milestone: M4 — 微信优先链路
 - Overall status: on_track
 
 ## Completed
@@ -35,14 +35,15 @@
 - [x] M3-04 — 建立 Vite + React + TypeScript 管理台基础：Daemon 安全静态托管与 SPA fallback、七个嵌套路由、响应式 App Shell、同源 Session/CSRF API Client、稳定错误响应和请求去重；Dashboard 仅保留真实加载态，业务数据接入归入 M3-05。
 - [x] M3-05 — Dashboard 与 Channels 接入真实管理 API 数据契约：并行加载 Health/System/Channels/Events、SSE 自动刷新、四态健康与真实空/错/重试状态、渠道添加/测试/重启/删除；修复浏览器原生 `fetch` 错误绑定导致的 `Illegal invocation`。
 - [x] M3-06 — 完成管理台可访问性与响应式加固：Skip Link、路由与表单焦点管理、原生数据表、异步 `aria-live`、非颜色状态文本、Secret Reference 限界、键盘核心路径、200% Zoom 与窄屏单列验收。
+- [x] M3 Gate — 打通生产 `ControlApiServices`、Composition Root、SQLite/Codex/Config/Keychain Adapter、静态 UI 与启动 CLI；六个一级页面均接入真实 API，Config Apply 仅在 Active Revision 更新后成功，Binding/SSE/诊断导出与键盘、窄屏路径完成验收；无运行 Adapter 的渠道与 Router 操作明确失败，不伪造成功。
 
 ## In Progress
 
-- [ ] M3 Gate — 打通生产 Composition Root、六页操作、Config Apply/Binding/SSE 与键盘验收。
+- [ ] M4 — 微信优先链路。
 
 ## Next
 
-- [ ] M4 — 渠道适配与消息主链路。
+- [ ] M4-01 — Worker IPC：Daemon 监督、鉴权、心跳、版本协商、退避重启与 Health Registry。
 
 ## Verification
 
@@ -170,6 +171,15 @@
 | M3-06 Browser 键盘 / 语义 QA | PASS；Skip Link 首个 Tab 可达并聚焦 `main-content`；纯键盘进入渠道页并展开添加表单；路由切换聚焦主内容；真实 DOM 为原生 Table，表单标签、名称、异步播报和非颜色状态文本完整 | 2026-08-10 |
 | M3-06 Browser Zoom / 窄屏 QA | PASS；390×844 与 200% 等效 720px 重排均无整页横向溢出，App Shell 单列，渠道表仅在容器内部滚动；CDP Page Scale 2 已验证并恢复为 1 | 2026-08-10 |
 | M3-06 CodeGraph 与原工作区保护复核 | PASS；250 files / 4,464 nodes / 12,941 edges，索引最新；原工作区仍为 57 项，SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3 Gate Production Services / Runtime / SQLite 精确回归 | PASS；3 files / 12 tests；真实管理服务映射、生产静态 UI/API 启动、Health 组件标识、运行事件持久化与 Turn 稳定游标分页均覆盖 | 2026-08-11 |
+| M3 Gate `pnpm check` | PASS | 2026-08-11 |
+| M3 Gate `pnpm test` | PASS；77 files / 395 tests | 2026-08-11 |
+| M3 Gate `pnpm build` | PASS；Vite JS 320.79 kB（gzip 100.30 kB），CSS 16.55 kB（gzip 4.22 kB） | 2026-08-11 |
+| M3 Gate `git diff --check` | PASS | 2026-08-11 |
+| M3 Gate Production HTTP Smoke | PASS；无浏览器 fixture；静态 UI 200、System `running`、Active Revision 生效、Health/Diagnostics 返回真实数据、持久化 8 条启动/配置事件、Codex 线程列表返回真实线程 | 2026-08-11 |
+| M3 Gate 六页 Browser QA | PASS；概览、渠道、会话空间、任务、Router、设置与诊断均无 placeholder/error；390px 无整页横向溢出；Config Apply 等待 Active Revision；控制台 0 error / 0 warning | 2026-08-11 |
+| M3 Gate CodeGraph 影响复核 | PASS；258 files / 4,687 nodes / 13,657 edges，索引最新；生产 Runtime、Application Services、Turn 分页与六页 UI 调用面均有对应 Unit/Integration/Browser 验证 | 2026-08-11 |
+| M3 Gate 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
 
 ## Risks and Blockers
 
@@ -179,7 +189,7 @@
 | R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 已关闭：全量测试恢复绿色 | Fake 仅在连接创建后异步触发 `open`；精确 8/8、全量 319/319 通过 | Codex |
 | R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
 | R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
-| R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 中：UI 已消费真实 API 契约，但当前浏览器数据验收使用进程内确定性 fixture | M3 Gate 前实现生产 Adapter 与启动闭环；fixture 不进入源码、不作为生产 fallback | Codex |
+| R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 已关闭：生产 Runtime 已组合真实 Repository/Codex/Config/Keychain/API/UI，CLI 与无 fixture HTTP Smoke 通过 | 保持 Integration Smoke 与六页 Browser QA；fixture 不进入生产源码、不作为 fallback | Codex |
 | R-EXT-01 真实渠道、Router 与 Apple 凭据尚未提供 | 后续真实 E2E、24 小时 Gate、签名发布将阻塞 | 先完成全部 Fake/Contract/Integration、本地安装和无需凭据的工作，届时集中请求最小输入 | User |
 
 ## Decisions

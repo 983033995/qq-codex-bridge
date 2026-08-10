@@ -40,7 +40,14 @@ export class ControlDaemonCompositionRoot {
       if (this.components.has(name)) {
         throw new Error(`Control daemon component '${name}' is duplicated`);
       }
-      const registered = { ...component, name };
+      const registered: ControlDaemonComponent = {
+        name,
+        critical: component.critical,
+        start: () => component.start(),
+        stop: () => component.stop(),
+        health: () => component.health(),
+        ...(component.reload ? { reload: () => component.reload!() } : {})
+      };
       this.components.set(name, registered);
       this.health.register({
         component: name,

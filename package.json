@@ -25,6 +25,7 @@
   ],
   "bin": {
     "qq-codex-bridge": "bin/qq-codex-bridge.js",
+    "qq-codex-bridge-vnext": "bin/qq-codex-bridge-vnext.js",
     "qq-codex-mcp": "bin/qq-codex-mcp.js",
     "qq-codex-weixin-gateway": "bin/qq-codex-weixin-gateway.js"
   },
@@ -50,6 +51,7 @@
     "weixin:login:force": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login-force",
     "weixin:logout": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-logout",
     "start": "node dist/apps/bridge-daemon/src/cli.js",
+    "start:vnext": "node dist/apps/control-daemon/src/cli.js",
     "start:weixin-gateway": "node dist/apps/weixin-gateway/src/cli.js",
     "debug:codex-workers": "tsx apps/bridge-daemon/src/debug-codex-workers.ts",
     "test": "vitest run",

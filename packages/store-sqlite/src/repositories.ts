@@ -235,6 +235,24 @@ export class SqliteTurnRepository implements TurnRepository {
       "SELECT * FROM turns WHERE status IN ('starting', 'running', 'unknown') ORDER BY queued_at, turn_id"
     ).all() as TurnRow[]).map(mapTurn);
   }
+
+  async list(input: { limit: number; cursor?: string }): Promise<CursorPage<Turn>> {
+    const limit = clampLimit(input.limit);
+    const cursor = decodeCursor(input.cursor);
+    const rows = this.db.prepare(`
+      SELECT * FROM turns
+      WHERE (? IS NULL OR queued_at < ? OR (queued_at = ? AND turn_id < ?))
+      ORDER BY queued_at DESC, turn_id DESC
+      LIMIT ?
+    `).all(
+      cursor?.at ?? null,
+      cursor?.at ?? null,
+      cursor?.at ?? null,
+      cursor?.id ?? null,
+      limit + 1
+    ) as TurnRow[];
+    return cursorPage(rows, limit, mapTurn, (row) => ({ at: row.queued_at, id: row.turn_id }));
+  }
 }
 
 export class SqliteRoutingDecisionRepository implements RoutingDecisionRepository {

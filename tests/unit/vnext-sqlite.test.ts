@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   SqliteConversationSpaceRepository,
+  SqliteMessageLedger,
   SqliteThreadBindingRepository,
+  SqliteTurnRepository,
   applyMigrations,
   openVNextDatabase,
   schemaMigrations,
@@ -13,8 +15,10 @@ import {
 } from "../../packages/store-sqlite/src/index.js";
 import {
   sampleBinding,
+  sampleMessage,
   sampleSpace
 } from "../contract/support/vnext-repository-contracts.js";
+import type { Turn } from "../../packages/domain/src/vnext/index.js";
 
 describe("vNext SQLite database", () => {
   const temporaryDirectories: string[] = [];
@@ -148,6 +152,44 @@ describe("vNext SQLite database", () => {
     const reopened = track(openVNextDatabase(databasePath));
     expect(await new SqliteThreadBindingRepository(reopened).getActiveBySpace(space.spaceId))
       .toEqual(binding);
+  });
+
+  it("paginates turns newest-first with a stable id tie-breaker", async () => {
+    const db = openFileDatabase();
+    const spaces = new SqliteConversationSpaceRepository(db);
+    const messages = new SqliteMessageLedger(db);
+    const turns = new SqliteTurnRepository(db);
+    const space = sampleSpace("turn-page");
+    await spaces.save(space);
+
+    for (const [index, turnId] of ["turn-a", "turn-c", "turn-b", "turn-old"].entries()) {
+      const queuedAt = turnId === "turn-old"
+        ? "2026-08-10T05:59:59.000Z"
+        : "2026-08-10T06:00:00.000Z";
+      const message = sampleMessage(`message-${turnId}`, space, index + 1, queuedAt);
+      await messages.appendInbound(message, `dedupe-${turnId}`);
+      await turns.save({
+        turnId,
+        threadId: "thread-page",
+        spaceId: space.spaceId,
+        inboundMessageId: message.messageId,
+        status: "completed",
+        transport: "app-server",
+        errorCode: null,
+        queuedAt,
+        startedAt: queuedAt,
+        completedAt: queuedAt
+      } satisfies Turn);
+    }
+
+    const first = await turns.list({ limit: 2 });
+    expect(first.items.map((turn) => turn.turnId)).toEqual(["turn-c", "turn-b"]);
+    expect(first.nextCursor).toBeTruthy();
+
+    const second = await turns.list({ limit: 2, cursor: first.nextCursor! });
+    expect(second.items.map((turn) => turn.turnId)).toEqual(["turn-a", "turn-old"]);
+    expect(second.nextCursor).toBeNull();
+    await expect(turns.list({ limit: 2, cursor: "not-json" })).rejects.toThrow();
   });
 
   it("keeps foreign-key failures distinct from binding conflicts", async () => {

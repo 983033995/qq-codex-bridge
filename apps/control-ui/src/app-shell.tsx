@@ -6,10 +6,9 @@ export const navigation = [
   { path: "/", label: "概览", icon: "overview" },
   { path: "/channels", label: "渠道", icon: "channels" },
   { path: "/spaces", label: "会话空间", icon: "spaces" },
-  { path: "/threads", label: "线程", icon: "threads" },
+  { path: "/threads", label: "任务", icon: "threads" },
   { path: "/router", label: "Router", icon: "router" },
-  { path: "/settings", label: "设置", icon: "settings" },
-  { path: "/diagnostics", label: "诊断", icon: "diagnostics" }
+  { path: "/settings", label: "设置与诊断", icon: "settings" }
 ] as const satisfies ReadonlyArray<{
   path: string;
   label: string;
