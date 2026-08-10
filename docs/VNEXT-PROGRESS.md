@@ -20,14 +20,15 @@
 - [x] M1-04 — 实现严格 `config.json` Schema、SHA-256 Revision、0600 原子写入、Apply Planner、失败回滚、内存 Secret Store 与 macOS Keychain Adapter；Keychain 写入值通过 stdin 传递且不进入 argv。
 - [x] M1-05 — 实现独立 `runtime-vnext.db` Schema、WAL/Foreign Key/Busy Timeout、IMMEDIATE Migration Runner、核心运行表、Binding 数据库不变量、游标分页与全部 Repository；覆盖持久化恢复、幂等、约束分类及事务/Migration 回滚。
 - [x] M1-06 — 实现 `ReceiveInboundMessage`、`BindConversationSpace`、`StartConversationTurn`、`ExecuteControlAction`、`ApplyConfiguration`、`RunHealthCheck`、`EnqueuePush`；默认独占新线程、同线程串行/不同线程并行，三类高风险动作未确认时零副作用。
+- [x] M1-07 — 使用真实 SQLite Adapter + Fake Codex 完成 A/B/C 系统验收：微信/飞书/QQ Space 独立绑定，不同线程并行、同线程严格串行，Store 重启后 Binding 恢复，独占冲突明确失败并回滚原 Binding。
 
 ## In Progress
 
-- [ ] M1-07 — 完成 Fake A/B/C 系统验收。
+- [ ] M1 Gate — 全量验证、Gate 报告与里程碑提交。
 
 ## Next
 
-- [ ] M1 Gate — 全量验证、Gate 报告与里程碑提交。
+- [ ] M2-01 — 重建 Fake AppServer 并根治旧同步 `open` 时序失败。
 
 ## Verification
 
@@ -62,6 +63,9 @@
 | M1-06 vNext 回归 | PASS；9 files / 63 tests | 2026-08-10 |
 | M1-06 `pnpm check` | PASS | 2026-08-10 |
 | M1-06 `pnpm build` | PASS | 2026-08-10 |
+| M1-07 Fake A/B/C Integration | PASS；1 file / 2 tests | 2026-08-10 |
+| M1-07 `pnpm check` | PASS | 2026-08-10 |
+| M1-07 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 
