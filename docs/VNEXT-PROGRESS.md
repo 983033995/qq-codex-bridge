@@ -23,14 +23,15 @@
 - [x] M1-07 — 使用真实 SQLite Adapter + Fake Codex 完成 A/B/C 系统验收：微信/飞书/QQ Space 独立绑定，不同线程并行、同线程严格串行，Store 重启后 Binding 恢复，独占冲突明确失败并回滚原 Binding。
 - [x] M1 Gate — 通过；Domain 边界、Ports Contract、失败路径与 Fake A/B/C 验收完成，最终 `check/test/build` 全绿；报告见 `docs/reports/vnext/M1-GATE.md`。
 - [x] M2-01 — 建立可复用 Fake AppServer：监听器注册后异步 `open`，支持 JSON-RPC Request/Response、Notification、乱序、重复、断线、丢请求超时，以及 Thread Start/List/Rename/Fork 和 Turn Start/Delta/Complete/Interrupt；旧 driver 测试已统一复用。
+- [x] M2-02 — 实现独立 vNext `CodexAppServerAdapter`：安全的本地进程发现与受管启动、JSON-RPC Request Map、`threadId + turnId` Pending Map、Thread/Turn 路由、增量/最终文本与媒体归一化、断线拒绝且不重发已接受 Turn、自动重连、Dispose 清理、Capability/Health，并通过真实 `CodexPort` Contract。
 
 ## In Progress
 
-- [ ] M2-02 — 实现 vNext AppServer Adapter：连接发现/受管启动、JSON-RPC 与 Pending Map、Thread/Turn 路由、回复归一化、Reconnect、Dispose 与 Capability/Health。
+- [ ] M2-03 — 实现 Thread Coordinator：真实 Thread ID、Active Binding、独占/共享、切换/新建/重命名/分叉/解绑，以及冲突和 Thread Not Found 恢复。
 
 ## Next
 
-- [ ] M2-03 — 实现 Thread Coordinator。
+- [ ] M2-04 — 实现 Thread FIFO 与全局并发调度器。
 
 ## Verification
 
@@ -77,6 +78,10 @@
 | M2-01 `pnpm check` | PASS | 2026-08-10 |
 | M2-01 `pnpm test` | PASS；62 files / 322 tests | 2026-08-10 |
 | M2-01 `pnpm build` | PASS | 2026-08-10 |
+| M2-02 AppServer Unit + Contract + Fake | PASS；3 files / 14 tests | 2026-08-10 |
+| M2-02 `pnpm check` | PASS | 2026-08-10 |
+| M2-02 `pnpm test` | PASS；64 files / 333 tests | 2026-08-10 |
+| M2-02 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 

@@ -75,6 +75,10 @@ export function codexPortContract(name: string, createPort: () => CodexPort): vo
       });
       expect(handle.threadId).toBe(thread.threadId);
       await port.interruptTurn(handle.threadId, handle.turnId);
+      await handle.completion.then(
+        () => undefined,
+        () => undefined
+      );
     });
   });
 }
