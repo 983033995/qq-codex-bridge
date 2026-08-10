@@ -6,3 +6,4 @@ export * from "./receive-inbound-message.js";
 export * from "./run-health-check.js";
 export * from "./start-conversation-turn.js";
 export * from "./thread-serial-executor.js";
+export * from "./thread-coordinator.js";

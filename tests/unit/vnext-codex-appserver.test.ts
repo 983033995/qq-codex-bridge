@@ -82,29 +82,35 @@ describe("vNext Codex AppServer adapter", () => {
   });
 
   it("fails accepted Turns immediately on disconnect and reconnects for later work", async () => {
-    const first = new FakeCodexAppServer();
-    const second = new FakeCodexAppServer();
-    let createdSockets = 0;
-    const adapter = new CodexAppServerAdapter({
-      endpointProvider: staticEndpointProvider(),
-      createWebSocket: () => {
-        createdSockets += 1;
-        return (createdSockets === 1 ? first : second).connect() as never;
-      },
-      reconnectDelaysMs: [0],
-      requestTimeoutMs: 1_000
-    });
-    const thread = await adapter.createThread({ title: "disconnect" });
-    const handle = await adapter.startTurn(turnInput(thread.threadId, "disconnect-key"));
+    vi.useFakeTimers();
+    try {
+      const first = new FakeCodexAppServer();
+      const second = new FakeCodexAppServer();
+      let createdSockets = 0;
+      const adapter = new CodexAppServerAdapter({
+        endpointProvider: staticEndpointProvider(),
+        createWebSocket: () => {
+          createdSockets += 1;
+          return (createdSockets === 1 ? first : second).connect() as never;
+        },
+        reconnectDelaysMs: [0],
+        requestTimeoutMs: 1_000
+      });
+      const thread = await adapter.createThread({ title: "disconnect" });
+      const handle = await adapter.startTurn(turnInput(thread.threadId, "disconnect-key"));
 
-    first.socket.disconnect();
-    await expect(handle.completion).rejects.toMatchObject({
-      code: "connection_closed",
-      accepted: true
-    });
-    await waitUntil(() => createdSockets === 2);
-    expect((await adapter.health()).status).toBe("ready");
-    await adapter.dispose();
+      first.socket.disconnect();
+      await expect(handle.completion).rejects.toMatchObject({
+        code: "connection_closed",
+        accepted: true
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(createdSockets).toBe(2);
+      expect((await adapter.health()).status).toBe("ready");
+      await adapter.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects pending Request and Turn promises during dispose", async () => {
@@ -180,6 +186,23 @@ describe("vNext Codex AppServer adapter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("classifies an AppServer Thread Not Found response for coordinator recovery", async () => {
+    const { adapter, server } = createHarness();
+    const thread = await adapter.createThread({ title: "missing" });
+    server.socket.onRequest("thread/name/set", (request) => {
+      server.socket.respondError(request.id, {
+        code: "thread_not_found",
+        message: `thread ${thread.threadId} not found`
+      });
+    });
+
+    await expect(adapter.renameThread(thread.threadId, "new title")).rejects.toMatchObject({
+      code: "thread_not_found",
+      accepted: false
+    });
+    await adapter.dispose();
   });
 });
 
@@ -282,14 +305,4 @@ async function flushAsyncEvents(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new AppServerError("condition was not reached", "connect_failed", false);
 }

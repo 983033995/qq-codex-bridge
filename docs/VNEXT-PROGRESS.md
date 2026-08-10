@@ -24,14 +24,15 @@
 - [x] M1 Gate — 通过；Domain 边界、Ports Contract、失败路径与 Fake A/B/C 验收完成，最终 `check/test/build` 全绿；报告见 `docs/reports/vnext/M1-GATE.md`。
 - [x] M2-01 — 建立可复用 Fake AppServer：监听器注册后异步 `open`，支持 JSON-RPC Request/Response、Notification、乱序、重复、断线、丢请求超时，以及 Thread Start/List/Rename/Fork 和 Turn Start/Delta/Complete/Interrupt；旧 driver 测试已统一复用。
 - [x] M2-02 — 实现独立 vNext `CodexAppServerAdapter`：安全的本地进程发现与受管启动、JSON-RPC Request Map、`threadId + turnId` Pending Map、Thread/Turn 路由、增量/最终文本与媒体归一化、断线拒绝且不重发已接受 Turn、自动重连、Dispose 清理、Capability/Health，并通过真实 `CodexPort` Contract。
+- [x] M2-03 — 实现 `ThreadCoordinator` 并接入 Binding/Control 用例：新 Space 默认独占真实 Thread ID，支持 Active/共享/独占 Binding、创建/切换/重命名/分叉/解绑、标题缓存刷新、冲突前置检查与替换回滚；AppServer Thread 消失时将旧 Binding 标记 `broken` 并重建。
 
 ## In Progress
 
-- [ ] M2-03 — 实现 Thread Coordinator：真实 Thread ID、Active Binding、独占/共享、切换/新建/重命名/分叉/解绑，以及冲突和 Thread Not Found 恢复。
+- [ ] M2-04 — 实现 Thread FIFO 与全局并发调度器：Space 顺序号、队列上限、状态事件、中断/取消和重启 Unknown Turn 对账。
 
 ## Next
 
-- [ ] M2-04 — 实现 Thread FIFO 与全局并发调度器。
+- [ ] M2-05 — 实现独立 CDP Recovery Adapter 与 Capability Set。
 
 ## Verification
 
@@ -82,6 +83,11 @@
 | M2-02 `pnpm check` | PASS | 2026-08-10 |
 | M2-02 `pnpm test` | PASS；64 files / 333 tests | 2026-08-10 |
 | M2-02 `pnpm build` | PASS | 2026-08-10 |
+| M2-03 Coordinator + Application + AppServer Regression | PASS；4 files / 29 tests | 2026-08-10 |
+| M2-03 vNext Binding Integration | PASS；4 files / 21 tests | 2026-08-10 |
+| M2-03 `pnpm check` | PASS | 2026-08-10 |
+| M2-03 `pnpm test` | PASS；65 files / 340 tests | 2026-08-10 |
+| M2-03 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 

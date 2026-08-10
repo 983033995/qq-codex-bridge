@@ -65,6 +65,7 @@ export type AppServerErrorCode =
   | "request_timeout"
   | "rpc_error"
   | "protocol_error"
+  | "thread_not_found"
   | "turn_interrupted"
   | "turn_failed";
 
@@ -420,9 +421,10 @@ export class CodexAppServerAdapter implements CodexPort {
     clearTimeout(pending.timeout);
     this.pendingRequests.delete(response.id);
     if (response.error !== undefined) {
+      const code = isThreadNotFoundRpcError(response.error) ? "thread_not_found" : "rpc_error";
       pending.reject(new AppServerError(
         `Codex AppServer RPC failed (${pending.method}): ${formatRpcError(response.error)}`,
-        "rpc_error",
+        code,
         false
       ));
     } else {
@@ -758,6 +760,13 @@ function validatePositiveInteger(value: number, field: string): void {
 function formatRpcError(error: unknown): string {
   const record = asRecord(error);
   return readString(record.message) ?? JSON.stringify(error);
+}
+
+function isThreadNotFoundRpcError(error: unknown): boolean {
+  const record = asRecord(error);
+  const code = readString(record.code);
+  const message = readString(record.message) ?? "";
+  return code === "thread_not_found" || /(?:thread.*not found|unknown.*thread)/i.test(message);
 }
 
 function errorMessage(error: unknown): string {

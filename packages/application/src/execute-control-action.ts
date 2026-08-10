@@ -88,29 +88,18 @@ export class ExecuteControlAction {
         return completed(action, `Created and bound '${binding.threadTitle}'`, binding);
       }
       case "thread.rename": {
-        const binding = await this.requireBinding(input.spaceId);
         const title = requiredValue("title", action.title);
-        await this.deps.codex.renameThread(binding.threadId, title);
-        const updated = {
-          ...binding,
-          threadTitle: title,
-          updatedAt: this.deps.clock.now().toISOString()
-        };
-        await this.deps.bindings.save(updated);
+        const updated = await this.deps.bindConversationSpace.renameBoundThread(
+          input.spaceId,
+          title
+        );
         return completed(action, `Renamed thread to '${title}'`, updated);
       }
       case "thread.fork": {
-        const binding = await this.requireBinding(input.spaceId);
-        const forked = await this.deps.codex.forkThread(binding.threadId);
         const title = optionalValue(action.title);
-        if (title) {
-          await this.deps.codex.renameThread(forked.threadId, title);
-          forked.title = title;
-        }
-        const next = await this.deps.bindConversationSpace.execute({
+        const next = await this.deps.bindConversationSpace.forkBoundThread({
           spaceId: input.spaceId,
-          thread: forked,
-          replaceActive: true
+          title: title ?? undefined
         });
         return completed(action, `Forked and bound '${next.threadTitle}'`, next);
       }
