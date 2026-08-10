@@ -1,2 +1,2 @@
-/** vNext health, structured events, diagnostics, and redaction. */
-export {};
+export * from "./health-registry.js";
+export * from "./structured-event-bus.js";

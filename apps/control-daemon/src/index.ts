@@ -1,2 +1,1 @@
-/** vNext control daemon composition root. */
-export {};
+export * from "./composition-root.js";

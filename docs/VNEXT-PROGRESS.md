@@ -29,14 +29,15 @@
 - [x] M2-05 — 实现独立 `CodexRecoveryPort`、`CdpRecoveryAdapter` 和 `CodexTransportCoordinator`：仅支持已知线程选择、纯文本单次提交、最终回复与基本状态；Recovery 全局互斥且始终报告 `degraded`，只在 AppServer 明确 `accepted: false` 时进入，UI 点击后必须再次确认提交且绝不自动重发；Turn 持久化记录真实 transport。
 - [x] M2-06 — 实现并运行真实 Codex Smoke：安全跳过 cwd 已失效的陈旧 AppServer、等待受管 listener 就绪；创建 A/B/C 三线程并行回收唯一 marker，使用隔离 readiness probe 验证真实运行中断，并仅在通知或状态确认 `interrupted` 后成功。最终 run `m2-06-20260810-2035` 通过，测试线程保留并列入 M2 Gate 报告。
 - [x] M2 Gate — Fake 时序、A/B/C 并发与同线程 FIFO、断线无重提、Recovery 限制和真实 Codex Smoke 均通过；报告见 `docs/reports/vnext/M2-GATE.md`。
+- [x] M3-01 — 实现 Control Daemon Composition Root、动态 Health Registry 与有界 Structured Event Bus：组件按序启动/失败回滚、逆序停止、串行生命周期、hot reload/组件重启/全组件重启、Active Revision、结构化状态事件和 SIGINT/SIGTERM 单次优雅退出；Bootstrap 不内联 Use Case。
 
 ## In Progress
 
-- [ ] M3-01 — 实现 Control Daemon Composition Root、组件生命周期、Health Registry 与 Structured Event Bus。
+- [ ] M3-02 — 实现带 Loopback、CSRF、本地 Session、Zod 校验和稳定错误响应的 `/api/v1` 管理 API。
 
 ## Next
 
-- [ ] M3-02 — 实现带 Loopback、CSRF、本地 Session、Zod 校验和稳定错误响应的 `/api/v1` 管理 API。
+- [ ] M3-03 — 实现支持断线重连与 Last-Event-ID 的 SSE。
 
 ## Verification
 
@@ -118,6 +119,11 @@
 | M2 Gate `git diff --check` | PASS | 2026-08-10 |
 | M2 Gate CodeGraph 同步与影响复核 | PASS；231 files / 4,057 nodes / 11,789 edges，索引最新；改动调用面均由对应 vNext Unit/Contract/Integration 覆盖 | 2026-08-10 |
 | M2 Gate 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-01 Composition Root / Observability 精确回归 | PASS；3 files / 22 tests | 2026-08-10 |
+| M3-01 vNext Unit/Contract/Integration | PASS；19 files / 117 tests | 2026-08-10 |
+| M3-01 `pnpm check` | PASS | 2026-08-10 |
+| M3-01 `pnpm build` | PASS | 2026-08-10 |
+| M3-01 `git diff --check` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 
