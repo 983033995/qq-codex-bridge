@@ -18,14 +18,14 @@
 - [x] M1-02 — 在 `packages/domain/src/vnext/` 实现 Channel/Space ID、核心聚合类型、Turn/Delivery 状态机、Binding 不变量和稳定错误分类；不修改 v0.x 高影响 Symbol。
 - [x] M1-03 — 在 `packages/ports/src/vnext/` 实现 Channel、Codex、Router、Config、Secret、Service、Repository 与基础设施 Ports，并建立可复用 Fake Contract Suite；Router 输入不暴露原始 `spaceId`。
 - [x] M1-04 — 实现严格 `config.json` Schema、SHA-256 Revision、0600 原子写入、Apply Planner、失败回滚、内存 Secret Store 与 macOS Keychain Adapter；Keychain 写入值通过 stdin 传递且不进入 argv。
+- [x] M1-05 — 实现独立 `runtime-vnext.db` Schema、WAL/Foreign Key/Busy Timeout、IMMEDIATE Migration Runner、核心运行表、Binding 数据库不变量、游标分页与全部 Repository；覆盖持久化恢复、幂等、约束分类及事务/Migration 回滚。
 
 ## In Progress
 
-- [ ] M1-05 — 实现 SQLite vNext Schema、Migration 和 Repository Contract。
+- [ ] M1-06 — 实现核心 Application Use Cases。
 
 ## Next
 
-- [ ] M1-06 — 实现核心 Application Use Cases。
 - [ ] M1-07 — 完成 Fake A/B/C 系统验收。
 
 ## Verification
@@ -53,6 +53,10 @@
 | M1-04 Config/Keychain Unit + Contract | PASS；4 files / 31 vNext regression tests | 2026-08-10 |
 | M1-04 `pnpm check` | PASS | 2026-08-10 |
 | M1-04 `pnpm build` | PASS | 2026-08-10 |
+| M1-05 SQLite Repository Contract + Failure Paths | PASS；2 files / 14 tests | 2026-08-10 |
+| M1-05 vNext 回归 | PASS；6 files / 45 tests | 2026-08-10 |
+| M1-05 `pnpm check` | PASS | 2026-08-10 |
+| M1-05 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 

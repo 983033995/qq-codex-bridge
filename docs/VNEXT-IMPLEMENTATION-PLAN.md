@@ -132,7 +132,7 @@ docs/VNEXT-PROGRESS.md
 每项代码任务遵循：
 
 ```text
-理解 → CodeGraph/GitNexus 定位 → 影响分析 → 小步实现
+理解 → CodeGraph 定位 → 影响分析 → 小步实现
 → 精确测试 → 模块测试 → 全量检查 → 记录证据
 ```
 
@@ -227,7 +227,7 @@ flowchart LR
 - `pnpm check`；
 - `pnpm test`；
 - `pnpm build`；
-- GitNexus/CodeGraph 状态；
+- CodeGraph 状态；
 - AppServer 可发现性；
 - 当前测试失败清单。
 
@@ -1052,4 +1052,3 @@ macOS vNext 完成时必须交付：
 - 明确列出的外部凭据/签名未完成项。
 
 完成标准不是“代码写完”，而是架构文档的 Release Gate 有逐项证据。
-
