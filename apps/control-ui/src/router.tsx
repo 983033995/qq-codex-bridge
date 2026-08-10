@@ -1,6 +1,6 @@
 import { createBrowserRouter } from "react-router";
 import { AppShell } from "./app-shell.js";
-import { OverviewPage, RouteErrorPage, SectionPlaceholder } from "./pages.js";
+import { ChannelsPage, OverviewPage, RouteErrorPage, SectionPlaceholder } from "./pages.js";
 
 export const router = createBrowserRouter([
   {
@@ -9,7 +9,7 @@ export const router = createBrowserRouter([
     ErrorBoundary: RouteErrorPage,
     children: [
       { index: true, Component: OverviewPage },
-      { path: "channels", element: <SectionPlaceholder title="渠道" description="管理微信、飞书和 QQ 渠道账户。" /> },
+      { path: "channels", Component: ChannelsPage },
       { path: "spaces", element: <SectionPlaceholder title="会话空间" description="查看消息与 Codex 线程绑定。" /> },
       { path: "threads", element: <SectionPlaceholder title="线程" description="管理 Codex 线程与运行中的 Turn。" /> },
       { path: "router", element: <SectionPlaceholder title="Router" description="配置自然语言控制与连接测试。" /> },

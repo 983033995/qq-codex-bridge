@@ -5,6 +5,20 @@ import {
 } from "../../apps/control-ui/src/api-client.js";
 
 describe("vNext control UI API client", () => {
+  it("invokes browser fetch without binding the ControlApiClient instance", async () => {
+    const fetchFn = vi.fn(function (this: unknown, input: string | URL | Request): Promise<Response> {
+      expect(this).toBeUndefined();
+      return Promise.resolve(jsonResponse(200,
+        String(input).endsWith("/session")
+          ? { data: { csrfToken: "csrf", expiresAt: "2099-01-01T00:00:00.000Z" }, requestId: "session" }
+          : { data: { ok: true }, requestId: "request" }
+      ));
+    }) as unknown as typeof fetch;
+    const client = new ControlApiClient("/api/v1", fetchFn);
+
+    await expect(client.get<{ ok: boolean }>("/health")).resolves.toEqual({ ok: true });
+  });
+
   it("deduplicates Session acquisition and attaches CSRF to mutations", async () => {
     const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input);

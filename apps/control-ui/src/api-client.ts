@@ -33,11 +33,14 @@ type SessionState = {
 export class ControlApiClient {
   private session: SessionState | null = null;
   private sessionRequest: Promise<SessionState> | null = null;
+  private readonly fetchFn: typeof fetch;
 
   constructor(
     private readonly basePath = "/api/v1",
-    private readonly fetchFn: typeof fetch = fetch
-  ) {}
+    fetchFn: typeof fetch = fetch
+  ) {
+    this.fetchFn = (...args) => fetchFn(...args);
+  }
 
   get<T>(path: string): Promise<T> {
     return this.request<T>(path, { method: "GET" });

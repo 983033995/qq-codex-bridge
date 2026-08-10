@@ -33,14 +33,15 @@
 - [x] M3-02 — 实现完整 `/api/v1` 管理 API 路由契约：System/Health、Channels、Spaces/Messages/Bindings、Threads/Turns、Router、Config Plan/Apply、Diagnostics 和 Push Targets；仅允许 Loopback Bind/Client/Host，使用有界本地 Session、CSRF、严格 Zod/JSON 校验、1 MiB Body 上限、稳定错误响应与内部错误脱敏。
 - [x] M3-03 — 在认证后的 `/api/v1/events` 提供有界 Structured Event SSE：先订阅后重放消除连接竞态，支持 Last-Event-ID 精确续传与过期游标保留窗口重放、实时事件、2 秒重试提示、15 秒心跳、慢消费者断开恢复，以及 Daemon 停止前显式关闭全部长连接。
 - [x] M3-04 — 建立 Vite + React + TypeScript 管理台基础：Daemon 安全静态托管与 SPA fallback、七个嵌套路由、响应式 App Shell、同源 Session/CSRF API Client、稳定错误响应和请求去重；Dashboard 仅保留真实加载态，业务数据接入归入 M3-05。
+- [x] M3-05 — Dashboard 与 Channels 接入真实管理 API 数据契约：并行加载 Health/System/Channels/Events、SSE 自动刷新、四态健康与真实空/错/重试状态、渠道添加/测试/重启/删除；修复浏览器原生 `fetch` 错误绑定导致的 `Illegal invocation`。
 
 ## In Progress
 
-- [ ] M3-05 — 实现 Dashboard 与 Channels 的真实数据和操作。
+- [ ] M3-06 — 完成可访问性和响应式验收。
 
 ## Next
 
-- [ ] M3-06 — 完成可访问性和响应式验收。
+- [ ] M3 Gate — 打通生产 Composition Root、六页操作、Config Apply/Binding/SSE 与键盘验收。
 
 ## Verification
 
@@ -150,6 +151,16 @@
 | M3-04 概念图视觉对照 | PASS；已用 `view_image` 复核文案、布局、字体层级、颜色、间距/容器、图标与响应式；真实数据和完成态明确留给 M3-05，不填充假数据 | 2026-08-10 |
 | M3-04 CodeGraph 同步与影响复核 | PASS；248 files / 4,366 nodes / 12,673 edges；索引最新，新增 UI 调用面由 Unit/Browser QA 覆盖，无 HIGH/CRITICAL | 2026-08-10 |
 | M3-04 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-05 Data/API Client 精确回归 | PASS；2 files / 6 tests；四请求并行、响应契约校验、渠道动作路径和原生 `fetch` 无绑定调用均覆盖 | 2026-08-10 |
+| M3-05 `pnpm check` | PASS | 2026-08-10 |
+| M3-05 `pnpm test` | PASS；75 files / 390 tests | 2026-08-10 |
+| M3-05 `pnpm build` | PASS；Vite JS 303.25 kB（gzip 96.08 kB），CSS 12.18 kB（gzip 3.46 kB） | 2026-08-10 |
+| M3-05 `git diff --check` | PASS | 2026-08-10 |
+| M3-05 Browser Dashboard / Channels QA | PASS；内置浏览器 + 未提交的确定性本地 API fixture；1440×960 显示 3 个组件/渠道/活动与 SSE 已连接，渠道测试成功提示和添加表单可操作，控制台无 error/warn | 2026-08-10 |
+| M3-05 Browser 移动 QA | PASS；390×844 页面 `390/390` 无整体横向溢出；导航 `648→390`、渠道表 `820→352` 独立横向滚动 | 2026-08-10 |
+| M3-05 概念图视觉对照 | PASS；最终 1440×960 截图已用 `view_image` 与概念图直接核对文案、布局、字体层级、颜色、状态图标、间距/容器与响应式，无遗留可修视觉偏差 | 2026-08-10 |
+| M3-05 CodeGraph 同步与影响复核 | PASS；250 files / 4,463 nodes / 12,938 edges；调用面限于 Control UI Router/API Client，并由 Unit/Browser QA 覆盖，无 HIGH/CRITICAL | 2026-08-10 |
+| M3-05 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 
@@ -159,6 +170,7 @@
 | R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 已关闭：全量测试恢复绿色 | Fake 仅在连接创建后异步触发 `open`；精确 8/8、全量 319/319 通过 | Codex |
 | R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
 | R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
+| R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 中：UI 已消费真实 API 契约，但当前浏览器数据验收使用进程内确定性 fixture | M3 Gate 前实现生产 Adapter 与启动闭环；fixture 不进入源码、不作为生产 fallback | Codex |
 | R-EXT-01 真实渠道、Router 与 Apple 凭据尚未提供 | 后续真实 E2E、24 小时 Gate、签名发布将阻塞 | 先完成全部 Fake/Contract/Integration、本地安装和无需凭据的工作，届时集中请求最小输入 | User |
 
 ## Decisions
