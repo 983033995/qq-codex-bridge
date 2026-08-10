@@ -35,6 +35,44 @@ export const channelConfigSchema = z.discriminatedUnion("channel", [
   qqChannelSchema
 ]);
 
+export const routerConfigSchema = z.object({
+  mode: z.enum(["off", "assist", "auto"]),
+  adapter: z.literal("openai-compatible"),
+  baseUrl: z.string().url().nullable(),
+  model: z.string().trim().min(1).nullable(),
+  secretRef: secretRefSchema.nullable(),
+  highConfidenceThreshold: z.number().min(0.9).max(1),
+  clarifyThreshold: z.number().min(0.5).max(0.89)
+}).strict().superRefine((router, context) => {
+  if (router.clarifyThreshold >= router.highConfidenceThreshold) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["clarifyThreshold"],
+      message: "Clarify threshold must be lower than the high-confidence threshold"
+    });
+  }
+
+  if (router.mode !== "off") {
+    for (const field of ["baseUrl", "model", "secretRef"] as const) {
+      if (!router[field]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `${field} is required when Router mode is enabled`
+        });
+      }
+    }
+  }
+
+  if (router.baseUrl && !isSafeRouterUrl(router.baseUrl)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["baseUrl"],
+      message: "Router URL must use HTTPS, except HTTP is allowed on loopback hosts"
+    });
+  }
+});
+
 export const vnextConfigSchema = z.object({
   version: z.literal(1),
   runtime: z.object({
@@ -46,15 +84,7 @@ export const vnextConfigSchema = z.object({
     transport: z.literal("app-server"),
     recoveryTransport: z.literal("cdp")
   }).strict(),
-  router: z.object({
-    mode: z.enum(["off", "assist", "auto"]),
-    adapter: z.literal("openai-compatible"),
-    baseUrl: z.string().url().nullable(),
-    model: z.string().trim().min(1).nullable(),
-    secretRef: secretRefSchema.nullable(),
-    highConfidenceThreshold: z.number().min(0.9).max(1),
-    clarifyThreshold: z.number().min(0.5).max(0.89)
-  }).strict(),
+  router: routerConfigSchema,
   channels: z.array(channelConfigSchema),
   push: z.object({
     enabled: z.boolean(),
@@ -67,34 +97,6 @@ export const vnextConfigSchema = z.object({
     progressDelayMs: z.number().int().nonnegative()
   }).strict()
 }).strict().superRefine((config, context) => {
-  if (config.router.clarifyThreshold >= config.router.highConfidenceThreshold) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["router", "clarifyThreshold"],
-      message: "Clarify threshold must be lower than the high-confidence threshold"
-    });
-  }
-
-  if (config.router.mode !== "off") {
-    for (const field of ["baseUrl", "model", "secretRef"] as const) {
-      if (!config.router[field]) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["router", field],
-          message: `${field} is required when Router mode is enabled`
-        });
-      }
-    }
-  }
-
-  if (config.router.baseUrl && !isSafeRouterUrl(config.router.baseUrl)) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["router", "baseUrl"],
-      message: "Router URL must use HTTPS, except HTTP is allowed on loopback hosts"
-    });
-  }
-
   const seenAccounts = new Set<string>();
   config.channels.forEach((channel, index) => {
     const key = `${channel.channel}:${channel.accountId}`;
