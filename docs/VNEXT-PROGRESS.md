@@ -16,15 +16,16 @@
 - [x] M0 Gate — 通过；报告见 `docs/reports/vnext/M0-GATE.md`。
 - [x] M1-01 — 建立 4 个 vNext App 与 10 个 Adapter/Application/Infrastructure 包的最小入口；现有 `domain`/`ports` 目录保留并将在后续任务内增量替换语义。
 - [x] M1-02 — 在 `packages/domain/src/vnext/` 实现 Channel/Space ID、核心聚合类型、Turn/Delivery 状态机、Binding 不变量和稳定错误分类；不修改 v0.x 高影响 Symbol。
+- [x] M1-03 — 在 `packages/ports/src/vnext/` 实现 Channel、Codex、Router、Config、Secret、Service、Repository 与基础设施 Ports，并建立可复用 Fake Contract Suite；Router 输入不暴露原始 `spaceId`。
 
 ## In Progress
 
-- [ ] M1-03 — 实现 Ports 与可复用 Contract Suite。
+- [ ] M1-04 — 实现配置 Schema、Revision、Apply Planner 与 Keychain。
 
 ## Next
 
-- [ ] M1-04 — 实现配置 Schema、Revision、Apply Planner 与 Keychain。
 - [ ] M1-05 — 实现 SQLite vNext Schema、Migration 和 Repository Contract。
+- [ ] M1-06 — 实现核心 Application Use Cases。
 
 ## Verification
 
@@ -44,6 +45,10 @@
 | M1-02 `vitest`（vNext + legacy domain） | PASS；2 files / 17 tests | 2026-08-10 |
 | M1-02 `pnpm check` | PASS | 2026-08-10 |
 | M1-02 `pnpm build` | PASS | 2026-08-10 |
+| M1-03 Port Contract | PASS；1 file / 5 tests | 2026-08-10 |
+| M1-03 vNext 回归 | PASS；2 files / 19 tests | 2026-08-10 |
+| M1-03 `pnpm check` | PASS | 2026-08-10 |
+| M1-03 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 
