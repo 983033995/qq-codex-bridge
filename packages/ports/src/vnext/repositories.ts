@@ -87,6 +87,7 @@ export type PushJobRecord = {
 
 export interface PushRepository {
   getTarget(alias: string): Promise<PushTargetRecord | null>;
+  listTargets(): Promise<PushTargetRecord[]>;
   saveTarget(target: PushTargetRecord): Promise<void>;
   enqueue(job: PushJobRecord): Promise<{ job: PushJobRecord; duplicate: boolean }>;
   getJob(pushId: string): Promise<PushJobRecord | null>;

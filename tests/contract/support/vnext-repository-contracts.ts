@@ -227,7 +227,9 @@ export function repositoryPortContract(
 
     it("round-trips push targets/jobs with idempotent enqueue semantics", async () => {
       const space = sampleSpace("push");
+      const disabledSpace = sampleSpace("push-disabled");
       await harness.spaces.save(space);
+      await harness.spaces.save(disabledSpace);
       await harness.pushes.saveTarget({
         alias: "owner",
         spaceId: space.spaceId,
@@ -242,6 +244,14 @@ export function repositoryPortContract(
         createdAt: "2026-08-10T06:00:00.000Z",
         updatedAt: "2026-08-10T06:00:00.000Z"
       });
+      await harness.pushes.saveTarget({
+        alias: "disabled",
+        spaceId: disabledSpace.spaceId,
+        enabled: false,
+        createdAt: "2026-08-10T06:00:00.000Z",
+        updatedAt: "2026-08-10T06:00:00.000Z"
+      });
+      expect((await harness.pushes.listTargets()).map((target) => target.alias)).toEqual(["owner"]);
 
       const job = {
         pushId: "push-1",

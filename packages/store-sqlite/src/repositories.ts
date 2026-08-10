@@ -333,6 +333,12 @@ export class SqlitePushRepository implements PushRepository {
     return row ? mapPushTarget(row) : null;
   }
 
+  async listTargets(): Promise<PushTargetRecord[]> {
+    return (this.db.prepare(
+      "SELECT * FROM push_targets WHERE enabled = 1 ORDER BY alias"
+    ).all() as PushTargetRow[]).map(mapPushTarget);
+  }
+
   async saveTarget(target: PushTargetRecord): Promise<void> {
     this.db.prepare(`
       INSERT INTO push_targets (alias, space_id, enabled, created_at, updated_at)

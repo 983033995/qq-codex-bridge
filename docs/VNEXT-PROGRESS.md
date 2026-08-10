@@ -19,14 +19,15 @@
 - [x] M1-03 — 在 `packages/ports/src/vnext/` 实现 Channel、Codex、Router、Config、Secret、Service、Repository 与基础设施 Ports，并建立可复用 Fake Contract Suite；Router 输入不暴露原始 `spaceId`。
 - [x] M1-04 — 实现严格 `config.json` Schema、SHA-256 Revision、0600 原子写入、Apply Planner、失败回滚、内存 Secret Store 与 macOS Keychain Adapter；Keychain 写入值通过 stdin 传递且不进入 argv。
 - [x] M1-05 — 实现独立 `runtime-vnext.db` Schema、WAL/Foreign Key/Busy Timeout、IMMEDIATE Migration Runner、核心运行表、Binding 数据库不变量、游标分页与全部 Repository；覆盖持久化恢复、幂等、约束分类及事务/Migration 回滚。
+- [x] M1-06 — 实现 `ReceiveInboundMessage`、`BindConversationSpace`、`StartConversationTurn`、`ExecuteControlAction`、`ApplyConfiguration`、`RunHealthCheck`、`EnqueuePush`；默认独占新线程、同线程串行/不同线程并行，三类高风险动作未确认时零副作用。
 
 ## In Progress
 
-- [ ] M1-06 — 实现核心 Application Use Cases。
+- [ ] M1-07 — 完成 Fake A/B/C 系统验收。
 
 ## Next
 
-- [ ] M1-07 — 完成 Fake A/B/C 系统验收。
+- [ ] M1 Gate — 全量验证、Gate 报告与里程碑提交。
 
 ## Verification
 
@@ -57,6 +58,10 @@
 | M1-05 vNext 回归 | PASS；6 files / 45 tests | 2026-08-10 |
 | M1-05 `pnpm check` | PASS | 2026-08-10 |
 | M1-05 `pnpm build` | PASS | 2026-08-10 |
+| M1-06 Application Use Cases | PASS；3 files / 18 tests | 2026-08-10 |
+| M1-06 vNext 回归 | PASS；9 files / 63 tests | 2026-08-10 |
+| M1-06 `pnpm check` | PASS | 2026-08-10 |
+| M1-06 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 
