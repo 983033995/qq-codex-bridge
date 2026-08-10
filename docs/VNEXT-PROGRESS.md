@@ -22,14 +22,15 @@
 - [x] M1-06 — 实现 `ReceiveInboundMessage`、`BindConversationSpace`、`StartConversationTurn`、`ExecuteControlAction`、`ApplyConfiguration`、`RunHealthCheck`、`EnqueuePush`；默认独占新线程、同线程串行/不同线程并行，三类高风险动作未确认时零副作用。
 - [x] M1-07 — 使用真实 SQLite Adapter + Fake Codex 完成 A/B/C 系统验收：微信/飞书/QQ Space 独立绑定，不同线程并行、同线程严格串行，Store 重启后 Binding 恢复，独占冲突明确失败并回滚原 Binding。
 - [x] M1 Gate — 通过；Domain 边界、Ports Contract、失败路径与 Fake A/B/C 验收完成，最终 `check/test/build` 全绿；报告见 `docs/reports/vnext/M1-GATE.md`。
+- [x] M2-01 — 建立可复用 Fake AppServer：监听器注册后异步 `open`，支持 JSON-RPC Request/Response、Notification、乱序、重复、断线、丢请求超时，以及 Thread Start/List/Rename/Fork 和 Turn Start/Delta/Complete/Interrupt；旧 driver 测试已统一复用。
 
 ## In Progress
 
-- [ ] M2-01 — 重建可复用 Fake AppServer；已先根治监听器注册前触发 `open` 的 5 个旧时序超时，继续补齐乱序、重复、断线、超时及 Thread/Turn 协议模拟。
+- [ ] M2-02 — 实现 vNext AppServer Adapter：连接发现/受管启动、JSON-RPC 与 Pending Map、Thread/Turn 路由、回复归一化、Reconnect、Dispose 与 Capability/Health。
 
 ## Next
 
-- [ ] M2-02 — 实现 vNext AppServer Adapter。
+- [ ] M2-03 — 实现 Thread Coordinator。
 
 ## Verification
 
@@ -72,6 +73,10 @@
 | M1 Gate `pnpm test` | PASS；61 files / 319 tests | 2026-08-10 |
 | M1 Gate `pnpm build` | PASS | 2026-08-10 |
 | M1 Gate 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M2-01 Fake AppServer + Legacy Driver | PASS；2 files / 11 tests | 2026-08-10 |
+| M2-01 `pnpm check` | PASS | 2026-08-10 |
+| M2-01 `pnpm test` | PASS；62 files / 322 tests | 2026-08-10 |
+| M2-01 `pnpm build` | PASS | 2026-08-10 |
 
 ## Risks and Blockers
 

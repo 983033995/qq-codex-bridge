@@ -1,57 +1,9 @@
-import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerDriver,
   resolveDefaultCodexBinaryPath
 } from "../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
-
-class FakeAppServerSocket extends EventEmitter {
-  readyState = 0;
-  readonly sent: unknown[] = [];
-  private readonly handlers = new Map<string, (message: Record<string, unknown>) => void>();
-  private openScheduled = false;
-
-  connect(): this {
-    if (this.openScheduled || this.readyState !== 0) {
-      return this;
-    }
-    this.openScheduled = true;
-    queueMicrotask(() => {
-      if (this.readyState !== 0) {
-        return;
-      }
-      this.readyState = 1;
-      this.emit("open");
-    });
-    return this;
-  }
-
-  send(data: string): void {
-    const message = JSON.parse(data) as Record<string, unknown>;
-    this.sent.push(message);
-    const method = message.method;
-    if (typeof method === "string") {
-      this.handlers.get(method)?.(message);
-    }
-  }
-
-  close(): void {
-    this.readyState = 3;
-    this.emit("close");
-  }
-
-  onRequest(method: string, handler: (message: Record<string, unknown>) => void): void {
-    this.handlers.set(method, handler);
-  }
-
-  respond(id: unknown, result: unknown): void {
-    this.emit("message", JSON.stringify({ jsonrpc: "2.0", id, result }));
-  }
-
-  notify(method: string, params: unknown): void {
-    this.emit("message", JSON.stringify({ jsonrpc: "2.0", method, params }));
-  }
-}
+import { FakeAppServerSocket } from "../support/fake-app-server.js";
 
 describe("codex app-server driver", () => {
   it("opens the fake socket asynchronously after the driver can register listeners", async () => {
