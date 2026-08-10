@@ -187,6 +187,18 @@ describe("macOS Keychain adapter", () => {
     expect(await store.get("router/missing")).toBeNull();
     await expect(store.delete("router/missing")).resolves.toBeUndefined();
   });
+
+  it("fails loudly when Keychain returns an unexpected command error", async () => {
+    const failure = new SecurityCommandError(1);
+    const runner: SecurityCommandRunner = async () => {
+      throw failure;
+    };
+    const store = new MacOsKeychainSecretStore({ platform: "darwin", runner });
+
+    await expect(store.get("router/default")).rejects.toBe(failure);
+    await expect(store.set("router/default", "secret")).rejects.toBe(failure);
+    await expect(store.delete("router/default")).rejects.toBe(failure);
+  });
 });
 
 function routerConfig(baseUrl: string): VNextConfig {

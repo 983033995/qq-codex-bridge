@@ -4,7 +4,7 @@
 
 - Updated: 2026-08-10
 - Branch / Worktree: `codex/vnext` / `/Volumes/13759427003/AI/qq-codex-bridge-vnext`
-- Current milestone: M1 — 核心领域与基础设施
+- Current milestone: M2 — Codex、Binding 与并发
 - Overall status: on_track
 
 ## Completed
@@ -21,14 +21,15 @@
 - [x] M1-05 — 实现独立 `runtime-vnext.db` Schema、WAL/Foreign Key/Busy Timeout、IMMEDIATE Migration Runner、核心运行表、Binding 数据库不变量、游标分页与全部 Repository；覆盖持久化恢复、幂等、约束分类及事务/Migration 回滚。
 - [x] M1-06 — 实现 `ReceiveInboundMessage`、`BindConversationSpace`、`StartConversationTurn`、`ExecuteControlAction`、`ApplyConfiguration`、`RunHealthCheck`、`EnqueuePush`；默认独占新线程、同线程串行/不同线程并行，三类高风险动作未确认时零副作用。
 - [x] M1-07 — 使用真实 SQLite Adapter + Fake Codex 完成 A/B/C 系统验收：微信/飞书/QQ Space 独立绑定，不同线程并行、同线程严格串行，Store 重启后 Binding 恢复，独占冲突明确失败并回滚原 Binding。
+- [x] M1 Gate — 通过；Domain 边界、Ports Contract、失败路径与 Fake A/B/C 验收完成，最终 `check/test/build` 全绿；报告见 `docs/reports/vnext/M1-GATE.md`。
 
 ## In Progress
 
-- [ ] M1 Gate — 全量验证、Gate 报告与里程碑提交。
+- [ ] M2-01 — 重建可复用 Fake AppServer；已先根治监听器注册前触发 `open` 的 5 个旧时序超时，继续补齐乱序、重复、断线、超时及 Thread/Turn 协议模拟。
 
 ## Next
 
-- [ ] M2-01 — 重建 Fake AppServer 并根治旧同步 `open` 时序失败。
+- [ ] M2-02 — 实现 vNext AppServer Adapter。
 
 ## Verification
 
@@ -66,13 +67,18 @@
 | M1-07 Fake A/B/C Integration | PASS；1 file / 2 tests | 2026-08-10 |
 | M1-07 `pnpm check` | PASS | 2026-08-10 |
 | M1-07 `pnpm build` | PASS | 2026-08-10 |
+| M1 Gate Fake AppServer Regression | PASS；1 file / 8 tests；原 5 个超时已消除 | 2026-08-10 |
+| M1 Gate `pnpm check` | PASS | 2026-08-10 |
+| M1 Gate `pnpm test` | PASS；61 files / 319 tests | 2026-08-10 |
+| M1 Gate `pnpm build` | PASS | 2026-08-10 |
+| M1 Gate 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 
 | ID | Impact | Mitigation | Owner |
 |---|---|---|---|
 | R-M0-01 原工作区含 57 项用户修改 | 极高：误操作会覆盖用户工作 | 所有业务开发只在 sibling worktree；每次 M0 关键写操作后复核状态指纹 | Codex |
-| R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 中：全量基线非绿色 | M2-01 重建异步 `open` Fake 并修复根因；不扩大超时 | Codex |
+| R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 已关闭：全量测试恢复绿色 | Fake 仅在连接创建后异步触发 `open`；精确 8/8、全量 319/319 通过 | Codex |
 | R-EXT-01 真实渠道、Router 与 Apple 凭据尚未提供 | 后续真实 E2E、24 小时 Gate、签名发布将阻塞 | 先完成全部 Fake/Contract/Integration、本地安装和无需凭据的工作，届时集中请求最小输入 | User |
 
 ## Decisions
