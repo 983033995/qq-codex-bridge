@@ -18,6 +18,7 @@ import {
 } from "../../../packages/domain/src/vnext/index.js";
 import type { StructuredEventBus } from "../../../packages/observability/src/index.js";
 import { StructuredEventSseStream } from "./sse-event-stream.js";
+import { StaticUiFiles } from "./static-ui-files.js";
 
 const API_PREFIX = "/api/v1";
 const SESSION_COOKIE = "qqcb_vnext_session";
@@ -153,6 +154,7 @@ export type ControlApiServerOptions = {
   sessionTtlMs?: number;
   maxSessions?: number;
   heartbeatIntervalMs?: number;
+  staticRoot?: string;
   now?: () => number;
   randomToken?: () => string;
 };
@@ -162,6 +164,7 @@ export class ControlApiServer {
   readonly critical = true;
   private readonly sessions: LocalSessionStore;
   private readonly eventStream: StructuredEventSseStream;
+  private readonly staticFiles: StaticUiFiles | null;
   private readonly since: string;
   private server: Server | null = null;
   private lastError: string | null = null;
@@ -183,6 +186,7 @@ export class ControlApiServer {
     this.eventStream = new StructuredEventSseStream(options.events, {
       heartbeatIntervalMs: options.heartbeatIntervalMs
     });
+    this.staticFiles = options.staticRoot ? new StaticUiFiles(options.staticRoot) : null;
     this.since = new Date(now()).toISOString();
   }
 
@@ -245,6 +249,7 @@ export class ControlApiServer {
       assertLocalRequest(request);
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
       const pathname = normalizePath(url.pathname);
+      const method = request.method ?? "GET";
       if (request.method === "GET" && pathname === `${API_PREFIX}/session`) {
         const session = this.sessions.issue();
         response.setHeader(
@@ -258,13 +263,21 @@ export class ControlApiServer {
         return;
       }
       if (!pathname.startsWith(`${API_PREFIX}/`)) {
+        if (this.staticFiles && (method === "GET" || method === "HEAD")) {
+          if (await this.staticFiles.serve(pathname, method, response)) {
+            return;
+          }
+        }
+        if (this.staticFiles && method !== "GET" && method !== "HEAD") {
+          response.setHeader("Allow", "GET, HEAD");
+          throw new ApiError(405, "METHOD_NOT_ALLOWED", "HTTP method is not allowed for this route");
+        }
         throw new ApiError(404, "NOT_FOUND", "API route not found");
       }
       const session = this.sessions.authenticate(request.headers.cookie);
       if (!session) {
         throw new ApiError(401, "SESSION_REQUIRED", "A valid local session is required");
       }
-      const method = request.method ?? "GET";
       if (MUTATING_METHODS.has(method)) {
         assertCsrf(request.headers["x-csrf-token"], session.csrfToken);
       }

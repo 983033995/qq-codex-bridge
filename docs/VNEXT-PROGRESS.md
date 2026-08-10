@@ -32,14 +32,15 @@
 - [x] M3-01 — 实现 Control Daemon Composition Root、动态 Health Registry 与有界 Structured Event Bus：组件按序启动/失败回滚、逆序停止、串行生命周期、hot reload/组件重启/全组件重启、Active Revision、结构化状态事件和 SIGINT/SIGTERM 单次优雅退出；Bootstrap 不内联 Use Case。
 - [x] M3-02 — 实现完整 `/api/v1` 管理 API 路由契约：System/Health、Channels、Spaces/Messages/Bindings、Threads/Turns、Router、Config Plan/Apply、Diagnostics 和 Push Targets；仅允许 Loopback Bind/Client/Host，使用有界本地 Session、CSRF、严格 Zod/JSON 校验、1 MiB Body 上限、稳定错误响应与内部错误脱敏。
 - [x] M3-03 — 在认证后的 `/api/v1/events` 提供有界 Structured Event SSE：先订阅后重放消除连接竞态，支持 Last-Event-ID 精确续传与过期游标保留窗口重放、实时事件、2 秒重试提示、15 秒心跳、慢消费者断开恢复，以及 Daemon 停止前显式关闭全部长连接。
+- [x] M3-04 — 建立 Vite + React + TypeScript 管理台基础：Daemon 安全静态托管与 SPA fallback、七个嵌套路由、响应式 App Shell、同源 Session/CSRF API Client、稳定错误响应和请求去重；Dashboard 仅保留真实加载态，业务数据接入归入 M3-05。
 
 ## In Progress
 
-- [ ] M3-04 — 实现管理台 Shell、路由和 API Client。
+- [ ] M3-05 — 实现 Dashboard 与 Channels 的真实数据和操作。
 
 ## Next
 
-- [ ] M3-05 — 实现 Dashboard 与 Channels。
+- [ ] M3-06 — 完成可访问性和响应式验收。
 
 ## Verification
 
@@ -140,6 +141,15 @@
 | M3-03 `git diff --check` | PASS | 2026-08-10 |
 | M3-03 CodeGraph 同步与影响复核 | PASS；237 files / 4,269 nodes / 12,469 edges；SSE 调用面集中于 Control API，现有调用者均已更新，无 HIGH/CRITICAL | 2026-08-10 |
 | M3-03 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-04 Static UI / API Client 精确回归 | PASS；3 files / 12 tests | 2026-08-10 |
+| M3-04 `pnpm check` | PASS | 2026-08-10 |
+| M3-04 `pnpm test` | PASS；74 files / 386 tests | 2026-08-10 |
+| M3-04 `pnpm build` | PASS；Vite JS 287.48 kB（gzip 91.39 kB），CSS 7.40 kB（gzip 2.46 kB） | 2026-08-10 |
+| M3-04 `git diff --check` | PASS | 2026-08-10 |
+| M3-04 Browser 桌面 / 移动 QA | PASS；内置浏览器 1440×960 与 390×844；验证渠道、设置、诊断路由/选中态/URL，控制台无 error/warn，移动页面无整体横向溢出且主导航可独立横向滚动 | 2026-08-10 |
+| M3-04 概念图视觉对照 | PASS；已用 `view_image` 复核文案、布局、字体层级、颜色、间距/容器、图标与响应式；真实数据和完成态明确留给 M3-05，不填充假数据 | 2026-08-10 |
+| M3-04 CodeGraph 同步与影响复核 | PASS；248 files / 4,366 nodes / 12,673 edges；索引最新，新增 UI 调用面由 Unit/Browser QA 覆盖，无 HIGH/CRITICAL | 2026-08-10 |
+| M3-04 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 
