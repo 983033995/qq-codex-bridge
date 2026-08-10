@@ -9,6 +9,7 @@ import {
 } from "../../apps/control-daemon/src/index.js";
 import { createDefaultConfig } from "../../packages/config/src/index.js";
 import { VNextDomainError } from "../../packages/domain/src/vnext/index.js";
+import { StructuredEventBus } from "../../packages/observability/src/index.js";
 
 describe("vNext control API contract", () => {
   it("maps every required API operation through authenticated, validated HTTP routes", async () => {
@@ -215,7 +216,8 @@ describe("vNext control API contract", () => {
     expect(() => new ControlApiServer({
       host: "0.0.0.0",
       port: 3100,
-      services: { execute: async () => undefined }
+      services: { execute: async () => undefined },
+      events: new StructuredEventBus()
     })).toThrow("loopback");
   });
 
@@ -226,6 +228,7 @@ describe("vNext control API contract", () => {
       host: "127.0.0.1",
       port: 0,
       services: { execute: async () => ({ ok: true }) },
+      events: new StructuredEventBus(),
       sessionTtlMs: 1_000,
       now: () => now,
       randomToken: () => tokens.shift() ?? "fallback-token-abcdefghijklmnopqrstuvwxyz"
@@ -260,9 +263,83 @@ describe("vNext control API contract", () => {
       await server.stop();
     }
   });
+
+  it("streams retained and live events and resumes after Last-Event-ID", async () => {
+    const events = new StructuredEventBus({
+      historyLimit: 2,
+      nextId: sequence("event")
+    });
+    const first = events.publish({ component: "channel:weixin", type: "channel.ready", payload: {} });
+    const second = events.publish({ component: "turns", type: "turn.running", payload: { turnId: "turn-1" } });
+    const { server, baseUrl, auth } = await startServer({ execute: async () => undefined }, events);
+    const abort = new AbortController();
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/events`, {
+        headers: { Cookie: auth.cookie, "Last-Event-ID": first.eventId },
+        signal: abort.signal
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+
+      const third = events.publish({
+        component: "config",
+        type: "config.apply.completed",
+        payload: { revision: "revision-1" }
+      });
+      const streamed = await readSseEvents(response, 2);
+      expect(streamed.map((event) => event.id)).toEqual([second.eventId, third.eventId]);
+      expect(streamed.map((event) => event.data.type)).toEqual([
+        "turn.running",
+        "config.apply.completed"
+      ]);
+    } finally {
+      abort.abort();
+      await server.stop();
+    }
+  });
+
+  it("replays the retained window for an expired Last-Event-ID", async () => {
+    const events = new StructuredEventBus({ historyLimit: 2, nextId: sequence("event") });
+    events.publish({ component: "one", type: "event.one", payload: {} });
+    const second = events.publish({ component: "two", type: "event.two", payload: {} });
+    const third = events.publish({ component: "three", type: "event.three", payload: {} });
+    const { server, baseUrl, auth } = await startServer({ execute: async () => undefined }, events);
+    const abort = new AbortController();
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/events`, {
+        headers: { Cookie: auth.cookie, "Last-Event-ID": "event-1" },
+        signal: abort.signal
+      });
+      const replayed = await readSseEvents(response, 2);
+      expect(replayed.map((event) => event.id)).toEqual([second.eventId, third.eventId]);
+    } finally {
+      abort.abort();
+      await server.stop();
+    }
+  });
+
+  it("closes active SSE clients before stopping the HTTP server", async () => {
+    const { server, baseUrl, auth } = await startServer({ execute: async () => undefined });
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/events`, {
+        headers: { Cookie: auth.cookie }
+      });
+      expect(response.status).toBe(200);
+      const completedBody = response.text();
+
+      await server.stop();
+
+      await expect(completedBody).resolves.toContain("retry: 2000");
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
-async function startServer(services: ControlApiServices): Promise<{
+async function startServer(
+  services: ControlApiServices,
+  events = new StructuredEventBus()
+): Promise<{
   server: ControlApiServer;
   baseUrl: string;
   auth: { cookie: string; csrfToken: string };
@@ -272,6 +349,7 @@ async function startServer(services: ControlApiServices): Promise<{
     host: "127.0.0.1",
     port: 0,
     services,
+    events,
     randomToken: () => tokens.shift() ?? "fallback-token-abcdefghijklmnopqrstuvwxyz"
   });
   await server.start();
@@ -290,6 +368,44 @@ async function startServer(services: ControlApiServices): Promise<{
       csrfToken: session.data.csrfToken
     }
   };
+}
+
+async function readSseEvents(
+  response: Response,
+  count: number
+): Promise<Array<{ id: string; data: { type: string } }>> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("SSE response body is missing");
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const events: Array<{ id: string; data: { type: string } }> = [];
+  while (events.length < count) {
+    const { value, done } = await reader.read();
+    if (done) {
+      throw new Error("SSE stream ended before the expected events arrived");
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const id = frame.split("\n").find((line) => line.startsWith("id: "))?.slice(4);
+      const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+      if (id && data) {
+        events.push({ id, data: JSON.parse(data) as { type: string } });
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+  await reader.cancel();
+  return events;
+}
+
+function sequence(prefix: string): () => string {
+  let value = 0;
+  return () => `${prefix}-${++value}`;
 }
 
 function apiFetch(

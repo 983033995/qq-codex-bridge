@@ -31,14 +31,15 @@
 - [x] M2 Gate — Fake 时序、A/B/C 并发与同线程 FIFO、断线无重提、Recovery 限制和真实 Codex Smoke 均通过；报告见 `docs/reports/vnext/M2-GATE.md`。
 - [x] M3-01 — 实现 Control Daemon Composition Root、动态 Health Registry 与有界 Structured Event Bus：组件按序启动/失败回滚、逆序停止、串行生命周期、hot reload/组件重启/全组件重启、Active Revision、结构化状态事件和 SIGINT/SIGTERM 单次优雅退出；Bootstrap 不内联 Use Case。
 - [x] M3-02 — 实现完整 `/api/v1` 管理 API 路由契约：System/Health、Channels、Spaces/Messages/Bindings、Threads/Turns、Router、Config Plan/Apply、Diagnostics 和 Push Targets；仅允许 Loopback Bind/Client/Host，使用有界本地 Session、CSRF、严格 Zod/JSON 校验、1 MiB Body 上限、稳定错误响应与内部错误脱敏。
+- [x] M3-03 — 在认证后的 `/api/v1/events` 提供有界 Structured Event SSE：先订阅后重放消除连接竞态，支持 Last-Event-ID 精确续传与过期游标保留窗口重放、实时事件、2 秒重试提示、15 秒心跳、慢消费者断开恢复，以及 Daemon 停止前显式关闭全部长连接。
 
 ## In Progress
 
-- [ ] M3-03 — 实现支持断线重连与 Last-Event-ID 的 SSE。
+- [ ] M3-04 — 实现管理台 Shell、路由和 API Client。
 
 ## Next
 
-- [ ] M3-04 — 实现管理台 Shell、路由和 API Client。
+- [ ] M3-05 — 实现 Dashboard 与 Channels。
 
 ## Verification
 
@@ -132,6 +133,13 @@
 | M3-02 `git diff --check` | PASS | 2026-08-10 |
 | M3-02 CodeGraph 影响复核 | PASS；新增管理 API 调用面由 Contract 覆盖，配置 Schema 由 Unit/Contract 覆盖，无 HIGH/CRITICAL 调用面 | 2026-08-10 |
 | M3-02 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-03 SSE + Control Daemon 精确回归 | PASS；2 files / 14 tests | 2026-08-10 |
+| M3-03 `pnpm check` | PASS | 2026-08-10 |
+| M3-03 `pnpm test` | PASS；72 files / 383 tests | 2026-08-10 |
+| M3-03 `pnpm build` | PASS | 2026-08-10 |
+| M3-03 `git diff --check` | PASS | 2026-08-10 |
+| M3-03 CodeGraph 同步与影响复核 | PASS；237 files / 4,269 nodes / 12,469 edges；SSE 调用面集中于 Control API，现有调用者均已更新，无 HIGH/CRITICAL | 2026-08-10 |
+| M3-03 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 

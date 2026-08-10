@@ -16,6 +16,8 @@ import {
   VNextDomainError,
   type ComponentHealth
 } from "../../../packages/domain/src/vnext/index.js";
+import type { StructuredEventBus } from "../../../packages/observability/src/index.js";
+import { StructuredEventSseStream } from "./sse-event-stream.js";
 
 const API_PREFIX = "/api/v1";
 const SESSION_COOKIE = "qqcb_vnext_session";
@@ -147,8 +149,10 @@ export type ControlApiServerOptions = {
   host: string;
   port: number;
   services: ControlApiServices;
+  events: StructuredEventBus;
   sessionTtlMs?: number;
   maxSessions?: number;
+  heartbeatIntervalMs?: number;
   now?: () => number;
   randomToken?: () => string;
 };
@@ -157,6 +161,7 @@ export class ControlApiServer {
   readonly name = "management-api";
   readonly critical = true;
   private readonly sessions: LocalSessionStore;
+  private readonly eventStream: StructuredEventSseStream;
   private readonly since: string;
   private server: Server | null = null;
   private lastError: string | null = null;
@@ -174,6 +179,9 @@ export class ControlApiServer {
       maxSessions: options.maxSessions,
       now,
       randomToken: options.randomToken
+    });
+    this.eventStream = new StructuredEventSseStream(options.events, {
+      heartbeatIntervalMs: options.heartbeatIntervalMs
     });
     this.since = new Date(now()).toISOString();
   }
@@ -205,6 +213,7 @@ export class ControlApiServer {
   async stop(): Promise<void> {
     const server = this.server;
     this.server = null;
+    this.eventStream.closeAll();
     if (!server) {
       return;
     }
@@ -258,6 +267,14 @@ export class ControlApiServer {
       const method = request.method ?? "GET";
       if (MUTATING_METHODS.has(method)) {
         assertCsrf(request.headers["x-csrf-token"], session.csrfToken);
+      }
+      if (pathname === `${API_PREFIX}/events`) {
+        if (method !== "GET") {
+          response.setHeader("Allow", "GET");
+          throw new ApiError(405, "METHOD_NOT_ALLOWED", "HTTP method is not allowed for this route");
+        }
+        this.eventStream.open(response, readLastEventId(request.headers["last-event-id"]));
+        return;
       }
       const relativePath = pathname.slice(API_PREFIX.length) || "/";
       const pathMatches = routes.flatMap((candidate) => {
@@ -456,6 +473,20 @@ function assertCsrf(header: string | string[] | undefined, expected: string): vo
   ) {
     throw new ApiError(403, "CSRF_INVALID", "A valid CSRF token is required");
   }
+}
+
+function readLastEventId(header: string | string[] | undefined): string | undefined {
+  if (header === undefined) {
+    return undefined;
+  }
+  if (typeof header !== "string") {
+    throw new ApiError(400, "LAST_EVENT_ID_INVALID", "Last-Event-ID must be a single value");
+  }
+  const value = header.trim();
+  if (!value || value.length > 256 || /[\r\n]/.test(value)) {
+    throw new ApiError(400, "LAST_EVENT_ID_INVALID", "Last-Event-ID is invalid");
+  }
+  return value;
 }
 
 function sendApiError(response: ServerResponse, requestId: string, error: unknown): void {
