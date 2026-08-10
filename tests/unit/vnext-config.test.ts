@@ -106,7 +106,7 @@ describe("vNext apply planning and rollback", () => {
 
     expect(planConfigApply(current, next).effects).toEqual([
       { type: "hot_reload", component: "router" },
-      { type: "component_restart", component: "channel:weixin:personal" }
+      { type: "component_restart", component: "weixin-worker" }
     ]);
   });
 

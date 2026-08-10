@@ -36,14 +36,15 @@
 - [x] M3-05 — Dashboard 与 Channels 接入真实管理 API 数据契约：并行加载 Health/System/Channels/Events、SSE 自动刷新、四态健康与真实空/错/重试状态、渠道添加/测试/重启/删除；修复浏览器原生 `fetch` 错误绑定导致的 `Illegal invocation`。
 - [x] M3-06 — 完成管理台可访问性与响应式加固：Skip Link、路由与表单焦点管理、原生数据表、异步 `aria-live`、非颜色状态文本、Secret Reference 限界、键盘核心路径、200% Zoom 与窄屏单列验收。
 - [x] M3 Gate — 打通生产 `ControlApiServices`、Composition Root、SQLite/Codex/Config/Keychain Adapter、静态 UI 与启动 CLI；六个一级页面均接入真实 API，Config Apply 仅在 Active Revision 更新后成功，Binding/SSE/诊断导出与键盘、窄屏路径完成验收；无运行 Adapter 的渠道与 Router 操作明确失败，不伪造成功。
+- [x] M4-01 — 实现隔离微信 Worker IPC：32-byte 随机本地鉴权、严格消息 Schema、协议/Worker 版本协商、心跳与 ping、优雅停机、握手/心跳超时、连续崩溃有界退避和稳定运行后重置；单 Worker 承载多个微信账户，首次添加账号的 Config Apply 可动态启动 Worker，Health/渠道操作/结构化事件均接入生产 Runtime。
 
 ## In Progress
 
-- [ ] M4 — 微信优先链路。
+- [ ] M4-02 — 微信登录体验。
 
 ## Next
 
-- [ ] M4-01 — Worker IPC：Daemon 监督、鉴权、心跳、版本协商、退避重启与 Health Registry。
+- [ ] M4-03 — 微信文本、图片、文件、语音与视频消息闭环。
 
 ## Verification
 
@@ -180,6 +181,14 @@
 | M3 Gate 六页 Browser QA | PASS；概览、渠道、会话空间、任务、Router、设置与诊断均无 placeholder/error；390px 无整页横向溢出；Config Apply 等待 Active Revision；控制台 0 error / 0 warning | 2026-08-11 |
 | M3 Gate CodeGraph 影响复核 | PASS；258 files / 4,687 nodes / 13,657 edges，索引最新；生产 Runtime、Application Services、Turn 分页与六页 UI 调用面均有对应 Unit/Integration/Browser 验证 | 2026-08-11 |
 | M3 Gate 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-01 Worker Runtime / Supervisor / Production 精确回归 | PASS；5 files / 22 tests；真实隔离子进程、错误鉴权/协议拒绝、心跳超时、1→5ms 连续崩溃退避、空配置不启动、首次账号 Config Apply 与 IPC test 路由均覆盖 | 2026-08-11 |
+| M4-01 `pnpm check` | PASS | 2026-08-11 |
+| M4-01 `pnpm test` | PASS；80 files / 404 tests | 2026-08-11 |
+| M4-01 `pnpm build` | PASS；Vite JS 320.79 kB（gzip 100.30 kB），CSS 16.55 kB（gzip 4.22 kB） | 2026-08-11 |
+| M4-01 `git diff --check` | PASS | 2026-08-11 |
+| M4-01 Production Runtime Smoke | PASS；构建产物启动于 `127.0.0.1:3100`；无账号时不派生 Worker 进程，Health 明确显示 disabled；Codex、Worker、Router、Push、Queues、Management API 共 6 个组件可见 | 2026-08-11 |
+| M4-01 CodeGraph 影响复核 | PASS；265 files / 4,875 nodes / 14,154 edges，索引最新；Worker Runtime/Supervisor、Apply Planner 与生产 Runtime 调用面由 Unit/Integration 覆盖 | 2026-08-11 |
+| M4-01 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
 
 ## Risks and Blockers
 
@@ -190,7 +199,9 @@
 | R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
 | R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
 | R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 已关闭：生产 Runtime 已组合真实 Repository/Codex/Config/Keychain/API/UI，CLI 与无 fixture HTTP Smoke 通过 | 保持 Integration Smoke 与六页 Browser QA；fixture 不进入生产源码、不作为 fallback | Codex |
-| R-EXT-01 真实渠道、Router 与 Apple 凭据尚未提供 | 后续真实 E2E、24 小时 Gate、签名发布将阻塞 | 先完成全部 Fake/Contract/Integration、本地安装和无需凭据的工作，届时集中请求最小输入 | User |
+| R-EXT-01 微信真实账号扫码与测试联系人/群聊授权尚未提供 | M4-05 双向媒体、重启恢复与 24 小时连续运行 Gate 无法执行 | 先完成 Fake Worker、二维码/状态机、消息与韧性自动化；真实 Gate 前集中请求一次扫码和专用测试 Space 授权，不主动联系真实联系人 | User |
+| R-EXT-02 飞书/QQ/Router 真实凭据尚未提供 | 真实租户、真实 API 与外部消息 Gate 无法执行 | 先完成 Fake SDK/Server、Contract、故障矩阵与本地配置检查；到对应 Gate 再请求最小 Secret Reference/测试租户 | User |
+| R-EXT-03 Apple Developer ID、Notarization 与发布凭据尚未提供 | M8/M9 可完成未签名开发包与安装验收，但不能执行签名、公证或正式发布 | 产出可重复的未签名 macOS 构建、launchd 安装/卸载与清单；把签名/Notarization 保持为单独外部 Gate，未经授权不执行 | User |
 
 ## Decisions
 
@@ -202,3 +213,5 @@
 | 遗留 Turn 使用稳定 `thread/read(includeTurns)` 对账 | 官方 OpenAI Docs 与本机生成 Schema 均确认可按真实 Thread ID 读取完整 Turn 历史；避免依赖实验性 `thread/turns/list` |
 | CDP Recovery 仅按唯一精确缓存标题操作桌面 UI | AppServer 的真实 `threadId` 仍是持久化身份；桌面 UI 不暴露可靠 ID 时，标题无匹配或重复均明确失败，避免猜测导致跨线程错投递 |
 | `turn/interrupt` 必须以真实终态确认 | 本机 AppServer 存在 RPC 成功但 Turn 继续完成，以及实际已中断但 RPC 返回 `no active turn` 两种竞态；请求响应本身不能代表业务终态 |
+| 微信使用单个受监督 Worker 承载多个账号 | 实施计划要求隔离 Worker，且 Config Apply 原本指向运行时不存在的逐账号组件；固定 `weixin-worker` 使首次添加/删除账号可被 Composition Root 重启，同时为 M4-02/03 保留多账号协议载荷 |
+| Worker 鉴权 Token 仅通过子进程环境注入并在 Worker 启动后立即删除 | Node IPC 已限定父子本地通道；随机 32-byte Token 防止错误/伪造子进程完成握手，且不进入 argv、事件、日志或持久化配置；Worker 只继承 locale/timezone，不继承 Daemon 的其他环境 Secret |

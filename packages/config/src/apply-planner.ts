@@ -32,7 +32,11 @@ export function planConfigApply(
     effects.push({ type: "hot_reload", component: "queues" });
   }
 
-  for (const accountKey of changedChannelAccounts(current?.channels ?? [], next.channels)) {
+  const changedAccounts = changedChannelAccounts(current?.channels ?? [], next.channels);
+  if (changedAccounts.some((accountKey) => accountKey.startsWith("weixin:"))) {
+    effects.push({ type: "component_restart", component: "weixin-worker" });
+  }
+  for (const accountKey of changedAccounts.filter((key) => !key.startsWith("weixin:"))) {
     effects.push({ type: "component_restart", component: `channel:${accountKey}` });
   }
 

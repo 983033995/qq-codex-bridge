@@ -1,2 +1,1 @@
-/** vNext isolated Weixin worker entrypoint. */
-export {};
+export * from "./runtime.js";

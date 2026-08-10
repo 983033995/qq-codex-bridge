@@ -1,2 +1,2 @@
-/** vNext Weixin channel adapter. */
-export {};
+export * from "./worker-protocol.js";
+export * from "./worker-supervisor.js";
