@@ -6,6 +6,7 @@ export type ConfigSnapshot<TConfig> = {
 export interface ConfigStorePort<TConfig> {
   read(): Promise<ConfigSnapshot<TConfig> | null>;
   writeAtomic(snapshot: ConfigSnapshot<TConfig>): Promise<void>;
+  delete(): Promise<void>;
 }
 
 export interface SecretStorePort {
