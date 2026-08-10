@@ -6,7 +6,7 @@ import {
   BindConversationSpace,
   ReceiveInboundMessage,
   StartConversationTurn,
-  ThreadSerialExecutor
+  ThreadScheduler
 } from "../../packages/application/src/index.js";
 import type {
   ChannelName,
@@ -17,6 +17,7 @@ import type {
 import {
   SqliteConversationSpaceRepository,
   SqliteMessageLedger,
+  SqliteRuntimeEventRepository,
   SqliteThreadBindingRepository,
   SqliteTurnRepository,
   openVNextDatabase,
@@ -63,7 +64,11 @@ describe("M1-07 Fake A/B/C system acceptance", () => {
       codex,
       ids: new SequenceIdGenerator("failed-turn"),
       clock,
-      serial: new ThreadSerialExecutor()
+      scheduler: new ThreadScheduler({
+        events: repositories.events,
+        ids: new SequenceIdGenerator("scheduler-event"),
+        clock
+      })
     });
     const spaceA = sampleSpace("weixin", "personal", "owner-a", "微信 A");
     const spaceB = sampleSpace("feishu", "bot", "owner-b", "飞书 B");
@@ -197,12 +202,14 @@ function createRepositories(db: SqliteDatabase): {
   bindings: SqliteThreadBindingRepository;
   messages: SqliteMessageLedger;
   turns: SqliteTurnRepository;
+  events: SqliteRuntimeEventRepository;
 } {
   return {
     spaces: new SqliteConversationSpaceRepository(db),
     bindings: new SqliteThreadBindingRepository(db),
     messages: new SqliteMessageLedger(db),
-    turns: new SqliteTurnRepository(db)
+    turns: new SqliteTurnRepository(db),
+    events: new SqliteRuntimeEventRepository(db)
   };
 }
 

@@ -16,6 +16,7 @@ import type {
   CodexPort,
   CodexTurnHandle,
   CodexTurnResult,
+  CodexTurnStatus,
   ConversationSpaceRepository,
   CursorPage,
   DeliveryRepository,
@@ -185,13 +186,13 @@ export class MemoryTurnRepository implements TurnRepository {
   async listActiveByThread(threadId: string): Promise<Turn[]> {
     return [...this.values.values()].filter(
       (turn) => turn.threadId === threadId
-        && ["queued", "starting", "running"].includes(turn.status)
+        && ["queued", "starting", "running", "unknown"].includes(turn.status)
     );
   }
 
   async listRecoverable(): Promise<Turn[]> {
     return [...this.values.values()].filter(
-      (turn) => turn.status === "starting" || turn.status === "running"
+      (turn) => ["starting", "running", "unknown"].includes(turn.status)
     );
   }
 
@@ -304,6 +305,7 @@ export class ControllableCodexPort implements CodexPort {
   private readonly startWaiters: Array<{ count: number; resolve(): void }> = [];
   private nextThread = 1;
   private nextTurn = 1;
+  private readonly turnStatuses = new Map<string, CodexTurnStatus>();
   private control: CodexControlState = {
     model: "fake-model",
     reasoningEffort: null,
@@ -363,6 +365,7 @@ export class ControllableCodexPort implements CodexPort {
     };
     const deferred = { input: structuredClone(input), handle, resolve, reject };
     this.starts.push(deferred);
+    this.turnStatuses.set(turnId, "running");
     this.resolveStartWaiters();
     if (this.autoComplete) {
       queueMicrotask(() => this.complete(turnId));
@@ -370,7 +373,12 @@ export class ControllableCodexPort implements CodexPort {
     return handle;
   }
 
+  async getTurnStatus(_threadId: string, turnId: string): Promise<CodexTurnStatus> {
+    return this.turnStatuses.get(turnId) ?? "not_found";
+  }
+
   async interruptTurn(_threadId: string, turnId: string): Promise<void> {
+    this.turnStatuses.set(turnId, "interrupted");
     this.requireStart(turnId).reject(new Error("interrupted"));
   }
 
@@ -394,6 +402,7 @@ export class ControllableCodexPort implements CodexPort {
 
   complete(turnId: string, finalText = `completed ${turnId}`): void {
     const started = this.requireStart(turnId);
+    this.turnStatuses.set(turnId, "completed");
     started.resolve({
       threadId: started.handle.threadId,
       turnId,
@@ -403,6 +412,7 @@ export class ControllableCodexPort implements CodexPort {
   }
 
   fail(turnId: string, error: unknown): void {
+    this.turnStatuses.set(turnId, "failed");
     this.requireStart(turnId).reject(error);
   }
 

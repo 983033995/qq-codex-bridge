@@ -9,8 +9,9 @@ import type { StableErrorCode } from "./errors.js";
 
 const turnTransitions: Record<TurnStatus, readonly TurnStatus[]> = {
   queued: ["starting", "failed", "interrupted"],
-  starting: ["running", "failed", "interrupted"],
-  running: ["completed", "failed", "interrupted"],
+  starting: ["running", "unknown", "failed", "interrupted"],
+  running: ["unknown", "completed", "failed", "interrupted"],
+  unknown: ["completed", "failed", "interrupted"],
   completed: [],
   failed: [],
   interrupted: []

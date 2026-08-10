@@ -787,7 +787,7 @@ SQLite 只存运行数据：
 | `thread_id` | Codex Thread |
 | `space_id` | 发起 Space |
 | `inbound_message_id` | 原始消息 |
-| `status` | `queued/starting/running/completed/failed/interrupted` |
+| `status` | `queued/starting/running/unknown/completed/failed/interrupted` |
 | `transport` | `app-server/cdp-recovery` |
 | `error_code` | 稳定错误码 |
 | `started_at/completed_at` | 生命周期 |

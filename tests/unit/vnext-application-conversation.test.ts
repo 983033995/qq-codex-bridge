@@ -3,7 +3,7 @@ import {
   BindConversationSpace,
   ReceiveInboundMessage,
   StartConversationTurn,
-  ThreadSerialExecutor
+  ThreadScheduler
 } from "../../packages/application/src/index.js";
 import type {
   ConversationSpace,
@@ -15,6 +15,7 @@ import {
   FixedClock,
   MemoryConversationSpaceRepository,
   MemoryMessageLedger,
+  MemoryRuntimeEventRepository,
   MemoryThreadBindingRepository,
   MemoryTurnRepository,
   SequenceIdGenerator
@@ -124,11 +125,11 @@ describe("vNext conversation application use cases", () => {
       codex,
       ids: new SequenceIdGenerator("failed-turn"),
       clock: new FixedClock("2026-08-10T06:02:00.000Z"),
-      serial: new ThreadSerialExecutor()
+      scheduler: createScheduler()
     });
 
-    const firstA = start.execute(sampleMessage("message-a1", spaceA));
-    const secondA = start.execute(sampleMessage("message-a2", spaceA));
+    const firstA = start.execute(sampleMessage("message-a1", spaceA, undefined, 1));
+    const secondA = start.execute(sampleMessage("message-a2", spaceA, undefined, 2));
     const firstB = start.execute(sampleMessage("message-b1", spaceB));
     await codex.waitForStartCount(2);
     expect(codex.starts.map((started) => started.input.idempotencyKey).sort()).toEqual([
@@ -168,7 +169,7 @@ describe("vNext conversation application use cases", () => {
       codex,
       ids: new SequenceIdGenerator("failed-turn"),
       clock: new FixedClock(),
-      serial: new ThreadSerialExecutor()
+      scheduler: createScheduler()
     });
 
     const execution = start.execute(sampleMessage("message-failure", space));
@@ -194,7 +195,7 @@ describe("vNext conversation application use cases", () => {
       codex,
       ids: new SequenceIdGenerator("failed-turn"),
       clock: new FixedClock(),
-      serial: new ThreadSerialExecutor()
+      scheduler: createScheduler()
     });
 
     await expect(start.execute(sampleMessage("message-submission-failure", space)))
@@ -219,7 +220,7 @@ describe("vNext conversation application use cases", () => {
       codex,
       ids: new SequenceIdGenerator("failed-turn"),
       clock: new FixedClock(),
-      serial: new ThreadSerialExecutor()
+      scheduler: createScheduler()
     });
 
     const execution = start.execute(sampleMessage("message-interrupted", space));
@@ -237,6 +238,32 @@ describe("vNext conversation application use cases", () => {
       status: "interrupted",
       completedAt: "2026-08-10T06:01:00.000Z"
     });
+  });
+
+  it("interrupts accepted Codex work through the shared scheduler", async () => {
+    const bindings = new MemoryThreadBindingRepository();
+    const turns = new MemoryTurnRepository();
+    const codex = new ControllableCodexPort(false);
+    const scheduler = createScheduler();
+    const thread = await codex.createThread({ title: "Scheduler interrupt" });
+    const space = sampleSpace("scheduler-interrupt");
+    await bindings.save(sampleBinding("binding-scheduler-interrupt", space, thread.threadId));
+    const start = new StartConversationTurn({
+      bindings,
+      turns,
+      codex,
+      ids: new SequenceIdGenerator("failed-turn"),
+      clock: new FixedClock(),
+      scheduler
+    });
+
+    const execution = start.execute(sampleMessage("message-scheduler-interrupt", space));
+    await codex.waitForStartCount(1);
+    await turns.waitForStatus("turn-1", "running");
+    await expect(scheduler.interruptThread(thread.threadId)).resolves.toBe(true);
+    await expect(execution).rejects.toThrow("interrupted");
+    expect(await turns.get("turn-1")).toMatchObject({ status: "interrupted" });
+    await expect(codex.getTurnStatus(thread.threadId, "turn-1")).resolves.toBe("interrupted");
   });
 });
 
@@ -261,17 +288,26 @@ function sampleSpace(
 function sampleMessage(
   messageId: string,
   space: ConversationSpace,
-  receivedAt = "2026-08-10T06:00:00.000Z"
+  receivedAt = "2026-08-10T06:00:00.000Z",
+  receivedSequence = 1
 ): InboundEnvelope {
   return {
     messageId,
     providerMessageId: `provider-${messageId.replace(/^message-retry$/, "message-1")}`,
     spaceId: space.spaceId,
     senderId: "sender-1",
-    receivedSequence: 1,
+    receivedSequence,
     receivedAt,
     content: { text: messageId, mentions: [], attachments: [] }
   };
+}
+
+function createScheduler(): ThreadScheduler {
+  return new ThreadScheduler({
+    events: new MemoryRuntimeEventRepository(),
+    ids: new SequenceIdGenerator("scheduler-event"),
+    clock: new FixedClock()
+  });
 }
 
 function sampleBinding(

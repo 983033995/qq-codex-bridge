@@ -17,6 +17,7 @@ import type {
 import type { BindConversationSpace } from "./bind-conversation-space.js";
 import type { EnqueuePush } from "./enqueue-push.js";
 import type { RunHealthCheck } from "./run-health-check.js";
+import type { ThreadScheduler } from "./thread-scheduler.js";
 
 export type ControlActionExecution =
   | {
@@ -42,6 +43,7 @@ export class ExecuteControlAction {
     enqueuePush: EnqueuePush;
     runHealthCheck: RunHealthCheck;
     clock: Clock;
+    scheduler?: ThreadScheduler;
     threadListLimit?: number;
   }) {}
 
@@ -112,17 +114,27 @@ export class ExecuteControlAction {
         const binding = await this.requireBinding(input.spaceId);
         const turns = await this.deps.turns.listActiveByThread(binding.threadId);
         const interrupted: Turn[] = [];
+        const schedulerInterrupted = await this.deps.scheduler?.interruptThread(binding.threadId)
+          ?? false;
         for (const turn of turns) {
-          await this.deps.codex.interruptTurn(binding.threadId, turn.turnId);
-          const next: Turn = {
-            ...turn,
-            status: "interrupted",
-            completedAt: this.deps.clock.now().toISOString()
-          };
-          await this.deps.turns.save(next);
-          interrupted.push(next);
+          if (!schedulerInterrupted) {
+            await this.deps.codex.interruptTurn(binding.threadId, turn.turnId);
+            const next: Turn = {
+              ...turn,
+              status: "interrupted",
+              completedAt: this.deps.clock.now().toISOString()
+            };
+            await this.deps.turns.save(next);
+            interrupted.push(next);
+          } else {
+            interrupted.push(await this.deps.turns.get(turn.turnId) ?? turn);
+          }
         }
-        return completed(action, interrupted.length ? "Active turn interrupted" : "No active turn", interrupted);
+        return completed(
+          action,
+          schedulerInterrupted || interrupted.length ? "Active turn interrupted" : "No active turn",
+          interrupted
+        );
       }
       case "model.current":
         return completed(action, "Current model resolved", await this.deps.codex.getControlState());

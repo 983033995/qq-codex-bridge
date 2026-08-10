@@ -225,14 +225,14 @@ export class SqliteTurnRepository implements TurnRepository {
 
   async listActiveByThread(threadId: string): Promise<Turn[]> {
     return (this.db.prepare(`
-      SELECT * FROM turns WHERE thread_id = ? AND status IN ('queued', 'starting', 'running')
+      SELECT * FROM turns WHERE thread_id = ? AND status IN ('queued', 'starting', 'running', 'unknown')
       ORDER BY queued_at, turn_id
     `).all(threadId) as TurnRow[]).map(mapTurn);
   }
 
   async listRecoverable(): Promise<Turn[]> {
     return (this.db.prepare(
-      "SELECT * FROM turns WHERE status IN ('starting', 'running') ORDER BY queued_at, turn_id"
+      "SELECT * FROM turns WHERE status IN ('starting', 'running', 'unknown') ORDER BY queued_at, turn_id"
     ).all() as TurnRow[]).map(mapTurn);
   }
 }

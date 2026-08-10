@@ -74,7 +74,9 @@ export function codexPortContract(name: string, createPort: () => CodexPort): vo
         content: { text: "hello", mentions: [], attachments: [] }
       });
       expect(handle.threadId).toBe(thread.threadId);
+      expect(await port.getTurnStatus(handle.threadId, handle.turnId)).not.toBe("not_found");
       await port.interruptTurn(handle.threadId, handle.turnId);
+      expect(await port.getTurnStatus(handle.threadId, handle.turnId)).toBe("interrupted");
       await handle.completion.then(
         () => undefined,
         () => undefined

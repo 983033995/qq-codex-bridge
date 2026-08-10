@@ -153,5 +153,34 @@ export const schemaMigrations: readonly SchemaMigration[] = [
         error_code TEXT
       ) STRICT;
     `
+  },
+  {
+    version: 2,
+    name: "turn_unknown_recovery_status",
+    sql: `
+      ALTER TABLE turns RENAME TO turns_v1;
+      CREATE TABLE turns (
+        turn_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        space_id TEXT NOT NULL REFERENCES conversation_spaces(space_id),
+        inbound_message_id TEXT NOT NULL REFERENCES messages(message_id),
+        status TEXT NOT NULL CHECK (status IN ('queued', 'starting', 'running', 'unknown', 'completed', 'failed', 'interrupted')),
+        transport TEXT NOT NULL CHECK (transport IN ('app-server', 'cdp-recovery')),
+        error_code TEXT,
+        queued_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT
+      ) STRICT;
+      INSERT INTO turns (
+        turn_id, thread_id, space_id, inbound_message_id, status, transport,
+        error_code, queued_at, started_at, completed_at
+      )
+      SELECT
+        turn_id, thread_id, space_id, inbound_message_id, status, transport,
+        error_code, queued_at, started_at, completed_at
+      FROM turns_v1;
+      DROP TABLE turns_v1;
+      CREATE INDEX idx_turns_thread_status ON turns(thread_id, status);
+    `
   }
 ];

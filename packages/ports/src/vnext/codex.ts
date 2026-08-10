@@ -43,6 +43,13 @@ export type CodexTurnHandle = {
   completion: Promise<CodexTurnResult>;
 };
 
+export type CodexTurnStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "not_found";
+
 export type CodexControlState = {
   model: string | null;
   reasoningEffort: string | null;
@@ -56,6 +63,7 @@ export interface CodexPort {
   renameThread(threadId: string, title: string): Promise<void>;
   forkThread(threadId: string): Promise<CodexThread>;
   startTurn(input: StartCodexTurnInput): Promise<CodexTurnHandle>;
+  getTurnStatus(threadId: string, turnId: string): Promise<CodexTurnStatus>;
   interruptTurn(threadId: string, turnId: string): Promise<void>;
   getControlState(): Promise<CodexControlState>;
   switchModel(model: string): Promise<CodexControlState>;

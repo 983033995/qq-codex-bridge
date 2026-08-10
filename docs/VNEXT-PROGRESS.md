@@ -25,14 +25,15 @@
 - [x] M2-01 — 建立可复用 Fake AppServer：监听器注册后异步 `open`，支持 JSON-RPC Request/Response、Notification、乱序、重复、断线、丢请求超时，以及 Thread Start/List/Rename/Fork 和 Turn Start/Delta/Complete/Interrupt；旧 driver 测试已统一复用。
 - [x] M2-02 — 实现独立 vNext `CodexAppServerAdapter`：安全的本地进程发现与受管启动、JSON-RPC Request Map、`threadId + turnId` Pending Map、Thread/Turn 路由、增量/最终文本与媒体归一化、断线拒绝且不重发已接受 Turn、自动重连、Dispose 清理、Capability/Health，并通过真实 `CodexPort` Contract。
 - [x] M2-03 — 实现 `ThreadCoordinator` 并接入 Binding/Control 用例：新 Space 默认独占真实 Thread ID，支持 Active/共享/独占 Binding、创建/切换/重命名/分叉/解绑、标题缓存刷新、冲突前置检查与替换回滚；AppServer Thread 消失时将旧 Binding 标记 `broken` 并重建。
+- [x] M2-04 — 以有界 `ThreadScheduler` 替换无界 Promise Tail：同 Space 与同 Thread 均严格 FIFO，不同 Thread 默认最多并行 3；实现 Space 接收序号校验、Thread/全局队列上限、持久化排队事件、队列取消、运行中断和失败释放；新增显式 `unknown` Turn 状态、SQLite v2 无损 Migration，并通过稳定 `thread/read(includeTurns)` 对遗留 Turn 做 AppServer 状态对账。
 
 ## In Progress
 
-- [ ] M2-04 — 实现 Thread FIFO 与全局并发调度器：Space 顺序号、队列上限、状态事件、中断/取消和重启 Unknown Turn 对账。
+- [ ] M2-05 — 实现独立 CDP Recovery Adapter 与 Capability Set，锁定仅提交前可降级边界。
 
 ## Next
 
-- [ ] M2-05 — 实现独立 CDP Recovery Adapter 与 Capability Set。
+- [ ] M2-06 — 运行无需真实联系人或渠道凭据的真实 Codex Smoke Test。
 
 ## Verification
 
@@ -88,6 +89,15 @@
 | M2-03 `pnpm check` | PASS | 2026-08-10 |
 | M2-03 `pnpm test` | PASS；65 files / 340 tests | 2026-08-10 |
 | M2-03 `pnpm build` | PASS | 2026-08-10 |
+| M2-04 OpenAI Docs + 本机 AppServer Schema | PASS；稳定 `thread/read` 支持 `includeTurns`，本机 CLI `0.147.0-alpha.6.5` Turn 状态 Schema 已核对 | 2026-08-10 |
+| M2-04 Scheduler/Application 精确回归 | PASS；4 files / 24 tests | 2026-08-10 |
+| M2-04 vNext Unit/Contract/Integration | PASS；14 files / 95 tests | 2026-08-10 |
+| M2-04 `pnpm check` | PASS | 2026-08-10 |
+| M2-04 `pnpm test` | PASS；66 files / 351 tests | 2026-08-10 |
+| M2-04 `pnpm build` | PASS | 2026-08-10 |
+| M2-04 `git diff --check` | PASS | 2026-08-10 |
+| M2-04 CodeGraph 同步与影响复核 | PASS；222 files / 3,838 nodes / 11,137 edges，索引最新；无 HIGH/CRITICAL 调用面 | 2026-08-10 |
+| M2-04 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
 
 ## Risks and Blockers
 
@@ -95,6 +105,7 @@
 |---|---|---|---|
 | R-M0-01 原工作区含 57 项用户修改 | 极高：误操作会覆盖用户工作 | 所有业务开发只在 sibling worktree；每次 M0 关键写操作后复核状态指纹 | Codex |
 | R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 已关闭：全量测试恢复绿色 | Fake 仅在连接创建后异步触发 `open`；精确 8/8、全量 319/319 通过 | Codex |
+| R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
 | R-EXT-01 真实渠道、Router 与 Apple 凭据尚未提供 | 后续真实 E2E、24 小时 Gate、签名发布将阻塞 | 先完成全部 Fake/Contract/Integration、本地安装和无需凭据的工作，届时集中请求最小输入 | User |
 
 ## Decisions
@@ -104,3 +115,4 @@
 | 以 `52839e76ddef083fd9af314207e5576998801b76` 创建 `codex/vnext` | 避免把原始脏工作区的任何非 vNext 修改带入新分支 |
 | 新 worktree 使用 `/Volumes/13759427003/AI/qq-codex-bridge-vnext` | 计划推荐路径不存在，满足 sibling 隔离要求 |
 | 代码理解和现有 Symbol 影响分析仅使用 CodeGraph | 用户明确要求后续不再使用 GitNexus；新 worktree CodeGraph 已初始化且索引最新 |
+| 遗留 Turn 使用稳定 `thread/read(includeTurns)` 对账 | 官方 OpenAI Docs 与本机生成 Schema 均确认可按真实 Thread ID 读取完整 Turn 历史；避免依赖实验性 `thread/turns/list` |

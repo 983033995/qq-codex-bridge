@@ -108,6 +108,22 @@ describe("vNext turn state machine", () => {
       /stable error code/
     );
   });
+
+  it("marks inherited running work unknown and only permits terminal reconciliation", () => {
+    const unknown = transitionTurn(turn("running"), "unknown", { at: later });
+    expect(unknown).toMatchObject({
+      status: "unknown",
+      completedAt: null,
+      errorCode: null
+    });
+    expect(() => transitionTurn(unknown, "running", { at: later })).toThrow(
+      StateTransitionError
+    );
+    expect(transitionTurn(unknown, "interrupted", { at: later })).toMatchObject({
+      status: "interrupted",
+      completedAt: later
+    });
+  });
 });
 
 describe("vNext delivery state machine", () => {

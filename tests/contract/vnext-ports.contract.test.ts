@@ -12,6 +12,7 @@ import type {
   CodexHealth,
   CodexPort,
   CodexTurnHandle,
+  CodexTurnStatus,
   CreateThreadInput,
   DeliveryRequest,
   DeliveryResult,
@@ -81,6 +82,7 @@ class FakeCodexPort implements CodexPort {
   private readonly threads: CodexThread[] = [];
   private nextThreadId = 1;
   private nextTurnId = 1;
+  private readonly turns = new Map<string, CodexTurnStatus>();
 
   async health(): Promise<CodexHealth> {
     return {
@@ -120,6 +122,7 @@ class FakeCodexPort implements CodexPort {
   async startTurn(input: StartCodexTurnInput): Promise<CodexTurnHandle> {
     this.requireThread(input.threadId);
     const turnId = `turn-${this.nextTurnId++}`;
+    this.turns.set(turnId, "completed");
     return {
       threadId: input.threadId,
       turnId,
@@ -133,8 +136,14 @@ class FakeCodexPort implements CodexPort {
     };
   }
 
-  async interruptTurn(threadId: string, _turnId: string): Promise<void> {
+  async getTurnStatus(threadId: string, turnId: string): Promise<CodexTurnStatus> {
     this.requireThread(threadId);
+    return this.turns.get(turnId) ?? "not_found";
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    this.requireThread(threadId);
+    this.turns.set(turnId, "interrupted");
   }
 
   async getControlState(): Promise<CodexControlState> {

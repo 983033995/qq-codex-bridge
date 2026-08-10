@@ -8,6 +8,7 @@ import type {
   CodexPort,
   CodexTurnHandle,
   CodexTurnResult,
+  CodexTurnStatus,
   CreateThreadInput,
   ListThreadsInput,
   StartCodexTurnInput
@@ -248,6 +249,39 @@ export class CodexAppServerAdapter implements CodexPort {
       acceptedAt: this.now().toISOString(),
       completion
     };
+  }
+
+  async getTurnStatus(threadId: string, turnId: string): Promise<CodexTurnStatus> {
+    requireNonEmpty(threadId, "threadId");
+    requireNonEmpty(turnId, "turnId");
+    await this.ensureConnected();
+    const response = asRecord(await this.request("thread/read", {
+      threadId,
+      includeTurns: true
+    }));
+    const thread = asRecord(response.thread);
+    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    const turn = turns.map(asRecord).find((candidate) => readString(candidate.id) === turnId);
+    if (!turn) {
+      return "not_found";
+    }
+    const status = readString(turn.status);
+    switch (status) {
+      case "inProgress":
+      case "in_progress":
+      case "running":
+        return "running";
+      case "completed":
+      case "failed":
+      case "interrupted":
+        return status;
+      default:
+        throw new AppServerError(
+          `Codex AppServer returned an unknown turn status '${status ?? "missing"}'`,
+          "protocol_error",
+          true
+        );
+    }
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {

@@ -83,6 +83,7 @@ export type TurnStatus =
   | "queued"
   | "starting"
   | "running"
+  | "unknown"
   | "completed"
   | "failed"
   | "interrupted";

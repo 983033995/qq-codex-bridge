@@ -36,17 +36,65 @@ describe("vNext SQLite database", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.pragma("busy_timeout", { simple: true })).toBe(1234);
     expect(db.prepare("SELECT version, name FROM schema_migrations").all()).toEqual([
-      { version: 1, name: "vnext_core" }
+      { version: 1, name: "vnext_core" },
+      { version: 2, name: "turn_unknown_recovery_status" }
     ]);
 
     applyMigrations(db, schemaMigrations);
-    expect(db.prepare("SELECT count(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT count(*) AS count FROM schema_migrations").get()).toEqual({ count: 2 });
+  });
+
+  it("migrates v1 Turn rows without loss and accepts the unknown recovery status", () => {
+    const directory = createTemporaryDirectory();
+    const databasePath = path.join(directory, "runtime-vnext.db");
+    const first = track(openVNextDatabase(databasePath, { migrations: [schemaMigrations[0]!] }));
+    const space = sampleSpace("migration");
+    first.prepare(`
+      INSERT INTO conversation_spaces (
+        space_id, channel, account_id, provider_conversation_id, scope,
+        display_name, status, last_inbound_at, last_outbound_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    `).run(
+      space.spaceId,
+      space.channel,
+      space.accountId,
+      space.providerConversationId,
+      space.scope,
+      space.displayName,
+      space.status
+    );
+    first.prepare(`
+      INSERT INTO messages (
+        message_id, provider_message_id, space_id, sender_id, received_sequence,
+        direction, content_json, dedupe_key, status, created_at
+      ) VALUES ('message-migration', 'provider-migration', ?, 'sender', 1,
+        'inbound', '{}', 'dedupe-migration', 'accepted', '2026-08-10T06:00:00.000Z')
+    `).run(space.spaceId);
+    first.prepare(`
+      INSERT INTO turns (
+        turn_id, thread_id, space_id, inbound_message_id, status, transport,
+        error_code, queued_at, started_at, completed_at
+      ) VALUES ('turn-migration', 'thread-migration', ?, 'message-migration', 'running',
+        'app-server', NULL, '2026-08-10T06:00:00.000Z',
+        '2026-08-10T06:00:01.000Z', NULL)
+    `).run(space.spaceId);
+    first.close();
+    openDatabases.splice(openDatabases.indexOf(first), 1);
+
+    const migrated = track(openVNextDatabase(databasePath));
+    expect(migrated.prepare("SELECT status FROM turns WHERE turn_id = 'turn-migration'").get())
+      .toEqual({ status: "running" });
+    expect(() => migrated.prepare(
+      "UPDATE turns SET status = 'unknown' WHERE turn_id = 'turn-migration'"
+    ).run()).not.toThrow();
+    expect(migrated.prepare("SELECT status FROM turns WHERE turn_id = 'turn-migration'").get())
+      .toEqual({ status: "unknown" });
   });
 
   it("rolls back every statement and version record from a failed migration", () => {
     const db = openFileDatabase();
     const broken: SchemaMigration = {
-      version: 2,
+      version: 3,
       name: "broken_migration",
       sql: `
         CREATE TABLE must_rollback (id TEXT PRIMARY KEY) STRICT;
@@ -58,7 +106,7 @@ describe("vNext SQLite database", () => {
     expect(db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'must_rollback'"
     ).get()).toBeUndefined();
-    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 2").get()).toBeUndefined();
+    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 3").get()).toBeUndefined();
   });
 
   it("rolls back application writes when an IMMEDIATE transaction fails", () => {

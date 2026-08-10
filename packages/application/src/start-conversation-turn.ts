@@ -14,7 +14,7 @@ import type {
   ThreadBindingRepository,
   TurnRepository
 } from "../../ports/src/vnext/index.js";
-import { ThreadSerialExecutor } from "./thread-serial-executor.js";
+import { ThreadScheduler } from "./thread-scheduler.js";
 
 export type StartConversationTurnResult = {
   binding: ThreadBinding;
@@ -29,7 +29,7 @@ export class StartConversationTurn {
     codex: CodexPort;
     ids: IdGenerator;
     clock: Clock;
-    serial?: ThreadSerialExecutor;
+    scheduler: ThreadScheduler;
   }) {}
 
   async execute(message: InboundEnvelope): Promise<StartConversationTurnResult> {
@@ -40,13 +40,34 @@ export class StartConversationTurn {
         `Conversation space '${message.spaceId}' has no active Codex thread binding`
       );
     }
-    const serial = this.deps.serial ?? defaultSerialExecutor;
-    return serial.run(binding.threadId, () => this.start(binding, message));
+    let acceptedHandle: CodexTurnHandle | null = null;
+    let interruptionRequested = false;
+    const scheduled = await this.deps.scheduler.enqueue({
+      taskId: message.messageId,
+      spaceId: message.spaceId,
+      threadId: binding.threadId,
+      receivedSequence: message.receivedSequence,
+      work: () => this.start(binding, message, async (handle) => {
+        acceptedHandle = handle;
+        if (interruptionRequested) {
+          await this.interruptAccepted(binding, message, handle);
+        }
+      }, () => interruptionRequested),
+      interrupt: async () => {
+        interruptionRequested = true;
+        if (acceptedHandle) {
+          await this.interruptAccepted(binding, message, acceptedHandle);
+        }
+      }
+    });
+    return scheduled.completion;
   }
 
   private async start(
     binding: ThreadBinding,
-    message: InboundEnvelope
+    message: InboundEnvelope,
+    onAccepted: (handle: CodexTurnHandle) => Promise<void>,
+    isInterruptionRequested: () => boolean
   ): Promise<StartConversationTurnResult> {
     const active = await this.deps.turns.listActiveByThread(binding.threadId);
     if (active.length > 0) {
@@ -94,6 +115,7 @@ export class StartConversationTurn {
       completedAt: null
     };
     await this.deps.turns.save(running);
+    await onAccepted(handle);
 
     let result: CodexTurnResult;
     try {
@@ -103,7 +125,7 @@ export class StartConversationTurn {
       }
     } catch (error) {
       const latest = await this.deps.turns.get(running.turnId);
-      if (latest?.status === "interrupted") {
+      if (latest?.status === "interrupted" || isInterruptionRequested()) {
         throw error;
       }
       await this.deps.turns.save({
@@ -123,9 +145,27 @@ export class StartConversationTurn {
     await this.deps.turns.save(completed);
     return { binding, turn: completed, result };
   }
-}
 
-const defaultSerialExecutor = new ThreadSerialExecutor();
+  private async interruptAccepted(
+    binding: ThreadBinding,
+    message: InboundEnvelope,
+    handle: CodexTurnHandle
+  ): Promise<void> {
+    const current = await this.deps.turns.get(handle.turnId);
+    if (!current || current.inboundMessageId !== message.messageId) {
+      return;
+    }
+    if (current.status === "interrupted") {
+      return;
+    }
+    await this.deps.codex.interruptTurn(binding.threadId, handle.turnId);
+    await this.deps.turns.save({
+      ...current,
+      status: "interrupted",
+      completedAt: this.deps.clock.now().toISOString()
+    });
+  }
+}
 
 function errorCode(error: unknown): StableErrorCode {
   return error instanceof VNextDomainError ? error.code : "CODEX_UNAVAILABLE";

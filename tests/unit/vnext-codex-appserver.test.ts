@@ -23,6 +23,7 @@ describe("vNext Codex AppServer adapter", () => {
 
     const turnA = await adapter.startTurn(turnInput(threadA.threadId, "turn-a"));
     const turnB = await adapter.startTurn(turnInput(threadB.threadId, "turn-b"));
+    await expect(adapter.getTurnStatus(threadA.threadId, turnA.turnId)).resolves.toBe("running");
     server.emitTurnDelta(threadB.threadId, turnB.turnId, "B");
     server.emitTurnDelta(threadB.threadId, turnB.turnId, "B");
     server.completeTurn(threadB.threadId, turnB.turnId, { duplicateNotifications: true });
@@ -41,6 +42,8 @@ describe("vNext Codex AppServer adapter", () => {
       threadId: threadA.threadId,
       turn: { id: turnA.turnId, status: "completed" }
     });
+    server.threads.get(threadA.threadId)!.turns
+      .find((turn) => turn.id === turnA.turnId)!.status = "completed";
 
     await expect(turnB.completion).resolves.toMatchObject({
       threadId: threadB.threadId,
@@ -54,6 +57,8 @@ describe("vNext Codex AppServer adapter", () => {
       finalText: "A-final",
       mediaReferences: ["/tmp/a.png", "https://example.test/b.png"]
     });
+    await expect(adapter.getTurnStatus(threadA.threadId, turnA.turnId)).resolves.toBe("completed");
+    await expect(adapter.getTurnStatus(threadA.threadId, "missing-turn")).resolves.toBe("not_found");
     await adapter.dispose();
   });
 

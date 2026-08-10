@@ -149,7 +149,7 @@ export function repositoryPortContract(
     it("round-trips turns and identifies active and restart-recoverable work", async () => {
       const space = sampleSpace("turns");
       await harness.spaces.save(space);
-      const messages = [1, 2, 3].map((sequence) =>
+      const messages = [1, 2, 3, 4].map((sequence) =>
         sampleMessage(`message-${sequence}`, space, sequence)
       );
       for (const message of messages) {
@@ -157,16 +157,18 @@ export function repositoryPortContract(
       }
       const queued = sampleTurn("turn-queued", messages[0]!, "queued");
       const running = sampleTurn("turn-running", messages[1]!, "running");
-      const completed = sampleTurn("turn-completed", messages[2]!, "completed");
+      const unknown = sampleTurn("turn-unknown", messages[2]!, "unknown");
+      const completed = sampleTurn("turn-completed", messages[3]!, "completed");
       await harness.turns.save(queued);
       await harness.turns.save(running);
+      await harness.turns.save(unknown);
       await harness.turns.save(completed);
 
       expect(await harness.turns.get(running.turnId)).toEqual(running);
       expect((await harness.turns.listActiveByThread("thread-turns")).map((turn) => turn.turnId))
-        .toEqual(["turn-queued", "turn-running"]);
+        .toEqual(["turn-queued", "turn-running", "turn-unknown"]);
       expect((await harness.turns.listRecoverable()).map((turn) => turn.turnId))
-        .toEqual(["turn-running"]);
+        .toEqual(["turn-running", "turn-unknown"]);
     });
 
     it("round-trips routing decisions and delivery state", async () => {
