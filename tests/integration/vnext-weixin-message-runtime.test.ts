@@ -34,6 +34,25 @@ afterEach(() => {
 });
 
 describe("vNext Weixin message runtime", () => {
+  it("uses the same durable pipeline for a Feishu text message", async () => {
+    const fixture = createFixture();
+    const runtime = fixture.runtime({
+      async deliver(input) { return `sent:${input.peerId}`; }
+    }, undefined, "feishu");
+    const execution = runtime.handle({
+      ...inbound("feishu-provider-1"),
+      accountId: "feishu:default",
+      attachments: []
+    });
+    await fixture.codex.waitForStartCount(1);
+    expect(fixture.codex.starts[0]!.input.idempotencyKey).toMatch(/^feishu-[a-f0-9]{64}$/);
+    fixture.codex.complete(fixture.codex.starts[0]!.handle.turnId, "feishu reply");
+    await expect(execution).resolves.toMatchObject({
+      message: { spaceId: "feishu:default::c2c:peer-1" },
+      delivery: { status: "delivered", providerMessageId: "sent:peer-1" }
+    });
+  });
+
   it("persists, deduplicates, binds, runs Codex, and delivers one stable reply", async () => {
     const fixture = createFixture();
     const deliveries: unknown[] = [];
@@ -286,8 +305,9 @@ function createFixture() {
       maxAttempts?: number;
       baseDelayMs?: number;
       maxDelayMs?: number;
-    }) {
+    }, channel: "weixin" | "feishu" = "weixin") {
       return new WeixinMessageRuntime({
+        channel,
         spaces,
         deliveries,
         receive,

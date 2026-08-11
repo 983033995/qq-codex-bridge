@@ -39,6 +39,7 @@ import {
 } from "./composition-root.js";
 import { ControlApiServer, type ControlApiServices } from "./control-api.js";
 import { WeixinMessageRuntime } from "./weixin-message-runtime.js";
+import { FeishuAccountRuntime } from "./feishu-account-runtime.js";
 
 export type ProductionControlDaemon = {
   daemon: ControlDaemonCompositionRoot;
@@ -84,6 +85,7 @@ export async function createProductionControlDaemon(options: {
   const staticRoot = options.staticRoot ?? path.join(process.cwd(), "dist", "apps", "control-ui");
   const eventBus = new StructuredEventBus();
   let weixinMessages: WeixinMessageRuntime | null = null;
+  let feishuMessages: WeixinMessageRuntime | null = null;
   const weixinWorker = new WeixinWorkerSupervisor({
     workerScriptPath: options.weixinWorkerScriptPath
       ?? fileURLToPath(new URL("../../weixin-worker/src/cli.js", import.meta.url)),
@@ -119,6 +121,36 @@ export async function createProductionControlDaemon(options: {
       return weixinMessages.accept(message);
     }
   });
+  const feishuAccounts = new Map(configSnapshot.value.channels
+    .flatMap((channel) => channel.channel === "feishu" && channel.enabled ? [channel] : [])
+    .map((channel) => {
+      const id = `feishu:${channel.accountId}`;
+      const runtime = new FeishuAccountRuntime({
+        accountId: channel.accountId,
+        appId: channel.appId,
+        secretRef: channel.secretRef,
+        secrets: secretStore,
+        async onInbound(message) {
+          if (!feishuMessages) throw new Error("Feishu message runtime is not initialized");
+          await feishuMessages.accept(message);
+        },
+        onError(error) {
+          eventBus.publish({
+            component: id,
+            type: "feishu.runtime.error",
+            payload: { error: error.message }
+          });
+        },
+        onIgnoredMessage(diagnostic) {
+          eventBus.publish({
+            component: id,
+            type: "feishu.message.ignored",
+            payload: diagnostic
+          });
+        }
+      });
+      return [id, runtime] as const;
+    }));
 
   let services: ControlApiServices | null = null;
   const api = new ControlApiServer({
@@ -139,6 +171,7 @@ export async function createProductionControlDaemon(options: {
     components: [
       codexComponent(codex),
       weixinWorker,
+      ...feishuAccounts.values(),
       routerComponent(router),
       passiveComponent("push", false, "Push worker is disabled until configured"),
       passiveComponent("queues", true, "Thread queues are ready"),
@@ -188,6 +221,34 @@ export async function createProductionControlDaemon(options: {
       });
     }
   });
+  feishuMessages = new WeixinMessageRuntime({
+    channel: "feishu",
+    spaces,
+    deliveries,
+    receive: receiveInboundMessage,
+    bind: bindConversationSpace,
+    startTurn: startConversationTurn,
+    worker: {
+      async deliver(input) {
+        const account = feishuAccounts.get(input.accountId);
+        if (!account) throw new Error(`Feishu runtime '${input.accountId}' is not configured`);
+        return account.deliver(input);
+      }
+    },
+    ids: { next: randomUUID },
+    clock: { now: () => new Date() },
+    onProcessingError(error, message) {
+      eventBus.publish({
+        component: "feishu-message-runtime",
+        type: "feishu.message.processing_failed",
+        payload: {
+          providerMessageId: message.providerMessageId,
+          spaceId: message.spaceId,
+          error: error.message
+        }
+      });
+    }
+  });
   services = new ControlApiApplicationServices({
     daemon,
     configStore,
@@ -205,6 +266,15 @@ export async function createProductionControlDaemon(options: {
     router,
     channels: {
       async health(channelId) {
+        const feishu = feishuAccounts.get(channelId);
+        if (feishu) {
+          const health = await feishu.health();
+          return {
+            status: health.status,
+            message: health.message,
+            lastActivityAt: health.lastSuccessAt ?? null
+          };
+        }
         if (!isWeixinChannel(channelId)) {
           return {
             status: "degraded",
@@ -220,11 +290,18 @@ export async function createProductionControlDaemon(options: {
         };
       },
       async test(channelId) {
+        const feishu = feishuAccounts.get(channelId);
+        if (feishu) return feishu.test();
         requireWeixinChannel(channelId);
         await weixinWorker.ping();
         return { ok: true, message: "Weixin worker IPC round-trip succeeded" };
       },
       async restart(channelId) {
+        const feishu = feishuAccounts.get(channelId);
+        if (feishu) {
+          await feishu.restart();
+          return { restarted: true };
+        }
         requireWeixinChannel(channelId);
         await weixinWorker.restart();
         return { restarted: true };
@@ -271,6 +348,7 @@ export async function createProductionControlDaemon(options: {
     async start() {
       await daemon.start();
       await weixinMessages!.start();
+      await feishuMessages!.start();
       await daemon.applyPlan({ revision: configSnapshot!.revision, effects: [] });
     },
     async stop() {
@@ -279,6 +357,7 @@ export async function createProductionControlDaemon(options: {
       unsubscribe();
       try {
         await weixinMessages!.stop();
+        await feishuMessages!.stop();
         await daemon.stop();
       } finally {
         database.close();

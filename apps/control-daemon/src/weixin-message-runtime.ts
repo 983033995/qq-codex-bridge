@@ -33,7 +33,20 @@ export type WeixinMessageRuntimeResult = {
   delivery: Delivery | null;
 };
 
+export type ChannelInboundTextMessage = {
+  accountId: string;
+  providerMessageId: string;
+  peerId: string;
+  chatType: "c2c" | "group";
+  senderId: string;
+  text: string;
+  attachments: Attachment[];
+  sequence: number;
+  receivedAt: string;
+};
+
 export class WeixinMessageRuntime {
+  private readonly channel: "weixin" | "feishu";
   private readonly maxDeliveryAttempts: number;
   private readonly retryBaseDelayMs: number;
   private readonly retryMaxDelayMs: number;
@@ -67,7 +80,9 @@ export class WeixinMessageRuntime {
       maxDelayMs?: number;
       recoveryLimit?: number;
     };
+    channel?: "weixin" | "feishu";
   }) {
+    this.channel = deps.channel ?? "weixin";
     this.maxDeliveryAttempts = positiveInteger(deps.retry?.maxAttempts ?? 3, "retry.maxAttempts");
     this.retryBaseDelayMs = positiveInteger(deps.retry?.baseDelayMs ?? 1_000, "retry.baseDelayMs");
     this.retryMaxDelayMs = positiveInteger(deps.retry?.maxDelayMs ?? 60_000, "retry.maxDelayMs");
@@ -96,13 +111,13 @@ export class WeixinMessageRuntime {
     return this.recovery;
   }
 
-  async handle(input: WeixinInboundTextMessage): Promise<WeixinMessageRuntimeResult> {
+  async handle(input: WeixinInboundTextMessage | ChannelInboundTextMessage): Promise<WeixinMessageRuntimeResult> {
     const received = await this.persistInbound(input);
     if (received.duplicate) return received.result;
     return this.processInbound(received.space, received.message);
   }
 
-  async accept(input: WeixinInboundTextMessage): Promise<void> {
+  async accept(input: WeixinInboundTextMessage | ChannelInboundTextMessage): Promise<void> {
     const received = await this.persistInbound(input);
     if (received.duplicate) return;
     void this.processInbound(received.space, received.message).catch((error) => {
@@ -110,22 +125,22 @@ export class WeixinMessageRuntime {
     });
   }
 
-  private async persistInbound(input: WeixinInboundTextMessage): Promise<{
+  private async persistInbound(input: WeixinInboundTextMessage | ChannelInboundTextMessage): Promise<{
     duplicate: boolean;
     space: ConversationSpace;
     message: InboundEnvelope;
     result: WeixinMessageRuntimeResult;
   }> {
     const account = parseChannelAccountId(input.accountId);
-    if (account.channel !== "weixin") {
-      throw new Error(`Weixin inbound account '${input.accountId}' is invalid`);
+    if (account.channel !== this.channel) {
+      throw new Error(`${this.channel} inbound account '${input.accountId}' is invalid`);
     }
-    const accountId = createChannelAccountId("weixin", account.accountId);
+    const accountId = createChannelAccountId(this.channel, account.accountId);
     const spaceId = createConversationSpaceId(accountId, input.chatType, input.peerId);
     const existingSpace = await this.deps.spaces.get(spaceId);
     const space: ConversationSpace = existingSpace ?? {
       spaceId,
-      channel: "weixin",
+      channel: this.channel,
       accountId,
       providerConversationId: input.peerId,
       scope: input.chatType,
@@ -135,7 +150,7 @@ export class WeixinMessageRuntime {
       lastOutboundAt: null
     };
     const message: InboundEnvelope = {
-      messageId: stableMessageId(input.accountId, input.providerMessageId),
+      messageId: stableMessageId(this.channel, input.accountId, input.providerMessageId),
       providerMessageId: input.providerMessageId,
       spaceId,
       senderId: input.senderId,
@@ -224,10 +239,11 @@ export class WeixinMessageRuntime {
           continue;
         }
         const space = await this.deps.spaces.get(delivery.spaceId);
-        if (!space || space.channel !== "weixin") {
+        if (!space) {
           await this.failRecovery(delivery);
           continue;
         }
+        if (space.channel !== this.channel) continue;
         await this.attemptDelivery(delivery, content, space);
       } catch {
         // attemptDelivery persists a retry_wait or terminal failed state.
@@ -323,8 +339,8 @@ export class WeixinMessageRuntime {
   }
 }
 
-function stableMessageId(accountId: string, providerMessageId: string): string {
-  return `weixin-${createHash("sha256").update(accountId).update("\0").update(providerMessageId).digest("hex")}`;
+function stableMessageId(channel: "weixin" | "feishu", accountId: string, providerMessageId: string): string {
+  return `${channel}-${createHash("sha256").update(accountId).update("\0").update(providerMessageId).digest("hex")}`;
 }
 
 function stableDeliveryError(error: unknown): StableErrorCode {
