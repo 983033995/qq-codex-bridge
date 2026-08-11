@@ -42,7 +42,7 @@ export class MacOsKeychainSecretStore implements SecretStorePort {
     if ((options.platform ?? process.platform) !== "darwin") {
       throw new Error("macOS Keychain secret store is only available on Darwin");
     }
-    this.service = options.service ?? "com.qq-codex-bridge.vnext";
+    this.service = validateService(options.service ?? "com.qq-codex-bridge.vnext");
     this.run = options.runner ?? runSecurityCommand;
   }
 
@@ -71,15 +71,17 @@ export class MacOsKeychainSecretStore implements SecretStorePort {
     if (!value) {
       throw new Error("Keychain secret cannot be empty");
     }
-    await this.run([
+    const passwordHex = Buffer.from(value, "utf8").toString("hex");
+    await this.run(["-i"], [
       "add-generic-password",
       "-U",
       "-s",
-      this.service,
+      quoteInteractiveArgument(this.service),
       "-a",
-      ref,
-      "-w"
-    ], `${value}\n`);
+      quoteInteractiveArgument(ref),
+      "-X",
+      passwordHex
+    ].join(" ") + "\n");
   }
 
   async delete(ref: string): Promise<void> {
@@ -109,15 +111,27 @@ async function runSecurityCommand(
       stdio: ["pipe", "pipe", "pipe"]
     });
     const stdout: Buffer[] = [];
+    let settled = false;
+    const finish = (work: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      work();
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error("macOS security command timed out")));
+    }, 10_000);
+    timeout.unref();
     child.stdout.on("data", (chunk: Buffer | string) => {
       stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
-    child.on("error", reject);
+    child.on("error", (error) => finish(() => reject(error)));
     child.on("close", (code) => {
       if (code === 0) {
-        resolve({ stdout: Buffer.concat(stdout).toString("utf8") });
+        finish(() => resolve({ stdout: Buffer.concat(stdout).toString("utf8") }));
       } else {
-        reject(new SecurityCommandError(code));
+        finish(() => reject(new SecurityCommandError(code)));
       }
     });
     child.stdin.end(input);
@@ -128,4 +142,15 @@ function validateRef(ref: string): void {
   if (!/^[a-z0-9][a-z0-9/_-]*$/.test(ref)) {
     throw new Error(`Invalid secret reference '${ref}'`);
   }
+}
+
+function validateService(service: string): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(service)) {
+    throw new Error(`Invalid Keychain service '${service}'`);
+  }
+  return service;
+}
+
+function quoteInteractiveArgument(value: string): string {
+  return `"${value.replace(/([\\"])/g, "\\$1")}"`;
 }

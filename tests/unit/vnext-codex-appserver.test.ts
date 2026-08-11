@@ -24,6 +24,11 @@ describe("vNext Codex AppServer adapter", () => {
 
     const turnA = await adapter.startTurn(turnInput(threadA.threadId, "turn-a"));
     const turnB = await adapter.startTurn(turnInput(threadB.threadId, "turn-b"));
+    expect(server.socket.sent.filter((request) => request.method === "thread/resume").map((request) => request.params))
+      .toEqual([
+        { threadId: threadA.threadId, persistExtendedHistory: true },
+        { threadId: threadB.threadId, persistExtendedHistory: true }
+      ]);
     await expect(adapter.getTurnStatus(threadA.threadId, turnA.turnId)).resolves.toBe("running");
     server.emitTurnDelta(threadB.threadId, turnB.turnId, "B");
     server.emitTurnDelta(threadB.threadId, turnB.turnId, "B");
@@ -84,6 +89,27 @@ describe("vNext Codex AppServer adapter", () => {
     const handle = await adapter.startTurn(turnInput(thread.threadId, "early-key"));
 
     await expect(handle.completion).resolves.toMatchObject({ finalText: "early-final" });
+    await adapter.dispose();
+  });
+
+  it("includes AppServer Turn failure details in accepted Turn errors", async () => {
+    const { adapter, server } = createHarness();
+    const thread = await adapter.createThread({ title: "failed" });
+    const handle = await adapter.startTurn(turnInput(thread.threadId, "failed-key"));
+    server.socket.notify("turn/completed", {
+      threadId: thread.threadId,
+      turn: {
+        id: handle.turnId,
+        status: "failed",
+        error: { message: "model is unavailable" }
+      }
+    });
+
+    await expect(handle.completion).rejects.toMatchObject({
+      code: "turn_failed",
+      accepted: true,
+      message: expect.stringContaining("model is unavailable")
+    });
     await adapter.dispose();
   });
 
@@ -280,6 +306,17 @@ describe("vNext AppServer endpoint discovery", () => {
       "101 /Applications/Codex.app/codex app-server --listen ws://127.0.0.1:4500",
       "202 /Applications/Codex.app/codex app-server --listen ws://127.0.0.1:4501"
     ].join("\n"), readCwd, (value) => value === "/Volumes/live-worktree"))
+      .resolves.toEqual(["ws://127.0.0.1:4501"]);
+  });
+
+  it("skips discovered AppServers from a different workspace", async () => {
+    const readCwd = vi.fn(async (pid: number) => pid === 101
+      ? "/Volumes/other-worktree"
+      : "/Volumes/current-worktree");
+    await expect(discoverUsableRunningAppServerUrlsFromProcessList([
+      "101 /Applications/Codex.app/codex app-server --listen ws://127.0.0.1:4500",
+      "202 /Applications/Codex.app/codex app-server --listen ws://127.0.0.1:4501"
+    ].join("\n"), readCwd, () => true, "/Volumes/current-worktree"))
       .resolves.toEqual(["ws://127.0.0.1:4501"]);
   });
 

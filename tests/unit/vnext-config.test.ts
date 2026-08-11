@@ -168,8 +168,9 @@ describe("macOS Keychain adapter", () => {
     await store.set("router/default", "sensitive-value");
 
     expect(calls[0]?.args).not.toContain("sensitive-value");
-    expect(calls[0]?.args.at(-1)).toBe("-w");
-    expect(calls[0]?.input).toBe("sensitive-value\n");
+    expect(calls[0]?.args).toEqual(["-i"]);
+    expect(calls[0]?.input).not.toContain("sensitive-value");
+    expect(calls[0]?.input).toContain(Buffer.from("sensitive-value", "utf8").toString("hex"));
   });
 
   it("reads exact values and treats Keychain item-not-found as null", async () => {

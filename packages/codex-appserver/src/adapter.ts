@@ -205,6 +205,10 @@ export class CodexAppServerAdapter implements CodexPort {
     requireNonEmpty(input.threadId, "threadId");
     requireNonEmpty(input.idempotencyKey, "idempotencyKey");
     await this.ensureConnected();
+    await this.request("thread/resume", {
+      threadId: input.threadId,
+      persistExtendedHistory: true
+    });
     const response = asRecord(await this.request("turn/start", {
       threadId: input.threadId,
       input: toAppServerInput(input.content),
@@ -557,8 +561,9 @@ export class CodexAppServerAdapter implements CodexPort {
           true
         ));
       } else {
+        const failureMessage = readTurnFailureMessage(turn, params);
         this.rejectTurn(pending, new AppServerError(
-          `Codex turn '${pending.turnId}' failed with status '${status}'`,
+          `Codex turn '${pending.turnId}' failed with status '${status}'${failureMessage ? `: ${failureMessage}` : ""}`,
           "turn_failed",
           true
         ));
@@ -828,6 +833,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function readTurnFailureMessage(
+  turn: Record<string, unknown>,
+  params: Record<string, unknown>
+): string | null {
+  const error = asRecord(turn.error ?? params.error);
+  return readString(error.message)
+    ?? readString(turn.error)
+    ?? readString(params.error);
 }
 
 function isNoActiveTurnToInterruptError(error: unknown): boolean {

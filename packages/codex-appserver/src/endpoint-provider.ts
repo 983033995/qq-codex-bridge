@@ -119,7 +119,12 @@ export async function discoverRunningAppServerUrls(): Promise<string[]> {
   const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid=,command="], {
     maxBuffer: 2 * 1024 * 1024
   });
-  return discoverUsableRunningAppServerUrlsFromProcessList(stdout, readProcessCwd);
+  return discoverUsableRunningAppServerUrlsFromProcessList(
+    stdout,
+    readProcessCwd,
+    existsSync,
+    process.cwd()
+  );
 }
 
 export function discoverRunningAppServerUrlsFromProcessList(processList: string): string[] {
@@ -129,7 +134,8 @@ export function discoverRunningAppServerUrlsFromProcessList(processList: string)
 export async function discoverUsableRunningAppServerUrlsFromProcessList(
   processList: string,
   readCwd: (pid: number) => Promise<string | null>,
-  pathExists: (path: string) => boolean = existsSync
+  pathExists: (path: string) => boolean = existsSync,
+  expectedCwd?: string
 ): Promise<string[]> {
   const usable: string[] = [];
   for (const candidate of parseRunningAppServerCandidates(processList)) {
@@ -137,7 +143,7 @@ export async function discoverUsableRunningAppServerUrlsFromProcessList(
       continue;
     }
     const cwd = await readCwd(candidate.pid).catch(() => null);
-    if (cwd && pathExists(cwd)) {
+    if (cwd && pathExists(cwd) && (!expectedCwd || cwd === expectedCwd)) {
       usable.push(candidate.url);
     }
   }
