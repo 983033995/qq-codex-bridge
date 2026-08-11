@@ -19,6 +19,7 @@ import {
 import { CodexAppServerAdapter } from "../../../packages/codex-appserver/src/index.js";
 import { WeixinWorkerSupervisor } from "../../../packages/channel-weixin/src/index.js";
 import { StructuredEventBus } from "../../../packages/observability/src/index.js";
+import { OpenAiCompatibleIntentRouter } from "../../../packages/router-openai-compatible/src/index.js";
 import {
   openVNextDatabase,
   SqliteConversationSpaceRepository,
@@ -79,6 +80,7 @@ export async function createProductionControlDaemon(options: {
   const push = new SqlitePushRepository(database);
   const codex = new CodexAppServerAdapter({ appServerUrl: options.appServerUrl });
   const secretStore = new MacOsKeychainSecretStore();
+  const router = new OpenAiCompatibleIntentRouter({ configStore, secretStore });
   const staticRoot = options.staticRoot ?? path.join(process.cwd(), "dist", "apps", "control-ui");
   const eventBus = new StructuredEventBus();
   let weixinMessages: WeixinMessageRuntime | null = null;
@@ -137,7 +139,7 @@ export async function createProductionControlDaemon(options: {
     components: [
       codexComponent(codex),
       weixinWorker,
-      passiveComponent("router", false, "Router is disabled until configured"),
+      routerComponent(router),
       passiveComponent("push", false, "Push worker is disabled until configured"),
       passiveComponent("queues", true, "Thread queues are ready"),
       api
@@ -200,9 +202,16 @@ export async function createProductionControlDaemon(options: {
     runtimeEvents,
     push,
     bindConversationSpace,
+    router,
     channels: {
       async health(channelId) {
-        requireWeixinChannel(channelId);
+        if (!isWeixinChannel(channelId)) {
+          return {
+            status: "degraded",
+            message: "渠道配置已导入，但 vNext 运行时尚未连接",
+            lastActivityAt: null
+          };
+        }
         const health = await weixinWorker.health();
         return {
           status: health.status,
@@ -304,6 +313,17 @@ function codexComponent(codex: CodexAppServerAdapter): ControlDaemonComponent {
   };
 }
 
+function routerComponent(router: OpenAiCompatibleIntentRouter): ControlDaemonComponent {
+  return {
+    name: "router",
+    critical: false,
+    start() {},
+    stop() {},
+    reload() {},
+    health: () => router.health()
+  };
+}
+
 function passiveComponent(name: string, critical: boolean, message: string): ControlDaemonComponent {
   const since = new Date().toISOString();
   return {
@@ -343,7 +363,11 @@ function errorMessage(error: unknown): string {
 }
 
 function requireWeixinChannel(channelId: string): void {
-  if (!channelId.startsWith("weixin:") || channelId.length <= "weixin:".length) {
+  if (!isWeixinChannel(channelId)) {
     throw new Error(`Channel runtime '${channelId}' is not connected`);
   }
+}
+
+function isWeixinChannel(channelId: string): boolean {
+  return channelId.startsWith("weixin:") && channelId.length > "weixin:".length;
 }
