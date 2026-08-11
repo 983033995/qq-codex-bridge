@@ -2,5 +2,8 @@ export * from "./login-manager.js";
 export * from "./login-provider.js";
 export * from "./login-state-store.js";
 export * from "./login-types.js";
+export * from "./message-client.js";
+export * from "./message-state-store.js";
+export * from "./message-types.js";
 export * from "./worker-protocol.js";
 export * from "./worker-supervisor.js";

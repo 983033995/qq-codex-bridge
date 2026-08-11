@@ -3,6 +3,7 @@ import { fork, type ForkOptions } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { ComponentHealth } from "../../domain/src/vnext/index.js";
 import type { WeixinLoginState } from "./login-types.js";
+import type { WeixinInboundTextMessage, WeixinTextDelivery } from "./message-types.js";
 import {
   WEIXIN_WORKER_AUTH_ENV,
   WEIXIN_WORKER_PROTOCOL_VERSION,
@@ -14,6 +15,7 @@ import {
 export type WeixinWorkerConfiguration = {
   accounts: string[];
   login: WeixinWorkerLoginConfiguration;
+  message: WeixinWorkerMessageConfiguration;
 };
 
 export type WeixinWorkerLoginConfiguration = {
@@ -24,6 +26,24 @@ export type WeixinWorkerLoginConfiguration = {
   qrPollTimeoutMs: number;
   qrTotalTimeoutMs: number;
 };
+
+export type WeixinWorkerMessageConfiguration = {
+  stateFilePath: string;
+  longPollTimeoutMs: number;
+  apiTimeoutMs: number;
+  retryDelayMs: number;
+};
+
+export class WeixinDeliveryError extends Error {
+  constructor(
+    readonly code: string,
+    readonly retryable: boolean,
+    message: string
+  ) {
+    super(message);
+    this.name = "WeixinDeliveryError";
+  }
+}
 
 export type WeixinWorkerEvent = {
   type: string;
@@ -54,12 +74,14 @@ export type WeixinWorkerSupervisorOptions = {
   handshakeTimeoutMs?: number;
   pingTimeoutMs?: number;
   commandTimeoutMs?: number;
+  deliveryTimeoutMs?: number;
   stopTimeoutMs?: number;
   stableUptimeMs?: number;
   restartBackoffMs?: readonly number[];
   execArgv?: string[];
   spawnWorker?(input: { scriptPath: string; env: NodeJS.ProcessEnv; execArgv?: string[] }): WeixinWorkerChild;
   onEvent?(event: WeixinWorkerEvent): void;
+  onInboundMessage?(message: WeixinInboundTextMessage): Promise<void> | void;
   now?: () => Date;
   randomToken?: () => string;
   randomId?: () => string;
@@ -78,6 +100,7 @@ export class WeixinWorkerSupervisor {
   private readonly handshakeTimeoutMs: number;
   private readonly pingTimeoutMs: number;
   private readonly commandTimeoutMs: number;
+  private readonly deliveryTimeoutMs: number;
   private readonly stopTimeoutMs: number;
   private readonly stableUptimeMs: number;
   private readonly restartBackoffMs: readonly number[];
@@ -103,6 +126,7 @@ export class WeixinWorkerSupervisor {
   private restartTimer: NodeJS.Timeout | null = null;
   private readonly pendingPings = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   private readonly pendingCommands = new Map<string, { resolve(state: WeixinLoginState): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  private readonly pendingDeliveries = new Map<string, { resolve(providerMessageId: string | null): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
 
   constructor(private readonly options: WeixinWorkerSupervisorOptions) {
     if (!options.workerScriptPath.trim()) throw new Error("workerScriptPath is required");
@@ -114,6 +138,7 @@ export class WeixinWorkerSupervisor {
     this.handshakeTimeoutMs = positiveInteger(options.handshakeTimeoutMs ?? 10_000, "handshakeTimeoutMs");
     this.pingTimeoutMs = positiveInteger(options.pingTimeoutMs ?? 2_000, "pingTimeoutMs");
     this.commandTimeoutMs = positiveInteger(options.commandTimeoutMs ?? 15_000, "commandTimeoutMs");
+    this.deliveryTimeoutMs = positiveInteger(options.deliveryTimeoutMs ?? 20_000, "deliveryTimeoutMs");
     this.stopTimeoutMs = positiveInteger(options.stopTimeoutMs ?? 3_000, "stopTimeoutMs");
     this.stableUptimeMs = positiveInteger(options.stableUptimeMs ?? 60_000, "stableUptimeMs");
     if (this.heartbeatTimeoutMs <= this.heartbeatIntervalMs) {
@@ -182,6 +207,31 @@ export class WeixinWorkerSupervisor {
     return this.loginCommand("login.logout", accountId);
   }
 
+  deliver(delivery: WeixinTextDelivery): Promise<string | null> {
+    const child = this.child;
+    const accountId = required(delivery.accountId, "delivery.accountId");
+    if (!child || this.state !== "ready") throw new Error("Weixin worker is not ready");
+    if (!this.configuration.accounts.includes(accountId)) {
+      throw new Error(`Weixin account '${accountId}' is not configured in the worker`);
+    }
+    const requestId = this.randomId();
+    return new Promise<string | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingDeliveries.delete(requestId);
+        reject(new WeixinDeliveryError("WEIXIN_DELIVERY_TIMEOUT", true, "Weixin worker delivery timed out"));
+      }, this.deliveryTimeoutMs);
+      timer.unref();
+      this.pendingDeliveries.set(requestId, { resolve, reject, timer });
+      try {
+        this.send(child, { type: "message.deliver", requestId, delivery: structuredClone(delivery) });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingDeliveries.delete(requestId);
+        reject(normalizeError(error));
+      }
+    });
+  }
+
   async health(): Promise<ComponentHealth> {
     if (this.state === "disabled") {
       return { component: this.name, status: "ready", message: "Weixin worker is disabled until an account is enabled", since: this.stateSince };
@@ -242,6 +292,7 @@ export class WeixinWorkerSupervisor {
     this.clearTimers();
     this.rejectPendingPings(new Error("Weixin worker is stopping"));
     this.rejectPendingCommands(new Error("Weixin worker is stopping"));
+    this.rejectPendingDeliveries(new Error("Weixin worker is stopping"));
     const child = this.child;
     if (!child) {
       this.setState("stopped");
@@ -326,7 +377,8 @@ export class WeixinWorkerSupervisor {
         daemonVersion: this.options.daemonVersion ?? "0.2.0",
         heartbeatIntervalMs: this.heartbeatIntervalMs,
         accounts: [...this.configuration.accounts],
-        login: { ...this.configuration.login }
+        login: { ...this.configuration.login },
+        message: { ...this.configuration.message }
       });
       this.publish("weixin.worker.authenticated", { pid: message.pid, workerVersion: message.workerVersion });
       return;
@@ -376,6 +428,32 @@ export class WeixinWorkerSupervisor {
       });
       return;
     }
+    if (message.type === "message.inbound") {
+      const inbound = structuredClone(message.message);
+      this.publish("weixin.message.inbound", {
+        accountId: inbound.accountId,
+        providerMessageId: inbound.providerMessageId,
+        peerId: inbound.peerId,
+        receivedAt: inbound.receivedAt
+      });
+      void Promise.resolve(this.options.onInboundMessage?.(inbound)).catch((error) => {
+        this.publish("weixin.message.inbound_failed", {
+          accountId: inbound.accountId,
+          providerMessageId: inbound.providerMessageId,
+          error: normalizeError(error).message
+        });
+      });
+      return;
+    }
+    if (message.type === "message.error") {
+      this.publish("weixin.message.error", {
+        accountId: message.accountId,
+        code: message.error.code,
+        message: message.error.message,
+        retryable: message.error.retryable
+      });
+      return;
+    }
     if (message.type === "command.result") {
       const pending = this.pendingCommands.get(message.requestId);
       if (!pending) return;
@@ -383,6 +461,15 @@ export class WeixinWorkerSupervisor {
       this.pendingCommands.delete(message.requestId);
       if (message.ok) pending.resolve(structuredClone(message.state));
       else pending.reject(new Error(message.error.message));
+      return;
+    }
+    if (message.type === "delivery.result") {
+      const pending = this.pendingDeliveries.get(message.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pendingDeliveries.delete(message.requestId);
+      if (message.ok) pending.resolve(message.providerMessageId);
+      else pending.reject(new WeixinDeliveryError(message.error.code, message.error.retryable, message.error.message));
     }
   }
 
@@ -399,6 +486,7 @@ export class WeixinWorkerSupervisor {
     this.clearChildTimers();
     this.rejectPendingPings(new Error("Weixin worker exited"));
     this.rejectPendingCommands(new Error("Weixin worker exited"));
+    this.rejectPendingDeliveries(new Error("Weixin worker exited"));
     this.publish("weixin.worker.exited", { code, signal, expected: !this.desiredRunning });
     if (!this.desiredRunning) return;
     if (this.terminalFailure) return;
@@ -500,6 +588,14 @@ export class WeixinWorkerSupervisor {
     this.pendingCommands.clear();
   }
 
+  private rejectPendingDeliveries(error: Error): void {
+    for (const pending of this.pendingDeliveries.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pendingDeliveries.clear();
+  }
+
   private async loginCommand(
     type: "login.start" | "login.status" | "login.logout",
     accountId: string,
@@ -560,6 +656,7 @@ function normalizeConfiguration(value: WeixinWorkerConfiguration): WeixinWorkerC
   if (accounts.length > 32) throw new Error("Weixin worker supports at most 32 accounts");
   if (new Set(accounts).size !== accounts.length) throw new Error("Weixin worker accounts must be unique");
   if (!value.login || typeof value.login !== "object") throw new Error("Weixin worker login configuration is required");
+  if (!value.message || typeof value.message !== "object") throw new Error("Weixin worker message configuration is required");
   return {
     accounts: [...accounts].sort(),
     login: {
@@ -569,6 +666,12 @@ function normalizeConfiguration(value: WeixinWorkerConfiguration): WeixinWorkerC
       qrFetchTimeoutMs: positiveInteger(value.login.qrFetchTimeoutMs, "Weixin login qrFetchTimeoutMs"),
       qrPollTimeoutMs: positiveInteger(value.login.qrPollTimeoutMs, "Weixin login qrPollTimeoutMs"),
       qrTotalTimeoutMs: positiveInteger(value.login.qrTotalTimeoutMs, "Weixin login qrTotalTimeoutMs")
+    },
+    message: {
+      stateFilePath: required(value.message.stateFilePath, "Weixin message stateFilePath"),
+      longPollTimeoutMs: positiveInteger(value.message.longPollTimeoutMs, "Weixin message longPollTimeoutMs"),
+      apiTimeoutMs: positiveInteger(value.message.apiTimeoutMs, "Weixin message apiTimeoutMs"),
+      retryDelayMs: nonNegativeInteger(value.message.retryDelayMs, "Weixin message retryDelayMs")
     }
   };
 }
@@ -591,6 +694,11 @@ function required(value: string, field: string): string {
 
 function positiveInteger(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${field} must be a positive integer`);
+  return value;
+}
+
+function nonNegativeInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative integer`);
   return value;
 }
 

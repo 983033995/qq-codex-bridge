@@ -400,14 +400,14 @@ export class ControllableCodexPort implements CodexPort {
     });
   }
 
-  complete(turnId: string, finalText = `completed ${turnId}`): void {
+  complete(turnId: string, finalText = `completed ${turnId}`, mediaReferences: string[] = []): void {
     const started = this.requireStart(turnId);
     this.turnStatuses.set(turnId, "completed");
     started.resolve({
       threadId: started.handle.threadId,
       turnId,
       finalText,
-      mediaReferences: []
+      mediaReferences
     });
   }
 

@@ -73,6 +73,9 @@ describe("vNext Weixin login manager", () => {
       stateStore: new WeixinLoginStateStore(statePath)
     });
     expect(restored.getState("personal").status).toBe("logged_in");
+    await restored.invalidate("personal");
+    expect(restored.getState("personal").status).toBe("invalid");
+    await expect(restored.getCredential("personal")).resolves.toBeNull();
     await restored.logout("personal");
     expect(restored.getState("personal").status).toBe("logged_out");
     await expect(restored.getCredential("personal")).resolves.toBeNull();

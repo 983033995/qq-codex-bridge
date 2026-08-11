@@ -26,6 +26,12 @@ describe("vNext Weixin worker IPC", () => {
           qrFetchTimeoutMs: 10_000,
           qrPollTimeoutMs: 35_000,
           qrTotalTimeoutMs: 480_000
+        },
+        message: {
+          stateFilePath: `/tmp/qqcb-vnext-weixin-message-ipc-${process.pid}.json`,
+          longPollTimeoutMs: 35_000,
+          apiTimeoutMs: 15_000,
+          retryDelayMs: 2_000
         }
       }),
       heartbeatIntervalMs: 20,

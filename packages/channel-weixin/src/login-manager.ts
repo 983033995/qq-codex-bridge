@@ -122,6 +122,19 @@ export class WeixinLoginManager {
     return this.getState(normalized);
   }
 
+  async invalidate(accountId: string): Promise<WeixinLoginState> {
+    const normalized = required(accountId, "accountId");
+    const active = this.flows.get(normalized);
+    if (active) {
+      active.controller.abort();
+      await active.completion.catch(() => undefined);
+      this.flows.delete(normalized);
+    }
+    await this.options.secrets.delete(secretRefFor(normalized));
+    await this.setState(normalized, "invalid");
+    return this.getState(normalized);
+  }
+
   async getCredential(accountId: string): Promise<WeixinLoginCredential | null> {
     const state = this.persisted.get(required(accountId, "accountId"));
     if (state?.status !== "logged_in" || !state.secretRef) return null;

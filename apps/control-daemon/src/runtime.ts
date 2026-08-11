@@ -4,7 +4,12 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BindConversationSpace } from "../../../packages/application/src/index.js";
+import {
+  BindConversationSpace,
+  ReceiveInboundMessage,
+  StartConversationTurn,
+  ThreadScheduler
+} from "../../../packages/application/src/index.js";
 import {
   AtomicConfigStore,
   calculateConfigRevision,
@@ -17,6 +22,7 @@ import { StructuredEventBus } from "../../../packages/observability/src/index.js
 import {
   openVNextDatabase,
   SqliteConversationSpaceRepository,
+  SqliteDeliveryRepository,
   SqliteMessageLedger,
   SqlitePushRepository,
   SqliteRoutingDecisionRepository,
@@ -31,6 +37,7 @@ import {
   type ControlDaemonComponent
 } from "./composition-root.js";
 import { ControlApiServer, type ControlApiServices } from "./control-api.js";
+import { WeixinMessageRuntime } from "./weixin-message-runtime.js";
 
 export type ProductionControlDaemon = {
   daemon: ControlDaemonCompositionRoot;
@@ -65,6 +72,7 @@ export async function createProductionControlDaemon(options: {
   const spaces = new SqliteConversationSpaceRepository(database);
   const bindings = new SqliteThreadBindingRepository(database);
   const messages = new SqliteMessageLedger(database);
+  const deliveries = new SqliteDeliveryRepository(database);
   const turns = new SqliteTurnRepository(database);
   const decisions = new SqliteRoutingDecisionRepository(database);
   const runtimeEvents = new SqliteRuntimeEventRepository(database);
@@ -73,6 +81,7 @@ export async function createProductionControlDaemon(options: {
   const secretStore = new MacOsKeychainSecretStore();
   const staticRoot = options.staticRoot ?? path.join(process.cwd(), "dist", "apps", "control-ui");
   const eventBus = new StructuredEventBus();
+  let weixinMessages: WeixinMessageRuntime | null = null;
   const weixinWorker = new WeixinWorkerSupervisor({
     workerScriptPath: options.weixinWorkerScriptPath
       ?? fileURLToPath(new URL("../../weixin-worker/src/cli.js", import.meta.url)),
@@ -91,11 +100,21 @@ export async function createProductionControlDaemon(options: {
           qrFetchTimeoutMs: options.weixinQrFetchTimeoutMs ?? 10_000,
           qrPollTimeoutMs: options.weixinQrPollTimeoutMs ?? 35_000,
           qrTotalTimeoutMs: options.weixinQrTotalTimeoutMs ?? 8 * 60_000
+        },
+        message: {
+          stateFilePath: path.join(dataDirectory, "weixin-message-state.json"),
+          longPollTimeoutMs: 35_000,
+          apiTimeoutMs: 15_000,
+          retryDelayMs: 2_000
         }
       };
     },
     onEvent(event) {
       eventBus.publish({ component: "weixin-worker", type: event.type, payload: event.payload });
+    },
+    onInboundMessage(message) {
+      if (!weixinMessages) throw new Error("Weixin message runtime is not initialized");
+      return weixinMessages.handle(message).then(() => undefined);
     }
   });
 
@@ -130,6 +149,29 @@ export async function createProductionControlDaemon(options: {
     spaces,
     bindings,
     codex,
+    ids: { next: randomUUID },
+    clock: { now: () => new Date() }
+  });
+  const receiveInboundMessage = new ReceiveInboundMessage({ spaces, messages });
+  const startConversationTurn = new StartConversationTurn({
+    bindings,
+    turns,
+    codex,
+    ids: { next: randomUUID },
+    clock: { now: () => new Date() },
+    scheduler: new ThreadScheduler({
+      events: runtimeEvents,
+      ids: { next: randomUUID },
+      clock: { now: () => new Date() }
+    })
+  });
+  weixinMessages = new WeixinMessageRuntime({
+    spaces,
+    deliveries,
+    receive: receiveInboundMessage,
+    bind: bindConversationSpace,
+    startTurn: startConversationTurn,
+    worker: weixinWorker,
     ids: { next: randomUUID },
     clock: { now: () => new Date() }
   });

@@ -1,12 +1,60 @@
 import { z } from "zod";
 
-export const WEIXIN_WORKER_PROTOCOL_VERSION = 1 as const;
+export const WEIXIN_WORKER_PROTOCOL_VERSION = 2 as const;
 export const WEIXIN_WORKER_VERSION = "0.2.0";
 export const WEIXIN_WORKER_AUTH_ENV = "QQCB_WEIXIN_WORKER_AUTH_TOKEN";
 
 const timestampSchema = z.string().datetime({ offset: true });
 const versionSchema = z.string().trim().min(1).max(64);
 const accountIdSchema = z.string().trim().min(1).max(128);
+const identifierSchema = z.string().trim().min(1).max(512);
+const inboundTextSchema = z.string().max(100_000);
+const attachmentSchema = z.object({
+  id: identifierSchema,
+  kind: z.enum(["image", "audio", "video", "file"]),
+  localPath: z.string().trim().min(1).max(1_024),
+  mimeType: z.string().trim().min(1).max(256),
+  size: z.number().int().nonnegative().max(25 * 1024 * 1024),
+  name: z.string().trim().min(1).max(256).optional(),
+  transcript: z.string().trim().min(1).max(100_000).optional()
+}).strict();
+
+export const weixinInboundTextMessageSchema = z.object({
+  accountId: accountIdSchema,
+  providerMessageId: identifierSchema,
+  senderId: identifierSchema,
+  peerId: identifierSchema,
+  chatType: z.literal("c2c"),
+  sequence: z.number().int().nonnegative(),
+  receivedAt: timestampSchema,
+  text: inboundTextSchema,
+  attachments: z.array(attachmentSchema).max(16).default([])
+}).strict().superRefine((message, context) => {
+  if (!message.text.trim() && message.attachments.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["text"],
+      message: "Inbound Weixin message requires text or attachments"
+    });
+  }
+});
+
+export const weixinTextDeliverySchema = z.object({
+  deliveryKey: identifierSchema,
+  accountId: accountIdSchema,
+  peerId: identifierSchema,
+  chatType: z.enum(["c2c", "group"]),
+  text: z.string().max(100_000),
+  attachments: z.array(attachmentSchema).max(16).optional()
+}).strict().superRefine((delivery, context) => {
+  if (!delivery.text.trim() && !(delivery.attachments?.length)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["text"],
+      message: "Weixin delivery requires text or attachments"
+    });
+  }
+});
 
 export const weixinLoginStateSchema = z.object({
   accountId: accountIdSchema,
@@ -40,6 +88,12 @@ export const daemonToWorkerMessageSchema = z.discriminatedUnion("type", [
       qrFetchTimeoutMs: z.number().int().positive().max(120_000),
       qrPollTimeoutMs: z.number().int().positive().max(120_000),
       qrTotalTimeoutMs: z.number().int().positive().max(30 * 60_000)
+    }).strict(),
+    message: z.object({
+      stateFilePath: z.string().trim().min(1).max(1_024),
+      longPollTimeoutMs: z.number().int().positive().max(120_000),
+      apiTimeoutMs: z.number().int().positive().max(120_000),
+      retryDelayMs: z.number().int().nonnegative().max(60_000)
     }).strict()
   }).strict(),
   z.object({
@@ -66,6 +120,11 @@ export const daemonToWorkerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("login.logout"),
     requestId: z.string().uuid(),
     accountId: accountIdSchema
+  }).strict(),
+  z.object({
+    type: z.literal("message.deliver"),
+    requestId: z.string().uuid(),
+    delivery: weixinTextDeliverySchema
   }).strict()
 ]);
 
@@ -103,6 +162,19 @@ export const workerToDaemonMessageSchema = z.union([
     state: weixinLoginStateSchema
   }).strict(),
   z.object({
+    type: z.literal("message.inbound"),
+    message: weixinInboundTextMessageSchema
+  }).strict(),
+  z.object({
+    type: z.literal("message.error"),
+    accountId: accountIdSchema,
+    error: z.object({
+      code: z.string().trim().min(1).max(128),
+      message: z.string().trim().min(1).max(256),
+      retryable: z.boolean()
+    }).strict()
+  }).strict(),
+  z.object({
     type: z.literal("command.result"),
     requestId: z.string().uuid(),
     ok: z.literal(true),
@@ -115,6 +187,22 @@ export const workerToDaemonMessageSchema = z.union([
     error: z.object({
       code: z.string().trim().min(1).max(128),
       message: z.string().trim().min(1).max(256)
+    }).strict()
+  }).strict(),
+  z.object({
+    type: z.literal("delivery.result"),
+    requestId: z.string().uuid(),
+    ok: z.literal(true),
+    providerMessageId: identifierSchema.nullable()
+  }).strict(),
+  z.object({
+    type: z.literal("delivery.result"),
+    requestId: z.string().uuid(),
+    ok: z.literal(false),
+    error: z.object({
+      code: z.string().trim().min(1).max(128),
+      message: z.string().trim().min(1).max(256),
+      retryable: z.boolean()
     }).strict()
   }).strict()
 ]);

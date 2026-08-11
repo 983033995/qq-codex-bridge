@@ -22,6 +22,8 @@ describe("bootstrap integration", () => {
   });
 
   it("builds account-keyed adapters and orchestrators for multiple configured qq bots", () => {
+    const previousWeixinAccounts = process.env.WEIXIN_ACCOUNTS_JSON;
+    const previousFeishuEnabled = process.env.FEISHU_ENABLED;
     process.env.QQBOTS_JSON = JSON.stringify([
       {
         accountId: "main",
@@ -40,6 +42,8 @@ describe("bootstrap integration", () => {
     process.env.QQBOT_CLIENT_SECRET = "fallback-secret";
     process.env.QQ_CODEX_DATABASE_PATH = ":memory:";
     process.env.CODEX_REMOTE_DEBUGGING_PORT = "9229";
+    process.env.WEIXIN_ACCOUNTS_JSON = "[]";
+    process.env.FEISHU_ENABLED = "false";
 
     const app = bootstrap();
     try {
@@ -50,6 +54,8 @@ describe("bootstrap integration", () => {
     } finally {
       app.db.close();
       delete process.env.QQBOTS_JSON;
+      restoreEnvironment("WEIXIN_ACCOUNTS_JSON", previousWeixinAccounts);
+      restoreEnvironment("FEISHU_ENABLED", previousFeishuEnabled);
     }
   });
 
@@ -657,3 +663,8 @@ describe("bootstrap integration", () => {
     }
   });
 });
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

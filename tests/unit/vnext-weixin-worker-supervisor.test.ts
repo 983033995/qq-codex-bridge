@@ -13,6 +13,7 @@ describe("vNext Weixin worker supervisor", () => {
   it("uses authenticated negotiation, ping, and increasing crash backoff", async () => {
     const children: FakeChild[] = [];
     const events: WeixinWorkerEvent[] = [];
+    const inbound: unknown[] = [];
     const supervisor = new WeixinWorkerSupervisor({
       workerScriptPath: "/fake/weixin-worker.js",
       configuration: () => configuration(["weixin:personal"]),
@@ -24,6 +25,7 @@ describe("vNext Weixin worker supervisor", () => {
       stableUptimeMs: 1_000,
       restartBackoffMs: [1, 5, 20],
       onEvent: (event) => events.push(event),
+      onInboundMessage: (message) => { inbound.push(message); },
       spawnWorker(input) {
         const child = new FakeChild(input.env[WEIXIN_WORKER_AUTH_ENV]!);
         children.push(child);
@@ -41,7 +43,35 @@ describe("vNext Weixin worker supervisor", () => {
       qrCodeContent: "qr-content"
     });
     await expect(supervisor.logout("weixin:personal")).resolves.toMatchObject({ status: "logged_out" });
+    children[0]!.inbound();
+    await eventually(() => inbound.length === 1);
+    expect(inbound).toContainEqual(expect.objectContaining({
+      accountId: "weixin:personal",
+      providerMessageId: "provider-inbound-1",
+      text: "hello",
+      attachments: [expect.objectContaining({ id: "attachment-1", kind: "image" })]
+    }));
+    await expect(supervisor.deliver({
+      deliveryKey: "delivery-1",
+      accountId: "weixin:personal",
+      peerId: "peer-1",
+      chatType: "c2c",
+      text: "reply",
+      attachments: [{
+        id: "attachment-outbound-1",
+        kind: "file",
+        localPath: "/tmp/report.txt",
+        mimeType: "text/plain",
+        size: 12,
+        name: "report.txt"
+      }]
+    })).resolves.toBe("provider-delivery-1");
+    expect(children[0]!.deliveries).toContainEqual(expect.objectContaining({
+      deliveryKey: "delivery-1",
+      attachments: [expect.objectContaining({ id: "attachment-outbound-1" })]
+    }));
     expect(JSON.stringify(events)).not.toContain("qr-content");
+    expect(JSON.stringify(events)).not.toContain("hello");
 
     children[0]!.crash();
     await eventually(() => children.length === 2);
@@ -161,6 +191,7 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
   connected = true;
   killed = false;
   private sequence = 0;
+  readonly deliveries: Array<Extract<DaemonToWorkerMessage, { type: "message.deliver" }>["delivery"]> = [];
 
   constructor(private readonly authToken: string) {
     super();
@@ -173,6 +204,30 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
       protocolVersion,
       workerVersion: "0.2.0",
       pid: this.pid
+    });
+  }
+
+  inbound(): void {
+    this.emit("message", {
+      type: "message.inbound",
+      message: {
+        accountId: "weixin:personal",
+        providerMessageId: "provider-inbound-1",
+        senderId: "peer-1",
+        peerId: "peer-1",
+        chatType: "c2c",
+        sequence: 1,
+        receivedAt: new Date().toISOString(),
+        text: "hello",
+        attachments: [{
+          id: "attachment-1",
+          kind: "image",
+          localPath: "/tmp/image.jpg",
+          mimeType: "image/jpeg",
+          size: 10,
+          name: "image.jpg"
+        }]
+      }
     });
   }
 
@@ -200,6 +255,14 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
         const state = loginState("logged_out");
         this.emit("message", { type: "login.state", state });
         this.emit("message", { type: "command.result", requestId: message.requestId, ok: true, state });
+      } else if (message.type === "message.deliver") {
+        this.deliveries.push(structuredClone(message.delivery));
+        this.emit("message", {
+          type: "delivery.result",
+          requestId: message.requestId,
+          ok: true,
+          providerMessageId: "provider-delivery-1"
+        });
       } else {
         this.connected = false;
         this.emit("exit", 0, null);
@@ -240,6 +303,12 @@ function configuration(accounts: string[]) {
       qrFetchTimeoutMs: 10_000,
       qrPollTimeoutMs: 35_000,
       qrTotalTimeoutMs: 480_000
+    },
+    message: {
+      stateFilePath: "/tmp/qqcb-vnext-weixin-message-unit.json",
+      longPollTimeoutMs: 35_000,
+      apiTimeoutMs: 15_000,
+      retryDelayMs: 2_000
     }
   };
 }

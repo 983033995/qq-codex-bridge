@@ -38,14 +38,15 @@
 - [x] M3 Gate — 打通生产 `ControlApiServices`、Composition Root、SQLite/Codex/Config/Keychain Adapter、静态 UI 与启动 CLI；六个一级页面均接入真实 API，Config Apply 仅在 Active Revision 更新后成功，Binding/SSE/诊断导出与键盘、窄屏路径完成验收；无运行 Adapter 的渠道与 Router 操作明确失败，不伪造成功。
 - [x] M4-01 — 实现隔离微信 Worker IPC：32-byte 随机本地鉴权、严格消息 Schema、协议/Worker 版本协商、心跳与 ping、优雅停机、握手/心跳超时、连续崩溃有界退避和稳定运行后重置；单 Worker 承载多个微信账户，首次添加账号的 Config Apply 可动态启动 Worker，Health/渠道操作/结构化事件均接入生产 Runtime。
 - [x] M4-02 — 完成微信登录体验：真实 iLink 二维码获取/轮询协议、待扫码/已扫描/待确认/已登录/过期/失效状态机、强制重登与注销；登录凭据仅写入 macOS Keychain，0600 状态文件只保存脱敏状态与 Secret Reference；Control API、生产 Worker IPC、管理台二维码和响应式操作闭环均已接通。
+- [x] M4-03 — 完成微信消息 Fake Gate：文本与 Provider 语音转写入站、图片/文件/语音/视频 CDN AES-128-ECB 下载解密、账户隔离 0700 缓存与 0600 原子落盘、25 MiB/16 附件上限；附件经严格 Worker IPC、SQLite 消息账本和 Codex AppServer 传递；Codex 本地媒体引用可回传，图片/文件/视频上传，音频按可播放文件发送；长文本按 1800 Unicode code point 稳定幂等分段，单媒体失败保留正文并明确降级。
 
 ## In Progress
 
-- [ ] M4-03 — 微信文本、图片、文件、语音与视频消息闭环。
+- [ ] M4-04 — 已完成轮询断线指数退避、`429 Retry-After`、认证失效停止重试并置 `invalid`、重复 Provider 消息 SQLite 去重、媒体失败隔离和 Worker 故障隔离；待补 Daemon 入站持久化 ACK/崩溃窗口与可恢复出站 Delivery 重试调度。
 
 ## Next
 
-- [ ] M4-04 — 微信断线重连、去重、限流退避与媒体失败隔离。
+- [ ] M4-05 — 真实微信账号专用 Space Gate：文本/图片/文件/语音、重启恢复与 24 小时连续运行；需要用户扫码与授权。
 
 ## Verification
 
@@ -198,6 +199,12 @@
 | M4-02 Browser Desktop / Mobile / Zoom QA | PASS；生产管理台显示 1 个本地微信账户与未登录操作；隔离 Fake iLink 环境验证 QR Data URL、强制重登、注销；390×844 与 200% 等效 640px 布局可操作，页面控制台 0 error / 0 warning | 2026-08-11 |
 | M4-02 CodeGraph 影响复核 | PASS；270 files / 5,055 nodes / 14,727 edges，索引最新；登录状态机、Worker IPC、Control API 与 UI 调用面均有对应 Unit/Contract/Integration/Browser 验证 | 2026-08-11 |
 | M4-02 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-03/04 微信消息精确回归 | PASS；5 files / 26 tests；文本、图片、文件、语音、长文本、IPC、SQLite、Codex 媒体回传、故障降级与幂等均覆盖 | 2026-08-11 |
+| M4-03/04 `pnpm check` | PASS | 2026-08-11 |
+| M4-03/04 `pnpm test` | PASS；84 files / 426 tests；旧 E2E 已隔离宿主机飞书/微信环境变量 | 2026-08-11 |
+| M4-03/04 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
+| M4-03/04 `git diff --check` | PASS | 2026-08-11 |
+| M4-03/04 CodeGraph 与原工作区保护复核 | PASS；同步 10 个变更文件；原工作区仍为 57 项，NUL 分隔状态 SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
 
 ## Risks and Blockers
 
@@ -208,6 +215,9 @@
 | R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
 | R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
 | R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 已关闭：生产 Runtime 已组合真实 Repository/Codex/Config/Keychain/API/UI，CLI 与无 fixture HTTP Smoke 通过 | 保持 Integration Smoke 与六页 Browser QA；fixture 不进入生产源码、不作为 fallback | Codex |
+| R-M4-01 微信入站媒体 CDN 下载契约尚未用真实账号抓包确认 | 中：Fake iLink 已覆盖固定 CDN、AES key 两种编码、大小/校验/失败路径，但真实字段细节可能不同 | M4-05 用专用测试 Space 逐类验证；失败时记录脱敏字段名，不记录 Token、媒体参数或正文 | User / Codex |
+| R-M4-02 Worker IPC 入站仅确认写入 Daemon IPC，未等待 SQLite ACK | 中：Worker 发送成功到消息账本落盘之间存在很小崩溃窗口 | M4-04 增加应用级 ACK，Cursor 仅在 ACK 后推进；现有 Provider ID/SQLite 去重保持不变 | Codex |
+| R-M4-03 出站 `retry_wait` 尚无恢复调度器 | 中：瞬时失败已持久化且分段键幂等，但 Daemon 重启后不会自动续发 | M4-04 增加有界 Delivery 扫描/退避/最大尝试次数，不改变 `deliveryKey` | Codex |
 | R-EXT-01 微信真实账号扫码与测试联系人/群聊授权尚未提供 | M4-05 双向媒体、重启恢复与 24 小时连续运行 Gate 无法执行 | 先完成 Fake Worker、二维码/状态机、消息与韧性自动化；真实 Gate 前集中请求一次扫码和专用测试 Space 授权，不主动联系真实联系人 | User |
 | R-EXT-02 飞书/QQ/Router 真实凭据尚未提供 | 真实租户、真实 API 与外部消息 Gate 无法执行 | 先完成 Fake SDK/Server、Contract、故障矩阵与本地配置检查；到对应 Gate 再请求最小 Secret Reference/测试租户 | User |
 | R-EXT-03 Apple Developer ID、Notarization 与发布凭据尚未提供 | M8/M9 可完成未签名开发包与安装验收，但不能执行签名、公证或正式发布 | 产出可重复的未签名 macOS 构建、launchd 安装/卸载与清单；把签名/Notarization 保持为单独外部 Gate，未经授权不执行 | User |
@@ -225,3 +235,5 @@
 | 微信使用单个受监督 Worker 承载多个账号 | 实施计划要求隔离 Worker，且 Config Apply 原本指向运行时不存在的逐账号组件；固定 `weixin-worker` 使首次添加/删除账号可被 Composition Root 重启，同时为 M4-02/03 保留多账号协议载荷 |
 | Worker 鉴权 Token 仅通过子进程环境注入并在 Worker 启动后立即删除 | Node IPC 已限定父子本地通道；随机 32-byte Token 防止错误/伪造子进程完成握手，且不进入 argv、事件、日志或持久化配置；Worker 只继承 locale/timezone，不继承 Daemon 的其他环境 Secret |
 | QR 内容只在 Worker→Daemon 命令响应与当前 UI 内存中短暂存在 | `qrcode` 仅在浏览器内生成 Data URL；二维码不写状态文件、Keychain、结构化事件或诊断包，Worker 事件只上报账号、状态和时间 |
+| 微信媒体只使用固定 CDN 且禁止重定向 | 入站下载固定 `novac2c.cdn.weixin.qq.com/c2c/download`，出站上传 URL 必须是同主机 `/c2c/upload`；API/CDN 均 `redirect: error`，错误不包含响应正文 |
+| Codex 出站媒体只接受本机绝对路径或 `file://` | 不自动下载 HTTP/Data URI；真实文件、25 MiB 和 16 附件上限通过后才进入 Worker IPC，拒绝项在回复正文中明确提示 |
