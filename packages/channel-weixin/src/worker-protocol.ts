@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const WEIXIN_WORKER_PROTOCOL_VERSION = 2 as const;
+export const WEIXIN_WORKER_PROTOCOL_VERSION = 3 as const;
 export const WEIXIN_WORKER_VERSION = "0.2.0";
 export const WEIXIN_WORKER_AUTH_ENV = "QQCB_WEIXIN_WORKER_AUTH_TOKEN";
 
@@ -74,7 +74,7 @@ export const weixinLoginStateSchema = z.object({
   expiresAt: timestampSchema.optional()
 }).strict();
 
-export const daemonToWorkerMessageSchema = z.discriminatedUnion("type", [
+export const daemonToWorkerMessageSchema = z.union([
   z.object({
     type: z.literal("initialize"),
     protocolVersion: z.literal(WEIXIN_WORKER_PROTOCOL_VERSION),
@@ -125,6 +125,20 @@ export const daemonToWorkerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("message.deliver"),
     requestId: z.string().uuid(),
     delivery: weixinTextDeliverySchema
+  }).strict(),
+  z.object({
+    type: z.literal("message.inbound.ack"),
+    requestId: z.string().uuid(),
+    ok: z.literal(true)
+  }).strict(),
+  z.object({
+    type: z.literal("message.inbound.ack"),
+    requestId: z.string().uuid(),
+    ok: z.literal(false),
+    error: z.object({
+      code: z.string().trim().min(1).max(128),
+      message: z.string().trim().min(1).max(256)
+    }).strict()
   }).strict()
 ]);
 
@@ -163,6 +177,7 @@ export const workerToDaemonMessageSchema = z.union([
   }).strict(),
   z.object({
     type: z.literal("message.inbound"),
+    requestId: z.string().uuid(),
     message: weixinInboundTextMessageSchema
   }).strict(),
   z.object({

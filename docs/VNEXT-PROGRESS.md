@@ -39,10 +39,11 @@
 - [x] M4-01 — 实现隔离微信 Worker IPC：32-byte 随机本地鉴权、严格消息 Schema、协议/Worker 版本协商、心跳与 ping、优雅停机、握手/心跳超时、连续崩溃有界退避和稳定运行后重置；单 Worker 承载多个微信账户，首次添加账号的 Config Apply 可动态启动 Worker，Health/渠道操作/结构化事件均接入生产 Runtime。
 - [x] M4-02 — 完成微信登录体验：真实 iLink 二维码获取/轮询协议、待扫码/已扫描/待确认/已登录/过期/失效状态机、强制重登与注销；登录凭据仅写入 macOS Keychain，0600 状态文件只保存脱敏状态与 Secret Reference；Control API、生产 Worker IPC、管理台二维码和响应式操作闭环均已接通。
 - [x] M4-03 — 完成微信消息 Fake Gate：文本与 Provider 语音转写入站、图片/文件/语音/视频 CDN AES-128-ECB 下载解密、账户隔离 0700 缓存与 0600 原子落盘、25 MiB/16 附件上限；附件经严格 Worker IPC、SQLite 消息账本和 Codex AppServer 传递；Codex 本地媒体引用可回传，图片/文件/视频上传，音频按可播放文件发送；长文本按 1800 Unicode code point 稳定幂等分段，单媒体失败保留正文并明确降级。
+- [x] M4-04 — 完成 Daemon→Worker 入站应用级 ACK：协议 v3 使用请求 ID 关联 ACK，SQLite 落账或确认重复后才确认，负 ACK、断连、超时和 ACK 后 Cursor 落盘崩溃均不丢消息；DeliveryRepository 持久化恢复负载与 `nextAttemptAt`，启动扫描 `sending/retry_wait`，复用原 `deliveryKey`，有界指数退避与最大尝试次数；429、5xx、认证失效、媒体失败、Worker/ACK 崩溃窗口和重启恢复故障矩阵已覆盖。
 
 ## In Progress
 
-- [ ] M4-04 — 已完成轮询断线指数退避、`429 Retry-After`、认证失效停止重试并置 `invalid`、重复 Provider 消息 SQLite 去重、媒体失败隔离和 Worker 故障隔离；待补 Daemon 入站持久化 ACK/崩溃窗口与可恢复出站 Delivery 重试调度。
+- 当前无进行中的实现项；M4-05 等待真实账号 Gate 授权。
 
 ## Next
 
@@ -205,6 +206,12 @@
 | M4-03/04 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
 | M4-03/04 `git diff --check` | PASS | 2026-08-11 |
 | M4-03/04 CodeGraph 与原工作区保护复核 | PASS；同步 10 个变更文件；原工作区仍为 57 项，NUL 分隔状态 SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-04 ACK / Delivery Recovery 精确回归 | PASS；ACK 前后 Cursor 崩溃窗口、SQLite 去重、负 ACK、429、5xx、`sending/retry_wait` 重启恢复、稳定 `deliveryKey` 与最大尝试次数均覆盖 | 2026-08-11 |
+| M4-04 `pnpm check` | PASS | 2026-08-11 |
+| M4-04 `pnpm test` | PASS；84 files / 432 tests | 2026-08-11 |
+| M4-04 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
+| M4-04 `git diff --check` | PASS | 2026-08-11 |
+| M4-04 CodeGraph 同步与影响复核 | PASS；277 files / 5,345 nodes / 15,760 edges，索引最新；ACK/Delivery 调用面由 42 项精确 Unit/Contract/Integration 回归覆盖 | 2026-08-11 |
 
 ## Risks and Blockers
 
@@ -216,8 +223,8 @@
 | R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
 | R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 已关闭：生产 Runtime 已组合真实 Repository/Codex/Config/Keychain/API/UI，CLI 与无 fixture HTTP Smoke 通过 | 保持 Integration Smoke 与六页 Browser QA；fixture 不进入生产源码、不作为 fallback | Codex |
 | R-M4-01 微信入站媒体 CDN 下载契约尚未用真实账号抓包确认 | 中：Fake iLink 已覆盖固定 CDN、AES key 两种编码、大小/校验/失败路径，但真实字段细节可能不同 | M4-05 用专用测试 Space 逐类验证；失败时记录脱敏字段名，不记录 Token、媒体参数或正文 | User / Codex |
-| R-M4-02 Worker IPC 入站仅确认写入 Daemon IPC，未等待 SQLite ACK | 中：Worker 发送成功到消息账本落盘之间存在很小崩溃窗口 | M4-04 增加应用级 ACK，Cursor 仅在 ACK 后推进；现有 Provider ID/SQLite 去重保持不变 | Codex |
-| R-M4-03 出站 `retry_wait` 尚无恢复调度器 | 中：瞬时失败已持久化且分段键幂等，但 Daemon 重启后不会自动续发 | M4-04 增加有界 Delivery 扫描/退避/最大尝试次数，不改变 `deliveryKey` | Codex |
+| R-M4-02 Worker IPC 入站仅确认写入 Daemon IPC，未等待 SQLite ACK | 已关闭：协议 v3 应用 ACK 仅在 SQLite 落账或确认重复后返回；ACK 前后崩溃均保持旧 Cursor 并重投去重 | 保持请求 ID ACK、60 秒超时、Provider ID/SQLite 去重与崩溃窗口回归 | Codex |
+| R-M4-03 出站 `retry_wait` 尚无恢复调度器 | 已关闭：Delivery 恢复负载与 `nextAttemptAt` 已持久化，启动扫描 `sending/retry_wait` 并有界重试 | 保持原 `deliveryKey`/分段键、最大 3 次默认尝试与 429/5xx/重启回归 | Codex |
 | R-EXT-01 微信真实账号扫码与测试联系人/群聊授权尚未提供 | M4-05 双向媒体、重启恢复与 24 小时连续运行 Gate 无法执行 | 先完成 Fake Worker、二维码/状态机、消息与韧性自动化；真实 Gate 前集中请求一次扫码和专用测试 Space 授权，不主动联系真实联系人 | User |
 | R-EXT-02 飞书/QQ/Router 真实凭据尚未提供 | 真实租户、真实 API 与外部消息 Gate 无法执行 | 先完成 Fake SDK/Server、Contract、故障矩阵与本地配置检查；到对应 Gate 再请求最小 Secret Reference/测试租户 | User |
 | R-EXT-03 Apple Developer ID、Notarization 与发布凭据尚未提供 | M8/M9 可完成未签名开发包与安装验收，但不能执行签名、公证或正式发布 | 产出可重复的未签名 macOS 构建、launchd 安装/卸载与清单；把签名/Notarization 保持为单独外部 Gate，未经授权不执行 | User |

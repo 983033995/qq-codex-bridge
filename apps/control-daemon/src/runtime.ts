@@ -114,7 +114,7 @@ export async function createProductionControlDaemon(options: {
     },
     onInboundMessage(message) {
       if (!weixinMessages) throw new Error("Weixin message runtime is not initialized");
-      return weixinMessages.handle(message).then(() => undefined);
+      return weixinMessages.accept(message);
     }
   });
 
@@ -173,7 +173,18 @@ export async function createProductionControlDaemon(options: {
     startTurn: startConversationTurn,
     worker: weixinWorker,
     ids: { next: randomUUID },
-    clock: { now: () => new Date() }
+    clock: { now: () => new Date() },
+    onProcessingError(error, message) {
+      eventBus.publish({
+        component: "weixin-message-runtime",
+        type: "weixin.message.processing_failed",
+        payload: {
+          providerMessageId: message.providerMessageId,
+          spaceId: message.spaceId,
+          error: error.message
+        }
+      });
+    }
   });
   services = new ControlApiApplicationServices({
     daemon,
@@ -250,6 +261,7 @@ export async function createProductionControlDaemon(options: {
     baseUrl: `http://${configSnapshot.value.runtime.listenHost}:${configSnapshot.value.runtime.listenPort}`,
     async start() {
       await daemon.start();
+      await weixinMessages!.start();
       await daemon.applyPlan({ revision: configSnapshot!.revision, effects: [] });
     },
     async stop() {
@@ -257,6 +269,7 @@ export async function createProductionControlDaemon(options: {
       stopped = true;
       unsubscribe();
       try {
+        await weixinMessages!.stop();
         await daemon.stop();
       } finally {
         database.close();

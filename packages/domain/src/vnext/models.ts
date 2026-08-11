@@ -113,6 +113,7 @@ export type Delivery = {
   providerMessageId: string | null;
   attempts: number;
   errorCode: StableErrorCode | null;
+  nextAttemptAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

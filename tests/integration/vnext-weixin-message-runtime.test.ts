@@ -9,6 +9,7 @@ import {
   ThreadScheduler
 } from "../../packages/application/src/index.js";
 import { WeixinDeliveryError } from "../../packages/channel-weixin/src/index.js";
+import { transitionDelivery } from "../../packages/domain/src/vnext/index.js";
 import {
   SqliteConversationSpaceRepository,
   SqliteDeliveryRepository,
@@ -144,6 +145,89 @@ describe("vNext Weixin message runtime", () => {
       attachments: [expect.objectContaining({ localPath: fs.realpathSync(imagePath), kind: "image" })]
     }));
   });
+
+  it("ACKs after SQLite persistence and deduplicates a redelivery while processing continues", async () => {
+    const fixture = createFixture();
+    const runtime = fixture.runtime({ async deliver(input) { return input.deliveryKey; } });
+
+    await runtime.accept(inbound("provider-ack-window"));
+    const spaceId = "weixin:personal::c2c:peer-1" as never;
+    expect((await fixture.messages.listBySpace({ spaceId, limit: 10 })).items).toHaveLength(1);
+    await fixture.codex.waitForStartCount(1);
+
+    await runtime.accept(inbound("provider-ack-window"));
+    expect(fixture.codex.starts).toHaveLength(1);
+    fixture.codex.complete(fixture.codex.starts[0]!.handle.turnId, "reply after ack");
+    await eventually(async () => {
+      const messages = await fixture.messages.listBySpace({ spaceId, limit: 10 });
+      const delivery = await fixture.deliveries.findByKey(`${messages.items[0]!.messageId}:assistant-final`);
+      return delivery?.status === "delivered";
+    });
+  });
+
+  it("recovers a crash-claimed delivery with the same key after a 429", async () => {
+    const fixture = createFixture();
+    const keys: string[] = [];
+    let rateLimited = true;
+    const worker = {
+      async deliver(input: { deliveryKey: string }) {
+        keys.push(input.deliveryKey);
+        if (rateLimited) {
+          rateLimited = false;
+          throw new WeixinDeliveryError("WEIXIN_RATE_LIMITED", true, "HTTP 429");
+        }
+        return "provider-recovered";
+      }
+    };
+    const runtime = fixture.runtime(worker, { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100 });
+    const execution = runtime.handle(inbound("provider-retry-429"));
+    await fixture.codex.waitForStartCount(1);
+    fixture.codex.complete(fixture.codex.starts[0]!.handle.turnId, "retry reply");
+    await expect(execution).rejects.toMatchObject({ code: "WEIXIN_RATE_LIMITED", retryable: true });
+
+    const spaceId = "weixin:personal::c2c:peer-1" as never;
+    const message = (await fixture.messages.listBySpace({ spaceId, limit: 10 })).items[0]!;
+    let delivery = (await fixture.deliveries.findByKey(`${message.messageId}:assistant-final`))!;
+    expect(delivery).toMatchObject({ status: "retry_wait", attempts: 1 });
+    fixture.clock.set(delivery.nextAttemptAt!);
+    delivery = transitionDelivery(delivery, "sending", { at: fixture.clock.now().toISOString() });
+    await fixture.deliveries.save(delivery);
+
+    const restarted = fixture.runtime(worker, { maxAttempts: 3, baseDelayMs: 10, maxDelayMs: 100 });
+    await restarted.recoverDeliveries();
+    expect(await fixture.deliveries.get(delivery.deliveryId)).toMatchObject({
+      status: "delivered",
+      attempts: 2,
+      providerMessageId: "provider-recovered"
+    });
+    expect(keys).toEqual([delivery.deliveryKey, delivery.deliveryKey]);
+  });
+
+  it("bounds repeated 5xx recovery attempts and marks the delivery failed", async () => {
+    const fixture = createFixture();
+    let calls = 0;
+    const worker = {
+      async deliver() {
+        calls += 1;
+        throw new WeixinDeliveryError("WEIXIN_HTTP_ERROR", true, "HTTP 503");
+      }
+    };
+    const runtime = fixture.runtime(worker, { maxAttempts: 2, baseDelayMs: 10, maxDelayMs: 100 });
+    const execution = runtime.handle(inbound("provider-retry-503"));
+    await fixture.codex.waitForStartCount(1);
+    fixture.codex.complete(fixture.codex.starts[0]!.handle.turnId, "bounded reply");
+    await expect(execution).rejects.toMatchObject({ code: "WEIXIN_HTTP_ERROR" });
+
+    const spaceId = "weixin:personal::c2c:peer-1" as never;
+    const message = (await fixture.messages.listBySpace({ spaceId, limit: 10 })).items[0]!;
+    let delivery = (await fixture.deliveries.findByKey(`${message.messageId}:assistant-final`))!;
+    fixture.clock.set(delivery.nextAttemptAt!);
+    await runtime.recoverDeliveries();
+    delivery = (await fixture.deliveries.get(delivery.deliveryId))!;
+    expect(delivery).toMatchObject({ status: "failed", attempts: 2, nextAttemptAt: null });
+    await runtime.recoverDeliveries();
+    expect(calls).toBe(2);
+  });
 });
 
 function createFixture() {
@@ -182,6 +266,7 @@ function createFixture() {
     bindings,
     messages,
     deliveries,
+    clock,
     codex,
     runtime(worker: { deliver(input: {
       deliveryKey: string;
@@ -197,7 +282,11 @@ function createFixture() {
         size: number;
         name?: string;
       }>;
-    }): Promise<string | null> }) {
+    }): Promise<string | null> }, retry?: {
+      maxAttempts?: number;
+      baseDelayMs?: number;
+      maxDelayMs?: number;
+    }) {
       return new WeixinMessageRuntime({
         spaces,
         deliveries,
@@ -206,7 +295,8 @@ function createFixture() {
         startTurn,
         worker,
         ids: new SequenceIdGenerator("delivery"),
-        clock
+        clock,
+        ...(retry ? { retry } : {})
       });
     }
   };
@@ -231,4 +321,12 @@ function inbound(providerMessageId = "provider-inbound-1") {
       name: "weixin-image.jpg"
     }]
   };
+}
+
+async function eventually(check: () => boolean | Promise<boolean>, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() >= deadline) throw new Error("Condition was not met before timeout");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
 }

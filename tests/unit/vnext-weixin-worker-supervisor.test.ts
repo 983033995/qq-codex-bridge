@@ -45,11 +45,16 @@ describe("vNext Weixin worker supervisor", () => {
     await expect(supervisor.logout("weixin:personal")).resolves.toMatchObject({ status: "logged_out" });
     children[0]!.inbound();
     await eventually(() => inbound.length === 1);
+    await eventually(() => children[0]!.inboundAcks.length === 1);
     expect(inbound).toContainEqual(expect.objectContaining({
       accountId: "weixin:personal",
       providerMessageId: "provider-inbound-1",
       text: "hello",
       attachments: [expect.objectContaining({ id: "attachment-1", kind: "image" })]
+    }));
+    expect(children[0]!.inboundAcks).toContainEqual(expect.objectContaining({
+      requestId: "00000000-0000-4000-8000-000000000099",
+      ok: true
     }));
     await expect(supervisor.deliver({
       deliveryKey: "delivery-1",
@@ -113,6 +118,38 @@ describe("vNext Weixin worker supervisor", () => {
     expect(await supervisor.health()).toMatchObject({ code: "WEIXIN_WORKER_AUTH_FAILED" });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(spawnCount).toBe(1);
+    await supervisor.stop();
+  });
+
+  it("returns a negative application ACK when SQLite persistence fails", async () => {
+    let child: FakeChild | undefined;
+    const supervisor = new WeixinWorkerSupervisor({
+      workerScriptPath: "/fake/weixin-worker.js",
+      configuration: () => configuration(["weixin:personal"]),
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 200,
+      handshakeTimeoutMs: 100,
+      onInboundMessage: async () => { throw new Error("database is unavailable"); },
+      spawnWorker(input) {
+        child = new FakeChild(input.env[WEIXIN_WORKER_AUTH_ENV]!);
+        queueMicrotask(() => child!.hello());
+        return child;
+      }
+    });
+
+    await supervisor.start();
+    await eventually(async () => (await supervisor.health()).status === "ready");
+    child!.inbound("00000000-0000-4000-8000-000000000098");
+    await eventually(() => child!.inboundAcks.length === 1);
+    expect(child!.inboundAcks[0]).toEqual({
+      type: "message.inbound.ack",
+      requestId: "00000000-0000-4000-8000-000000000098",
+      ok: false,
+      error: {
+        code: "WEIXIN_INBOUND_NOT_PERSISTED",
+        message: "database is unavailable"
+      }
+    });
     await supervisor.stop();
   });
 
@@ -192,6 +229,7 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
   killed = false;
   private sequence = 0;
   readonly deliveries: Array<Extract<DaemonToWorkerMessage, { type: "message.deliver" }>["delivery"]> = [];
+  readonly inboundAcks: Array<Extract<DaemonToWorkerMessage, { type: "message.inbound.ack" }>> = [];
 
   constructor(private readonly authToken: string) {
     super();
@@ -207,9 +245,10 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
     });
   }
 
-  inbound(): void {
+  inbound(requestId = "00000000-0000-4000-8000-000000000099"): void {
     this.emit("message", {
       type: "message.inbound",
+      requestId,
       message: {
         accountId: "weixin:personal",
         providerMessageId: "provider-inbound-1",
@@ -263,6 +302,8 @@ class FakeChild extends EventEmitter implements WeixinWorkerChild {
           ok: true,
           providerMessageId: "provider-delivery-1"
         });
+      } else if (message.type === "message.inbound.ack") {
+        this.inboundAcks.push(structuredClone(message));
       } else {
         this.connected = false;
         this.emit("exit", 0, null);

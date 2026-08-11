@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   HttpWeixinLoginProvider,
   WeixinLoginManager,
@@ -81,6 +82,11 @@ export function runWeixinWorker(
   let messageConfiguration: MessageConfiguration | null = null;
   const messageClients = new Map<string, WorkerMessageClient>();
   const messageTransitions = new Map<string, Promise<void>>();
+  const pendingInboundAcks = new Map<string, {
+    resolve(): void;
+    reject(error: Error): void;
+    timer: NodeJS.Timeout;
+  }>();
 
   const handshakeTimeout = setTimeout(() => fail("Daemon did not initialize the worker in time"), handshakeTimeoutMs);
   handshakeTimeout.unref();
@@ -145,6 +151,15 @@ export function runWeixinWorker(
       }
       if (message.type === "message.deliver") {
         await handleDelivery(message.requestId, message.delivery);
+        return;
+      }
+      if (message.type === "message.inbound.ack") {
+        const pending = pendingInboundAcks.get(message.requestId);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        pendingInboundAcks.delete(message.requestId);
+        if (message.ok) pending.resolve();
+        else pending.reject(new Error(message.error.message));
         return;
       }
       try {
@@ -294,7 +309,7 @@ export function runWeixinWorker(
       credential,
       state,
       configuration,
-      onMessage: (message) => sendAsync({ type: "message.inbound", message }),
+      onMessage: sendInboundAndWaitForAck,
       onError: (error) => {
         const failure = pollFailure(error);
         sendMessageError(accountId, failure.code, error, failure.retryable);
@@ -310,6 +325,7 @@ export function runWeixinWorker(
   }
 
   async function stopResources(): Promise<void> {
+    rejectPendingInboundAcks(new Error("Weixin worker stopped before inbound acknowledgement"));
     await Promise.allSettled([...messageTransitions.values()]);
     const clients = [...messageClients.values()];
     messageClients.clear();
@@ -361,6 +377,38 @@ export function runWeixinWorker(
     heartbeat = null;
     port.off("message", onMessage);
     port.off("disconnect", onDisconnect);
+    rejectPendingInboundAcks(new Error("Weixin worker IPC channel disconnected before inbound acknowledgement"));
+  }
+
+  async function sendInboundAndWaitForAck(message: WeixinInboundTextMessage): Promise<void> {
+    const requestId = randomUUID();
+    const acknowledged = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingInboundAcks.delete(requestId);
+        reject(new Error("Daemon inbound acknowledgement timed out"));
+      }, 60_000);
+      timer.unref();
+      pendingInboundAcks.set(requestId, { resolve, reject, timer });
+    });
+    try {
+      await sendAsync({ type: "message.inbound", requestId, message });
+      await acknowledged;
+    } catch (error) {
+      const pending = pendingInboundAcks.get(requestId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingInboundAcks.delete(requestId);
+      }
+      throw error;
+    }
+  }
+
+  function rejectPendingInboundAcks(error: Error): void {
+    for (const pending of pendingInboundAcks.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    pendingInboundAcks.clear();
   }
 }
 

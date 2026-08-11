@@ -211,10 +211,25 @@ export function repositoryPortContract(
         providerMessageId: null,
         attempts: 0,
         errorCode: null,
+        nextAttemptAt: null,
         createdAt: "2026-08-10T06:00:00.000Z",
         updatedAt: "2026-08-10T06:00:00.000Z"
       };
-      await harness.deliveries.save(delivery);
+      const content = { text: "recoverable reply", mentions: [], attachments: [] };
+      await harness.deliveries.save(delivery, content);
+      const retryWait: Delivery = {
+        ...delivery,
+        status: "retry_wait",
+        attempts: 1,
+        errorCode: "CHANNEL_DELIVERY_FAILED",
+        nextAttemptAt: "2026-08-10T06:00:30.000Z",
+        updatedAt: "2026-08-10T06:00:01.000Z"
+      };
+      await harness.deliveries.save(retryWait);
+      expect(await harness.deliveries.listRecoverable({ limit: 10 })).toEqual([{
+        delivery: retryWait,
+        content
+      }]);
       const delivered: Delivery = {
         ...delivery,
         status: "delivered",

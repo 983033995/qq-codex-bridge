@@ -182,5 +182,21 @@ export const schemaMigrations: readonly SchemaMigration[] = [
       DROP TABLE turns_v1;
       CREATE INDEX idx_turns_thread_status ON turns(thread_id, status);
     `
+  },
+  {
+    version: 3,
+    name: "delivery_retry_recovery",
+    sql: `
+      ALTER TABLE deliveries ADD COLUMN content_json TEXT NOT NULL
+        DEFAULT '{"text":"","mentions":[],"attachments":[]}'
+        CHECK (json_valid(content_json));
+      ALTER TABLE deliveries ADD COLUMN next_attempt_at TEXT;
+      UPDATE deliveries
+      SET status = 'failed',
+          error_code = COALESCE(error_code, 'CHANNEL_DELIVERY_FAILED')
+      WHERE status IN ('pending', 'sending', 'retry_wait');
+      CREATE INDEX idx_deliveries_recovery
+        ON deliveries(status, next_attempt_at, updated_at, delivery_id);
+    `
   }
 ];

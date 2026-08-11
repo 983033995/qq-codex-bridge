@@ -3,6 +3,7 @@ import type {
   ConversationSpaceId,
   Delivery,
   InboundEnvelope,
+  MessageContent,
   ThreadBinding,
   Turn
 } from "../../domain/src/vnext/index.js";
@@ -310,17 +311,37 @@ export class SqliteDeliveryRepository implements DeliveryRepository {
     return this.getBy("delivery_key", deliveryKey);
   }
 
-  async save(delivery: Delivery): Promise<void> {
+  async listRecoverable(input: { limit: number }): Promise<Array<{
+    delivery: Delivery;
+    content: MessageContent;
+  }>> {
+    return (this.db.prepare(`
+      SELECT * FROM deliveries
+      WHERE status IN ('sending', 'retry_wait')
+      ORDER BY COALESCE(next_attempt_at, updated_at), delivery_id
+      LIMIT ?
+    `).all(clampLimit(input.limit)) as DeliveryRow[]).map((row) => ({
+      delivery: mapDelivery(row),
+      content: JSON.parse(row.content_json) as MessageContent
+    }));
+  }
+
+  async save(delivery: Delivery, content?: MessageContent): Promise<void> {
     this.db.prepare(`
       INSERT INTO deliveries (
         delivery_id, delivery_key, space_id, status, provider_message_id,
-        attempts, error_code, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attempts, error_code, content_json, next_attempt_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(delivery_id) DO UPDATE SET
         status = excluded.status,
         provider_message_id = excluded.provider_message_id,
         attempts = excluded.attempts,
         error_code = excluded.error_code,
+        content_json = CASE
+          WHEN ? = 1 THEN excluded.content_json
+          ELSE deliveries.content_json
+        END,
+        next_attempt_at = excluded.next_attempt_at,
         updated_at = excluded.updated_at
     `).run(
       delivery.deliveryId,
@@ -330,8 +351,11 @@ export class SqliteDeliveryRepository implements DeliveryRepository {
       delivery.providerMessageId,
       delivery.attempts,
       delivery.errorCode,
+      content ? JSON.stringify(content) : '{"text":"","mentions":[],"attachments":[]}',
+      delivery.nextAttemptAt,
       delivery.createdAt,
-      delivery.updatedAt
+      delivery.updatedAt,
+      content ? 1 : 0
     );
   }
 
@@ -459,6 +483,7 @@ type RoutingDecisionRow = {
 type DeliveryRow = {
   delivery_id: string; delivery_key: string; space_id: string; status: Delivery["status"];
   provider_message_id: string | null; attempts: number; error_code: Delivery["errorCode"];
+  content_json: string; next_attempt_at: string | null;
   created_at: string; updated_at: string;
 };
 type PushTargetRow = { alias: string; space_id: string; enabled: number; created_at: string; updated_at: string };
@@ -546,6 +571,7 @@ function mapDelivery(row: DeliveryRow): Delivery {
     providerMessageId: row.provider_message_id,
     attempts: row.attempts,
     errorCode: row.error_code,
+    nextAttemptAt: row.next_attempt_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

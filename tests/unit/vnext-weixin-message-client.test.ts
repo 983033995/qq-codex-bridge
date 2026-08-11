@@ -105,6 +105,65 @@ describe("vNext Weixin message client", () => {
     expect(state.getCursor("weixin:personal")).toBe("");
   });
 
+  it("waits for the application ACK before advancing the cursor", async () => {
+    const state = new MemoryMessageState();
+    let acknowledge: (() => void) | undefined;
+    const acknowledged = new Promise<void>((resolve) => { acknowledge = resolve; });
+    const client = new WeixinMessageClient({
+      accountId: "weixin:personal",
+      credential: { token: "secret-token", baseUrl: "http://127.0.0.1:9090" },
+      state,
+      fetchFn: async () => new Response(JSON.stringify({
+        ret: 0,
+        get_updates_buf: "cursor-after-ack",
+        msgs: [rawMessage("message-ack", 1, { type: 1, text_item: { text: "persist me" } })]
+      }), { status: 200 }),
+      onMessage: async () => acknowledged
+    });
+
+    const polling = client.pollOnce();
+    await eventually(() => acknowledge !== undefined);
+    expect(state.getCursor("weixin:personal")).toBe("");
+    acknowledge!();
+    await expect(polling).resolves.toBe(1);
+    expect(state.getCursor("weixin:personal")).toBe("cursor-after-ack");
+  });
+
+  it("redelivers after a crash between ACK and cursor persistence", async () => {
+    let cursor = "";
+    let failCursorWrite = true;
+    const state: WeixinMessageState = {
+      getCursor: () => cursor,
+      async setCursor(_accountId, value) {
+        if (failCursorWrite) {
+          failCursorWrite = false;
+          throw new Error("worker crashed before cursor fsync");
+        }
+        cursor = value;
+      },
+      getContextToken: () => "",
+      setContextToken: async () => undefined
+    };
+    let applications = 0;
+    const client = new WeixinMessageClient({
+      accountId: "weixin:personal",
+      credential: { token: "secret-token", baseUrl: "http://127.0.0.1:9090" },
+      state,
+      fetchFn: async () => new Response(JSON.stringify({
+        ret: 0,
+        get_updates_buf: "cursor-after-restart",
+        msgs: [rawMessage("message-crash-window", 1, { type: 1, text_item: { text: "dedupe me" } })]
+      }), { status: 200 }),
+      onMessage: async () => { applications += 1; }
+    });
+
+    await expect(client.pollOnce()).rejects.toThrow("worker crashed before cursor fsync");
+    expect(cursor).toBe("");
+    await expect(client.pollOnce()).resolves.toBe(1);
+    expect(applications).toBe(2);
+    expect(cursor).toBe("cursor-after-restart");
+  });
+
   it("normalizes stable fallback ids and rejects unsafe endpoints", () => {
     expect(extractWeixinText(rawMessage("id", 1, { type: 1, text_item: { text: " text " } }))).toBe("text");
     expect(normalizeInboundText("weixin:personal", {

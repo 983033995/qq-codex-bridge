@@ -41,11 +41,12 @@ describe("vNext SQLite database", () => {
     expect(db.pragma("busy_timeout", { simple: true })).toBe(1234);
     expect(db.prepare("SELECT version, name FROM schema_migrations").all()).toEqual([
       { version: 1, name: "vnext_core" },
-      { version: 2, name: "turn_unknown_recovery_status" }
+      { version: 2, name: "turn_unknown_recovery_status" },
+      { version: 3, name: "delivery_retry_recovery" }
     ]);
 
     applyMigrations(db, schemaMigrations);
-    expect(db.prepare("SELECT count(*) AS count FROM schema_migrations").get()).toEqual({ count: 2 });
+    expect(db.prepare("SELECT count(*) AS count FROM schema_migrations").get()).toEqual({ count: 3 });
   });
 
   it("migrates v1 Turn rows without loss and accepts the unknown recovery status", () => {
@@ -82,6 +83,13 @@ describe("vNext SQLite database", () => {
         'app-server', NULL, '2026-08-10T06:00:00.000Z',
         '2026-08-10T06:00:01.000Z', NULL)
     `).run(space.spaceId);
+    first.prepare(`
+      INSERT INTO deliveries (
+        delivery_id, delivery_key, space_id, status, provider_message_id,
+        attempts, error_code, created_at, updated_at
+      ) VALUES ('delivery-v2', 'delivery-key-v2', ?, 'retry_wait', NULL,
+        1, 'CHANNEL_DELIVERY_FAILED', '2026-08-10T06:00:00.000Z', '2026-08-10T06:00:02.000Z')
+    `).run(space.spaceId);
     first.close();
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
@@ -93,12 +101,14 @@ describe("vNext SQLite database", () => {
     ).run()).not.toThrow();
     expect(migrated.prepare("SELECT status FROM turns WHERE turn_id = 'turn-migration'").get())
       .toEqual({ status: "unknown" });
+    expect(migrated.prepare("SELECT status, error_code FROM deliveries WHERE delivery_id = 'delivery-v2'").get())
+      .toEqual({ status: "failed", error_code: "CHANNEL_DELIVERY_FAILED" });
   });
 
   it("rolls back every statement and version record from a failed migration", () => {
     const db = openFileDatabase();
     const broken: SchemaMigration = {
-      version: 3,
+      version: 4,
       name: "broken_migration",
       sql: `
         CREATE TABLE must_rollback (id TEXT PRIMARY KEY) STRICT;
@@ -110,7 +120,7 @@ describe("vNext SQLite database", () => {
     expect(db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'must_rollback'"
     ).get()).toBeUndefined();
-    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 3").get()).toBeUndefined();
+    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 4").get()).toBeUndefined();
   });
 
   it("rolls back application writes when an IMMEDIATE transaction fails", () => {

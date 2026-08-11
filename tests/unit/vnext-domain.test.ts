@@ -215,6 +215,7 @@ function delivery(status: Delivery["status"]): Delivery {
     providerMessageId: status === "delivered" ? "provider-message-a" : null,
     attempts: status === "pending" ? 0 : 1,
     errorCode: status === "failed" ? "CHANNEL_DELIVERY_FAILED" : null,
+    nextAttemptAt: status === "retry_wait" ? "2026-08-10T06:01:00.000Z" : null,
     createdAt: now,
     updatedAt: now
   };

@@ -436,13 +436,30 @@ export class WeixinWorkerSupervisor {
         peerId: inbound.peerId,
         receivedAt: inbound.receivedAt
       });
-      void Promise.resolve(this.options.onInboundMessage?.(inbound)).catch((error) => {
-        this.publish("weixin.message.inbound_failed", {
-          accountId: inbound.accountId,
-          providerMessageId: inbound.providerMessageId,
-          error: normalizeError(error).message
-        });
-      });
+      void Promise.resolve(this.options.onInboundMessage?.(inbound)).then(
+        () => {
+          if (this.child !== child || !child.connected) return;
+          this.send(child, { type: "message.inbound.ack", requestId: message.requestId, ok: true });
+        },
+        (error) => {
+          const normalized = normalizeError(error);
+          this.publish("weixin.message.inbound_failed", {
+            accountId: inbound.accountId,
+            providerMessageId: inbound.providerMessageId,
+            error: normalized.message
+          });
+          if (this.child !== child || !child.connected) return;
+          this.send(child, {
+            type: "message.inbound.ack",
+            requestId: message.requestId,
+            ok: false,
+            error: {
+              code: "WEIXIN_INBOUND_NOT_PERSISTED",
+              message: normalized.message.trim().slice(0, 256) || "微信入站消息未持久化"
+            }
+          });
+        }
+      );
       return;
     }
     if (message.type === "message.error") {

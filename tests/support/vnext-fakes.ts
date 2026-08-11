@@ -4,6 +4,7 @@ import type {
   ConversationSpaceId,
   Delivery,
   InboundEnvelope,
+  MessageContent,
   ThreadBinding,
   Turn
 } from "../../packages/domain/src/vnext/index.js";
@@ -226,6 +227,7 @@ export class MemoryRoutingDecisionRepository implements RoutingDecisionRepositor
 
 export class MemoryDeliveryRepository implements DeliveryRepository {
   readonly values = new Map<string, Delivery>();
+  readonly contents = new Map<string, MessageContent>();
 
   async get(deliveryId: string): Promise<Delivery | null> {
     return this.values.get(deliveryId) ?? null;
@@ -235,8 +237,20 @@ export class MemoryDeliveryRepository implements DeliveryRepository {
     return [...this.values.values()].find((delivery) => delivery.deliveryKey === deliveryKey) ?? null;
   }
 
-  async save(delivery: Delivery): Promise<void> {
+  async listRecoverable(input: { limit: number }) {
+    return [...this.values.values()]
+      .filter((delivery) => delivery.status === "sending" || delivery.status === "retry_wait")
+      .sort((left, right) => (left.nextAttemptAt ?? left.updatedAt).localeCompare(right.nextAttemptAt ?? right.updatedAt))
+      .slice(0, input.limit)
+      .map((delivery) => ({
+        delivery: structuredClone(delivery),
+        content: structuredClone(this.contents.get(delivery.deliveryId) ?? { text: "", mentions: [], attachments: [] })
+      }));
+  }
+
+  async save(delivery: Delivery, content?: MessageContent): Promise<void> {
     this.values.set(delivery.deliveryId, structuredClone(delivery));
+    if (content) this.contents.set(delivery.deliveryId, structuredClone(content));
   }
 }
 

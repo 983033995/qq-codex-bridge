@@ -3,6 +3,7 @@ import type {
   ConversationSpaceId,
   Delivery,
   InboundEnvelope,
+  MessageContent,
   RoutingDecision,
   ThreadBinding,
   Turn
@@ -62,7 +63,11 @@ export interface RoutingDecisionRepository {
 export interface DeliveryRepository {
   get(deliveryId: string): Promise<Delivery | null>;
   findByKey(deliveryKey: string): Promise<Delivery | null>;
-  save(delivery: Delivery): Promise<void>;
+  listRecoverable(input: { limit: number }): Promise<Array<{
+    delivery: Delivery;
+    content: MessageContent;
+  }>>;
+  save(delivery: Delivery, content?: MessageContent): Promise<void>;
 }
 
 export type PushTargetRecord = {

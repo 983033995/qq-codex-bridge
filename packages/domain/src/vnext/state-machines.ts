@@ -71,6 +71,7 @@ export function transitionDelivery(
     at: string;
     providerMessageId?: string;
     errorCode?: StableErrorCode;
+    nextAttemptAt?: string;
   }
 ): Delivery {
   if (!canTransitionDelivery(delivery.status, nextStatus)) {
@@ -92,6 +93,14 @@ export function transitionDelivery(
       `A ${nextStatus} delivery requires a stable error code`
     );
   }
+  if (nextStatus === "retry_wait" && !options.nextAttemptAt) {
+    throw new StateTransitionError(
+      "delivery",
+      delivery.status,
+      nextStatus,
+      "A retry_wait delivery requires a next attempt timestamp"
+    );
+  }
 
   return {
     ...delivery,
@@ -102,6 +111,7 @@ export function transitionDelivery(
     errorCode: ["retry_wait", "failed"].includes(nextStatus)
       ? options.errorCode!
       : null,
+    nextAttemptAt: nextStatus === "retry_wait" ? options.nextAttemptAt! : null,
     updatedAt: options.at
   };
 }

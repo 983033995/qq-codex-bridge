@@ -188,6 +188,16 @@ describe("vNext Weixin worker runtime", () => {
         attachments: [expect.objectContaining({ id: "attachment-inbound-1" })]
       })
     }));
+    const inboundRequest = port.sent.find((message) => message.type === "message.inbound");
+    expect(inboundRequest?.type).toBe("message.inbound");
+    if (inboundRequest?.type === "message.inbound") {
+      port.emit("message", {
+        type: "message.inbound.ack",
+        requestId: inboundRequest.requestId,
+        ok: true
+      });
+      await tick();
+    }
 
     const deliveryRequestId = "00000000-0000-4000-8000-000000000003";
     port.emit("message", {

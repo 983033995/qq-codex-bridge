@@ -17,6 +17,7 @@ import {
   type Delivery,
   type Attachment,
   type InboundEnvelope,
+  type MessageContent,
   type StableErrorCode
 } from "../../../packages/domain/src/vnext/index.js";
 import type {
@@ -33,6 +34,16 @@ export type WeixinMessageRuntimeResult = {
 };
 
 export class WeixinMessageRuntime {
+  private readonly maxDeliveryAttempts: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
+  private readonly recoveryLimit: number;
+  private readonly activeRecoveries = new Set<string>();
+  private recovery: Promise<void> | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private retryTimerDueAt: number | null = null;
+  private started = false;
+
   constructor(private readonly deps: {
     spaces: ConversationSpaceRepository;
     deliveries: DeliveryRepository;
@@ -49,9 +60,62 @@ export class WeixinMessageRuntime {
     }): Promise<string | null> };
     ids: IdGenerator;
     clock: Clock;
-  }) {}
+    onProcessingError?(error: Error, message: InboundEnvelope): void;
+    retry?: {
+      maxAttempts?: number;
+      baseDelayMs?: number;
+      maxDelayMs?: number;
+      recoveryLimit?: number;
+    };
+  }) {
+    this.maxDeliveryAttempts = positiveInteger(deps.retry?.maxAttempts ?? 3, "retry.maxAttempts");
+    this.retryBaseDelayMs = positiveInteger(deps.retry?.baseDelayMs ?? 1_000, "retry.baseDelayMs");
+    this.retryMaxDelayMs = positiveInteger(deps.retry?.maxDelayMs ?? 60_000, "retry.maxDelayMs");
+    this.recoveryLimit = positiveInteger(deps.retry?.recoveryLimit ?? 100, "retry.recoveryLimit");
+  }
+
+  async start(): Promise<void> {
+    if (this.started) return;
+    this.started = true;
+    await this.recoverDeliveries();
+  }
+
+  async stop(): Promise<void> {
+    this.started = false;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryTimerDueAt = null;
+    await this.recovery;
+  }
+
+  recoverDeliveries(): Promise<void> {
+    if (this.recovery) return this.recovery;
+    this.recovery = this.scanRecoverable().finally(() => {
+      this.recovery = null;
+    });
+    return this.recovery;
+  }
 
   async handle(input: WeixinInboundTextMessage): Promise<WeixinMessageRuntimeResult> {
+    const received = await this.persistInbound(input);
+    if (received.duplicate) return received.result;
+    return this.processInbound(received.space, received.message);
+  }
+
+  async accept(input: WeixinInboundTextMessage): Promise<void> {
+    const received = await this.persistInbound(input);
+    if (received.duplicate) return;
+    void this.processInbound(received.space, received.message).catch((error) => {
+      this.deps.onProcessingError?.(normalizeError(error), received.message);
+    });
+  }
+
+  private async persistInbound(input: WeixinInboundTextMessage): Promise<{
+    duplicate: boolean;
+    space: ConversationSpace;
+    message: InboundEnvelope;
+    result: WeixinMessageRuntimeResult;
+  }> {
     const account = parseChannelAccountId(input.accountId);
     if (account.channel !== "weixin") {
       throw new Error(`Weixin inbound account '${input.accountId}' is invalid`);
@@ -84,11 +148,29 @@ export class WeixinMessageRuntime {
     if (!received.accepted) {
       return {
         duplicate: true,
+        space,
         message: received.message,
-        delivery: await this.deps.deliveries.findByKey(deliveryKey)
+        result: {
+          duplicate: true,
+          message: received.message,
+          delivery: await this.deps.deliveries.findByKey(deliveryKey)
+        }
       };
     }
+    return {
+      duplicate: false,
+      space,
+      message,
+      result: { duplicate: false, message, delivery: null }
+    };
+  }
 
+  private async processInbound(
+    space: ConversationSpace,
+    message: InboundEnvelope
+  ): Promise<WeixinMessageRuntimeResult> {
+    const { spaceId } = space;
+    const deliveryKey = `${message.messageId}:assistant-final`;
     await this.deps.bind.execute({ spaceId });
     const turn = await this.deps.startTurn.execute(message);
     const outboundMedia = await resolveOutboundAttachments(turn.result.mediaReferences);
@@ -111,42 +193,133 @@ export class WeixinMessageRuntime {
       providerMessageId: null,
       attempts: 0,
       errorCode: null,
+      nextAttemptAt: null,
       createdAt,
       updatedAt: createdAt
     };
-    await this.deps.deliveries.save(delivery);
-    delivery = transitionDelivery(delivery, "sending", { at: this.deps.clock.now().toISOString() });
-    await this.deps.deliveries.save(delivery);
+    const content = { text, mentions: [], attachments: outboundMedia.attachments };
+    await this.deps.deliveries.save(delivery, content);
+    delivery = await this.attemptDelivery(delivery, content, space);
+    return { duplicate: false, message, delivery };
+  }
+
+  private async scanRecoverable(): Promise<void> {
+    const deliveries = await this.deps.deliveries.listRecoverable({ limit: this.recoveryLimit });
+    const now = this.deps.clock.now().getTime();
+    let nextDelayMs: number | null = null;
+    for (const recovery of deliveries) {
+      const { delivery, content } = recovery;
+      if (this.activeRecoveries.has(delivery.deliveryId)) continue;
+      if (delivery.status === "retry_wait" && delivery.nextAttemptAt) {
+        const delayMs = Date.parse(delivery.nextAttemptAt) - now;
+        if (delayMs > 0) {
+          nextDelayMs = nextDelayMs === null ? delayMs : Math.min(nextDelayMs, delayMs);
+          continue;
+        }
+      }
+      this.activeRecoveries.add(delivery.deliveryId);
+      try {
+        if (delivery.attempts >= this.maxDeliveryAttempts) {
+          await this.failRecovery(delivery);
+          continue;
+        }
+        const space = await this.deps.spaces.get(delivery.spaceId);
+        if (!space || space.channel !== "weixin") {
+          await this.failRecovery(delivery);
+          continue;
+        }
+        await this.attemptDelivery(delivery, content, space);
+      } catch {
+        // attemptDelivery persists a retry_wait or terminal failed state.
+      } finally {
+        this.activeRecoveries.delete(delivery.deliveryId);
+      }
+    }
+    if (nextDelayMs !== null) this.scheduleRecovery(nextDelayMs);
+  }
+
+  private async attemptDelivery(
+    current: Delivery,
+    content: MessageContent,
+    space: ConversationSpace
+  ): Promise<Delivery> {
+    let delivery = current;
+    if (delivery.status !== "sending") {
+      if (delivery.attempts >= this.maxDeliveryAttempts) {
+        await this.failRecovery(delivery);
+        throw new Error(`Delivery '${delivery.deliveryKey}' exhausted its retry limit`);
+      }
+      delivery = transitionDelivery(delivery, "sending", { at: this.deps.clock.now().toISOString() });
+      await this.deps.deliveries.save(delivery);
+    }
     try {
       const providerMessageId = await this.deps.worker.deliver({
-        deliveryKey,
-        accountId: input.accountId,
-        peerId: input.peerId,
-        chatType: input.chatType,
-        text,
-        ...(outboundMedia.attachments.length > 0
-          ? { attachments: outboundMedia.attachments }
+        deliveryKey: delivery.deliveryKey,
+        accountId: space.accountId,
+        peerId: space.providerConversationId,
+        chatType: space.scope,
+        text: content.text,
+        ...(content.attachments.length > 0
+          ? { attachments: content.attachments }
           : {})
       });
       delivery = transitionDelivery(delivery, "delivered", {
         at: this.deps.clock.now().toISOString(),
-        providerMessageId: providerMessageId ?? deliveryKey
+        providerMessageId: providerMessageId ?? delivery.deliveryKey
       });
       await this.deps.deliveries.save(delivery);
       await this.deps.spaces.save({
-        ...(await this.deps.spaces.get(spaceId) ?? space),
+        ...(await this.deps.spaces.get(delivery.spaceId) ?? space),
         lastOutboundAt: delivery.updatedAt
       });
-      return { duplicate: false, message, delivery };
+      return delivery;
     } catch (error) {
       const errorCode = stableDeliveryError(error);
-      delivery = transitionDelivery(delivery, isRetryable(error) ? "retry_wait" : "failed", {
-        at: this.deps.clock.now().toISOString(),
-        errorCode
+      const retryable = isRetryable(error) && delivery.attempts < this.maxDeliveryAttempts;
+      const at = this.deps.clock.now();
+      delivery = transitionDelivery(delivery, retryable ? "retry_wait" : "failed", {
+        at: at.toISOString(),
+        errorCode,
+        ...(retryable ? { nextAttemptAt: new Date(at.getTime() + this.retryDelay(delivery.attempts)).toISOString() } : {})
       });
       await this.deps.deliveries.save(delivery);
+      if (retryable) this.scheduleRecovery(this.retryDelay(delivery.attempts));
       throw error;
     }
+  }
+
+  private async failRecovery(delivery: Delivery): Promise<void> {
+    if (delivery.status === "sending") {
+      delivery = transitionDelivery(delivery, "failed", {
+        at: this.deps.clock.now().toISOString(),
+        errorCode: delivery.errorCode ?? "CHANNEL_DELIVERY_FAILED"
+      });
+    } else if (delivery.status === "retry_wait") {
+      delivery = transitionDelivery(delivery, "failed", {
+        at: this.deps.clock.now().toISOString(),
+        errorCode: delivery.errorCode ?? "CHANNEL_DELIVERY_FAILED"
+      });
+    }
+    await this.deps.deliveries.save(delivery);
+  }
+
+  private retryDelay(attempts: number): number {
+    return Math.min(this.retryMaxDelayMs, this.retryBaseDelayMs * 2 ** Math.max(0, attempts - 1));
+  }
+
+  private scheduleRecovery(delayMs: number): void {
+    if (!this.started) return;
+    const boundedDelayMs = Math.max(0, Math.min(delayMs, this.retryMaxDelayMs));
+    const dueAt = Date.now() + boundedDelayMs;
+    if (this.retryTimer && this.retryTimerDueAt !== null && this.retryTimerDueAt <= dueAt) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimerDueAt = dueAt;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.retryTimerDueAt = null;
+      void this.recoverDeliveries().catch(() => this.scheduleRecovery(this.retryBaseDelayMs));
+    }, boundedDelayMs);
+    this.retryTimer.unref();
   }
 }
 
@@ -163,6 +336,17 @@ function stableDeliveryError(error: unknown): StableErrorCode {
 
 function isRetryable(error: unknown): boolean {
   return error instanceof WeixinDeliveryError ? error.retryable : true;
+}
+
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function positiveInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  return value;
 }
 
 async function resolveOutboundAttachments(
