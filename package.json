@@ -43,7 +43,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx --env-file=.env apps/bridge-daemon/src/dev.ts",
-    "gitnexus:detect-changes": "node scripts/gitnexus-detect-changes.mjs",
     "weixin:login": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login",
     "weixin:login:force": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login-force",
     "weixin:logout": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-logout",

@@ -347,12 +347,7 @@ Expected: PASS
 Run: `pnpm test`
 Expected: PASS
 
-- [ ] **Step 3: 运行 GitNexus 提交前检查**
-
-Run: staged `gitnexus_detect_changes({ scope: "staged" })`
-Expected: `risk_level: low` 或与改动范围一致
-
-- [ ] **Step 4: 提交最终实现**
+- [ ] **Step 3: 提交最终实现**
 
 ```bash
 git add .
