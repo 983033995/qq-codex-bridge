@@ -66,7 +66,9 @@ export const appConfigSchema = z.object({
     transport: z.enum(["auto", "app-server", "cdp"]),
     probeIntervalMs: z.number().int().nonnegative(),
     selectorProfile: z.string().min(1),
-    selectorFile: z.string().min(1).nullable()
+    selectorFile: z.string().min(1).nullable(),
+    replyTimeoutMs: z.number().int().positive(),
+    staleTurnInterruptMs: z.number().int().positive()
   }),
   push: z.object({
     enabled: z.boolean(),
@@ -157,7 +159,18 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): AppConfig {
       transport: resolveDesktopTransport(env),
       probeIntervalMs: Number(env.DESKTOP_DRIVER_PROBE_INTERVAL_MS ?? "300000"),
       selectorProfile: nullableString(env.CODEX_SELECTOR_PROFILE) ?? "v27",
-      selectorFile: nullableString(env.CODEX_SELECTOR_FILE)
+      selectorFile: nullableString(env.CODEX_SELECTOR_FILE),
+      // How long we wait for a Codex AppServer turn to fully complete before
+      // treating reply collection as timed out.
+      replyTimeoutMs: Number(env.CODEX_REPLY_TIMEOUT_MS ?? String(10 * 60_000)),
+      // How long a thread's turn can sit in "inProgress" before a *new*
+      // message on that thread will proactively interrupt it. Kept as its
+      // own knob (defaulting to replyTimeoutMs when unset) so long-running
+      // tool calls/searches aren't misclassified as "stale" just because the
+      // reply-collection window is short.
+      staleTurnInterruptMs: Number(
+        env.CODEX_STALE_TURN_INTERRUPT_MS ?? env.CODEX_REPLY_TIMEOUT_MS ?? String(10 * 60_000)
+      )
     },
     push: {
       enabled: booleanEnv(env.PUSH_ENABLED, false),

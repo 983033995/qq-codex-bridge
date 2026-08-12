@@ -378,7 +378,7 @@ export async function startWeixinGatewayService(
 
       const contextToken = stateStore.getContextToken(activeClient.accountId, peerId);
       await activeClient.sendTextMessage(peerId, text, contextToken || null);
-      console.log("[weixin-gateway] delivered outbound message", {
+      console.log("[weixin-gateway] provider accepted outbound message", {
         accountId: targetAccountId,
         peerId,
         chatType,
@@ -409,7 +409,7 @@ export async function startWeixinGatewayService(
         ...(mediaArtifacts?.length ? { mediaArtifacts } : {}),
         contextToken: contextToken || null
       });
-      console.log("[weixin-gateway] delivered outbound message", {
+      console.log("[weixin-gateway] provider accepted outbound message", {
         accountId: targetAccountId,
         peerId,
         chatType,

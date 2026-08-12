@@ -367,7 +367,12 @@ export const ADMIN_HTML = `<!doctype html>
       <section class="view" id="view-push">
         <div class="section-head">
           <div><h2>推送目标</h2><p>从已验证会话创建稳定别名，Agent 只能看到和使用别名。</p></div>
-          <span class="pill neutral" id="push-target-count">0 个</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span class="pill neutral" id="push-target-count">0 个</span>
+            <span class="pill neutral" id="push-stat-queued">排队中 0</span>
+            <span class="pill info" id="push-stat-delivered">已送达 0</span>
+            <span class="pill warn" id="push-stat-failed">失败 0</span>
+          </div>
         </div>
         <div class="target-layout">
           <div class="panel">
@@ -383,6 +388,7 @@ export const ADMIN_HTML = `<!doctype html>
                   <input id="push-target-alias" required maxlength="64" pattern="[a-z0-9][a-z0-9._-]{0,63}" placeholder="weixin-bot" autocomplete="off">
                   <span class="muted" style="font-size:12px;margin-top:4px;display:block;">仅支持小写英文字母、数字、点(.)、连字符(-)和下划线(_)，例如 <code>weixin-bot</code></span>
                 </div>
+                <p class="muted" style="font-size:12px;">⚠️ QQ 官方机器人暂无验证过的主动推送 API：即使在此登记 QQ 会话作为目标，实际推送也会始终返回 <code>channel_unsupported</code>。建议优先登记微信或飞书会话。</p>
                 <button class="primary" type="submit">保存并启用</button>
                 <span class="toast" id="push-target-result"></span>
               </form>
@@ -627,6 +633,7 @@ export const ADMIN_HTML = `<!doctype html>
         renderErrors(errors);
         renderConfig(config);
         renderPushTargets(pushTargets.targets, sessions.sessions);
+        renderPushStats(status.stats);
       } catch (error) {
         renderLoadError(error);
       } finally {
@@ -635,6 +642,13 @@ export const ADMIN_HTML = `<!doctype html>
     }
 
     /* ── Push targets ── */
+    function renderPushStats(stats) {
+      if (!stats) return;
+      document.querySelector("#push-stat-queued").textContent = "排队中 " + number(stats.pushQueuedCount || 0);
+      document.querySelector("#push-stat-delivered").textContent = "已送达 " + number(stats.pushDeliveredCount || 0);
+      document.querySelector("#push-stat-failed").textContent = "失败 " + number(stats.pushFailedCount || 0);
+    }
+
     function renderPushTargets(targets, sessions) {
       document.querySelector("#push-target-count").textContent = number(targets.length) + " 个";
       const select = document.querySelector("#push-target-session");
@@ -656,6 +670,7 @@ export const ADMIN_HTML = `<!doctype html>
             cellHtml(pill(target.channel, "info")) +
             cellHtml(pill(target.targetType, "neutral")) +
             cellHtml(pill(target.enabled ? "enabled" : "disabled", target.enabled ? undefined : "warn")) +
+            (target.channel === "qq" ? cellHtml(pill("推送始终失败", "warn")) : "") +
             '<span class="toast">' + escapeHtml(target.accountKey) + '</span>' +
           '</div></div>' +
         (target.enabled
@@ -681,7 +696,7 @@ export const ADMIN_HTML = `<!doctype html>
       }
 
       try {
-        await api("/admin/api/push-targets", {
+        const created = await api("/admin/api/push-targets", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -690,7 +705,7 @@ export const ADMIN_HTML = `<!doctype html>
             enabled: true
           })
         });
-        result.textContent = "目标已保存。";
+        result.textContent = created && created.warning ? "目标已保存。" + created.warning : "目标已保存。";
         setField("push-target-alias", "");
         await loadAll();
       } catch (error) {

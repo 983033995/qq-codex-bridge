@@ -96,4 +96,52 @@ describe("admin push targets", () => {
       targets: [{ alias: "daily-report-group", enabled: false }]
     });
   });
+
+  it("warns that QQ push targets always fail because no verified proactive API exists", async () => {
+    const db = createSqliteDatabase(":memory:");
+    cleanups.push(() => db.close());
+    await new SqliteSessionStore(db).createSession({
+      sessionKey: "qqbot:default::qq:c2c:openid-1",
+      accountKey: "qqbot:default",
+      peerKey: "qq:c2c:openid-1",
+      chatType: "c2c",
+      peerId: "openid-1",
+      codexThreadRef: null,
+      lastCodexTurnId: null,
+      skillContextKey: null,
+      conversationProvider: null,
+      status: BridgeSessionStatus.Active,
+      lastInboundAt: "2026-08-03T10:00:00.000Z",
+      lastOutboundAt: null,
+      lastError: null
+    });
+    const config = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret"
+    });
+    const targets = new SqlitePushRepository(db);
+    const server = createBridgeHttpServer(createAdminRoutes({
+      config,
+      repository: new AdminRepository(db),
+      startedAt: "2026-08-03T10:00:00.000Z",
+      getChannels: () => [],
+      pushTargets: targets
+    }));
+    cleanups.push(() => server.close());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const created = await fetch(`${baseUrl}/admin/api/push-targets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        alias: "qq-alerts",
+        sessionKey: "qqbot:default::qq:c2c:openid-1"
+      })
+    });
+    expect(created.status).toBe(201);
+    const body = await created.json();
+    expect(body.target.channel).toBe("qq");
+    expect(body.warning).toMatch(/channel_unsupported/);
+  });
 });

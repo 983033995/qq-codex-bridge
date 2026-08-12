@@ -80,7 +80,9 @@ export function bootstrap() {
   const transcriptStore = new SqliteTranscriptStore(db);
   const runtimeDir = path.dirname(config.databasePath);
   const useDomTransport = config.desktopDriver.transport === "cdp";
-  const forwardAppServerUiEvents = process.env.CODEX_APP_SERVER_FORWARD_UI_EVENTS === "1";
+  // Default on so /tn threads can appear in the Codex/ChatGPT sidebar when CDP
+  // is available. Set CODEX_APP_SERVER_FORWARD_UI_EVENTS=0 to disable.
+  const forwardAppServerUiEvents = process.env.CODEX_APP_SERVER_FORWARD_UI_EVENTS !== "0";
   const cdpSession = new CdpSession({
     appName: config.codexDesktop.appName,
     remoteDebuggingPort: config.codexDesktop.remoteDebuggingPort
@@ -100,7 +102,9 @@ export function bootstrap() {
     controlFallback: legacyDomDriver,
     notificationForwarder: forwardAppServerUiEvents
       ? new CodexDesktopAppUiNotificationForwarder(cdpSession)
-      : null
+      : null,
+    replyTimeoutMs: config.desktopDriver.replyTimeoutMs,
+    staleTurnInterruptMs: config.desktopDriver.staleTurnInterruptMs
   });
   const codexDriver = new UnifiedDesktopDriver({
     appServer: appServerDriver,

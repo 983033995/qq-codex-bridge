@@ -116,8 +116,28 @@ describe("bridge config", () => {
       transport: "app-server",
       probeIntervalMs: 60000,
       selectorProfile: "v27",
-      selectorFile: null
+      selectorFile: null,
+      replyTimeoutMs: 10 * 60_000,
+      staleTurnInterruptMs: 10 * 60_000
     });
+  });
+
+  it("allows configuring reply timeout and stale-turn-interrupt independently", () => {
+    const independent = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      CODEX_REPLY_TIMEOUT_MS: "120000",
+      CODEX_STALE_TURN_INTERRUPT_MS: "900000"
+    });
+    expect(independent.desktopDriver.replyTimeoutMs).toBe(120000);
+    expect(independent.desktopDriver.staleTurnInterruptMs).toBe(900000);
+
+    const fallsBackToReplyTimeout = loadConfigFromEnv({
+      QQBOT_APP_ID: "qq-app",
+      QQBOT_CLIENT_SECRET: "qq-secret",
+      CODEX_REPLY_TIMEOUT_MS: "120000"
+    });
+    expect(fallsBackToReplyTimeout.desktopDriver.staleTurnInterruptMs).toBe(120000);
   });
 
   it("loads a versioned or explicit Codex selector profile", () => {

@@ -271,13 +271,19 @@ export class AdminRepository {
     outboundCount: number;
     pendingDeliveryCount: number;
     errorEventCount: number;
+    pushQueuedCount: number;
+    pushDeliveredCount: number;
+    pushFailedCount: number;
   }> {
     return {
       sessionCount: count(this.db, "bridge_sessions"),
       inboundCount: countWhere(this.db, "message_ledger", "direction = 'inbound'"),
       outboundCount: count(this.db, "delivery_jobs"),
       pendingDeliveryCount: countWhere(this.db, "delivery_jobs", "status = 'pending'"),
-      errorEventCount: countWhere(this.db, "runtime_events", "level = 'error'")
+      errorEventCount: countWhere(this.db, "runtime_events", "level = 'error'"),
+      pushQueuedCount: countWhere(this.db, "push_jobs", "status IN ('queued', 'sending', 'retry_wait')"),
+      pushDeliveredCount: countWhere(this.db, "push_jobs", "status = 'delivered'"),
+      pushFailedCount: countWhere(this.db, "push_jobs", "status = 'failed'")
     };
   }
 }

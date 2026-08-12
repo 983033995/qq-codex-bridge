@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type {
   PushJob,
+  PushJobStatus,
   PushPayload,
   PushRepositoryPort,
   PushTargetRegistryPort
@@ -41,7 +42,7 @@ export class PushOrchestrator {
 
   async enqueue(idempotencyKey: string, body: unknown): Promise<{
     pushId: string;
-    status: "queued";
+    status: PushJobStatus;
     duplicate: boolean;
   }> {
     if (!idempotencyKey.trim() || idempotencyKey.length > 256) {
@@ -69,7 +70,7 @@ export class PushOrchestrator {
     });
     return {
       pushId: result.job.pushId,
-      status: "queued",
+      status: result.job.status,
       duplicate: result.duplicate
     };
   }

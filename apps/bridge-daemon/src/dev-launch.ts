@@ -73,6 +73,9 @@ export async function ensureCodexDesktopForDev(
       console.warn(
         `[qq-codex-bridge] CDP endpoint on port ${config.remoteDebuggingPort} not reachable, but AppServer binary found at '${binaryPath}'. Proceeding with '${transport}' transport.`
       );
+      console.warn(
+        `[qq-codex-bridge] Codex/ChatGPT sidebar will not live-sync /tn threads without CDP. Quit the desktop app and restart bridge so it can relaunch with --remote-debugging-port=${config.remoteDebuggingPort}; or restart the app later to reload persisted threads from ~/.codex.`
+      );
       return { launched: true };
     }
   }

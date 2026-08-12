@@ -87,6 +87,8 @@ type RuntimeShutdownDeps = {
   ingresses: Array<{ stop?: () => Promise<void> | void }>;
   managedServices: Array<{ shutdown(): Promise<void> }>;
   closeHttpServer(): Promise<void>;
+  desktopDriver?: { dispose?: () => void | Promise<void> };
+  removeStateFile?: () => void | Promise<void>;
 };
 
 export function createRuntimeShutdown(deps: RuntimeShutdownDeps): () => Promise<void> {
@@ -96,9 +98,14 @@ export function createRuntimeShutdown(deps: RuntimeShutdownDeps): () => Promise<
       deps.stopWorker();
       await Promise.allSettled([
         ...deps.ingresses.map((ingress) => Promise.resolve().then(() => ingress.stop?.())),
-        ...deps.managedServices.map((service) => service.shutdown())
+        ...deps.managedServices.map((service) => service.shutdown()),
+        Promise.resolve().then(() => deps.desktopDriver?.dispose?.())
       ]);
-      await deps.closeHttpServer();
+      try {
+        await deps.closeHttpServer();
+      } finally {
+        await deps.removeStateFile?.();
+      }
     })();
     return shutdownPromise;
   };
@@ -109,6 +116,7 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
   const adminRepository = new AdminRepository(app.db);
   const pushTargetRepository = app.push?.repository ?? new SqlitePushRepository(app.db);
   const startedAt = new Date().toISOString();
+  const stateFilePath = path.join(path.dirname(app.config.databasePath), "bridge-daemon-state.json");
   const managedServices: Array<Pick<WeixinGatewayServiceHandle, "shutdown">> = [];
   const configuredAccountKeys = Object.keys(app.orchestrators.byAccountKey);
   let channels: string[] = [];
@@ -123,7 +131,8 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       desktopDriver: app.adapters.codexDesktop,
       qqEgress: adapter.egress,
       chatgptDriver: app.chatgptDriver,
-      accountKeys: configuredAccountKeys
+      accountKeys: configuredAccountKeys,
+      push: app.push?.orchestrator
     });
     return {
       accountKey,
@@ -147,7 +156,8 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
       desktopDriver: app.adapters.codexDesktop,
       qqEgress: adapter.egress,
       chatgptDriver: app.chatgptDriver,
-      accountKeys: configuredAccountKeys
+      accountKeys: configuredAccountKeys,
+      push: app.push?.orchestrator
     });
     return {
       accountKey,
@@ -168,7 +178,8 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
           desktopDriver: app.adapters.codexDesktop,
           qqEgress: app.adapters.feishu.egress,
           chatgptDriver: app.chatgptDriver,
-          accountKeys: configuredAccountKeys
+          accountKeys: configuredAccountKeys,
+          push: app.push?.orchestrator
         });
         return {
           accountKey: `feishu:${app.config.feishu.accountId}`,
@@ -253,6 +264,8 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     stopWorker: () => app.push?.worker.stop(),
     ingresses: startedIngresses,
     managedServices,
+    desktopDriver: app.adapters.codexDesktop,
+    removeStateFile: () => removeBridgeDaemonStateFile(stateFilePath, process.pid),
     closeHttpServer: async () => {
       if (bridgeHttpServer.listening) {
         await new Promise<void>((resolve) => bridgeHttpServer.close(() => resolve()));
@@ -303,7 +316,6 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     }
     channels = [...channelSet];
     adminUrl = `http://${app.config.runtime.listenHost}:${app.config.runtime.listenPort}/admin`;
-    const stateFilePath = path.join(path.dirname(app.config.databasePath), "bridge-daemon-state.json");
     try {
       fs.writeFileSync(
         stateFilePath,
@@ -368,6 +380,22 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
     adminUrl,
     shutdown: shutdownStartedServices
   };
+}
+
+export function removeBridgeDaemonStateFile(stateFilePath: string, pid: number): void {
+  try {
+    const state = JSON.parse(fs.readFileSync(stateFilePath, "utf8")) as Record<string, unknown>;
+    if (state.pid !== pid) {
+      return;
+    }
+    fs.unlinkSync(stateFilePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      console.warn("[qq-codex-bridge] failed to remove bridge daemon state file", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
 }
 
 export function resolveTurnEventOrchestrator(

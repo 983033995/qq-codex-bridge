@@ -73,6 +73,17 @@
 
 ---
 
+## 4.1 为什么 `/tn` 创建成功了，但 Codex App 侧边栏看不到？
+
+Bridge 默认走独立的 headless AppServer（与 ChatGPT/Codex 窗口自己的 stdio AppServer 不是同一个进程）。线程会写入 `~/.codex`，飞书/QQ 侧的 `/t` 能立刻看到，但桌面侧边栏不会实时刷新，除非：
+
+1. **重启 Codex/ChatGPT App**，让它重新加载磁盘上的线程；或
+2. **让桌面端以 CDP 调试端口启动**（默认 `9229`），以便 bridge 把 `thread/started` 转发进 UI。
+
+注意：`/tn` 新建线程的工作区是 bridge 进程的当前目录（常见是本仓库），侧边栏里请到对应项目分组下查找，不要只看 Desktop。
+
+---
+
 ## 5. 为什么 QQ 发来的语音有时只显示附件，没有转写文本？
 
 项目支持的优先级通常是：

@@ -4,7 +4,30 @@
 
 ## [Unreleased]
 
-暂无。
+### Added
+
+- **MCP 渠道排版规范**：新增 `get_channel_format_guide`；`push_message` / `list_push_targets` 默认暴露飞书→markdown、微信→plain、QQ 主动推送不可用等写作规范，`list_push_targets` 附带 `recommendedFormat` / `formatSummary`
+- 私聊快捷指令 `/push <alias> <message>` 和 `/push targets`，可在任意已接入渠道内直接触发或查看 Agent 主动推送目标（对齐 `docs/PRODUCT-SPEC-v0.2.md` 第 7 节，此前只有 HTTP/MCP 两条路径）
+- 飞书对话回复补齐媒体解析（图片），与 Agent 推送链路能力对齐；不支持的媒体类型会收到明确文字提示而不是被静默丢弃
+- 飞书 `post` 富文本改为真正解析 Markdown 结构：提取真实超链接为 `a` 标签，标题/列表/加粗/代码标记降级为可读纯文本
+- 微信入站收到图片/视频/文件消息时会返回明确的"暂不支持下载"占位提示，而不是像之前一样静默丢弃整条消息
+- 管理页创建 QQ 推送目标时会给出明确警告：QQ 官方机器人当前没有验证过的主动推送 API，此类目标的推送会始终失败
+- 管理页"推送目标"页展示排队中/已送达/失败的推送任务数量
+- `desktopDriver.replyTimeoutMs` / `desktopDriver.staleTurnInterruptMs`（`CODEX_REPLY_TIMEOUT_MS` / `CODEX_STALE_TURN_INTERRUPT_MS`）：把"回复采集超时"和"陈旧 turn 打断阈值"拆分为两个独立可配置项，避免长耗时任务被误判为陈旧而打断
+
+### Fixed
+
+- **飞书富文本排版**：对话回复与主动推送的 `post` 消息改为优先使用官方推荐的 `md` 标签（CommonMark 0.31 + GFM），保留标题/列表/加粗/代码块/表格/链接等真实样式，而不再把 Markdown 降级成纯文本
+- **飞书 `/t` `/help` 表格显示成管道符纯文字**：`shouldUseFeishuRichText` 未识别 Markdown 表格，控制指令回复落到了 `msg_type=text`；现已把表格行/分隔行纳入富文本判定，走 `post` + `md` 渲染
+- **`/tn` 在 Codex App 侧边栏不可见**：AppServer 新建线程后未调用 `thread/name/set`（标题一直为 null），且未主动转发 `thread/started`；现已设置标题并尝试转发到桌面 UI（需 CDP）。无 CDP 时仍需重启 App 才能从 `~/.codex` 刷新侧边栏
+- **`/model use` 不再依赖 CDP UI**：当前 Codex AppServer 已提供 `config/value/write`，模型切换直接写 `~/.codex/config.toml`，与桌面端共用同一配置，无需单独开一个带调试端口的 Codex 窗口
+- **微信 Agent 主动推送图片/文件必现 400 失败**：`weixin-gateway` 的 `/messages` 请求校验要求 `mediaArtifacts[].sourceUrl` 非空，但 Agent 推送产生的媒体只有本地文件（`PUSH_OUTBOX_ROOT` 下的路径），从不携带远程地址，导致每一次图片/文件主动推送都会在真正投递前被拒绝，Agent 只能退化成把本地路径当文本发出去。已放宽校验为允许空字符串（真正读取时以 `localPath` 为准，`sourceUrl` 仅在 `localPath` 读取失败时才会兜底使用），并用真实凭证完成了图片、文件的端到端主动推送回归（均已确认送达）
+- **Codex App 改版后 `/threads` `/t` 排序与真实客户端不一致**：当前 AppServer 版本新增了 `recency_at` 排序键，反映真实的"最近被使用"时间；旧的 `updated_at` 会被后台静默写入干扰，不再等价于"最近活动"。驱动现在优先探测并使用 `recency_at`（旧版 AppServer 不支持时自动回退 `updated_at`），"最近活动"展示时间也随之切换到 `recency_at`
+- `push_message` MCP 工具的 `media` 字段缺少使用说明，导致 Agent 不知道媒体路径必须先落地到推送沙箱目录才能引用；补充了工具描述与更可操作的 `media_sandbox_violation` 报错文案（直接带出沙箱根目录的真实路径）
+
+### Changed
+
+- `switchModel` 在没有 CDP 兜底驱动时的报错信息更明确地说明这是环境限制（AppServer 协议未提供模型切换 RPC），而不是笼统的失败提示
 
 ## [0.2.0] - 2026-08-03
 

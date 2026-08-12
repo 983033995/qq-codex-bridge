@@ -1,19 +1,22 @@
+import path from "node:path";
 import type { PushEgressPort } from "../../../ports/src/push.js";
-import { sendFeishuImage, sendFeishuText } from "./feishu-message-client.js";
+import { sendFeishuAudio, sendFeishuFile, sendFeishuImage, sendFeishuText } from "./feishu-message-client.js";
 import type { FeishuMessageClient } from "./feishu-types.js";
+
+const SUPPORTED_MEDIA_TYPES = new Set(["image", "file", "audio", "video"]);
 
 export class FeishuPushEgress implements PushEgressPort {
   constructor(private readonly client: FeishuMessageClient) {}
 
   async send(input: Parameters<PushEgressPort["send"]>[0]): ReturnType<PushEgressPort["send"]> {
     try {
-      const unsupported = input.payload.message.media.find((media) => media.type !== "image");
+      const unsupported = input.payload.message.media.find((media) => !SUPPORTED_MEDIA_TYPES.has(media.type));
       if (unsupported) {
         return {
           ok: false,
           retryable: false,
           code: "channel_unsupported",
-          message: `Feishu v0.2 only supports image media, received ${unsupported.type}`
+          message: `Feishu does not support media type ${unsupported.type}`
         };
       }
       if (input.payload.message.media.length !== input.resolvedMediaPaths.length) {
@@ -37,12 +40,29 @@ export class FeishuPushEgress implements PushEgressPort {
         );
       }
       for (let index = 0; index < input.resolvedMediaPaths.length; index += 1) {
-        providerMessageId = await sendFeishuImage(
-          this.client,
-          input.target.providerTargetId,
-          input.resolvedMediaPaths[index],
-          `${input.pushId}-image-${index}`
-        );
+        const media = input.payload.message.media[index];
+        const resolvedPath = input.resolvedMediaPaths[index];
+        providerMessageId = media.type === "image"
+          ? await sendFeishuImage(
+              this.client,
+              input.target.providerTargetId,
+              resolvedPath,
+              `${input.pushId}-image-${index}`
+            )
+          : media.type === "audio"
+            ? await sendFeishuAudio(
+                this.client,
+                input.target.providerTargetId,
+                resolvedPath,
+                `${input.pushId}-audio-${index}`
+              )
+          : await sendFeishuFile(
+              this.client,
+              input.target.providerTargetId,
+              resolvedPath,
+              path.basename(media.path),
+              `${input.pushId}-file-${index}`
+            );
       }
       return { ok: true, providerMessageId };
     } catch (error) {

@@ -44,7 +44,7 @@ describe("bootstrap integration", () => {
     const app = bootstrap();
     try {
       expect(Object.keys(app.adapters.qqByAccountKey).sort()).toEqual(["qqbot:main", "qqbot:shop"]);
-      expect(Object.keys(app.orchestrators.byAccountKey).sort()).toEqual(["qqbot:main", "qqbot:shop"]);
+      expect(Object.keys(app.orchestrators.byAccountKey).filter((k) => k.startsWith("qqbot:")).sort()).toEqual(["qqbot:main", "qqbot:shop"]);
       expect(app.adapters.qq).toBe(app.adapters.qqByAccountKey["qqbot:main"]);
       expect(app.orchestrator).toBe(app.orchestrators.byAccountKey["qqbot:main"]);
     } finally {

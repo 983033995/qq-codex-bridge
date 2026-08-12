@@ -13,9 +13,10 @@ type CliDeps = {
   packageRoot?: string;
   loadEnvFile?: (filePath: string) => void;
   ensureCodexDesktop?: (config: DevLaunchConfig) => Promise<{ launched: boolean }>;
-  runBridgeDaemon?: () => Promise<{ channels: string[] } | void>;
+  runBridgeDaemon?: () => Promise<{ channels: string[]; shutdown?: () => Promise<void> } | void>;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
+  registerShutdownSignals?: (shutdown: () => Promise<void>) => void;
 };
 
 const REQUIRED_ENV_MAP: Record<string, string> = {
@@ -80,6 +81,10 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
       ? (runtime as { channels: string[] }).channels
       : ["qq"];
     writeStdout(`[qq-codex-bridge] channels active: ${channels.join(", ")}`);
+    const shutdown = (runtime as { shutdown?: () => Promise<void> } | undefined)?.shutdown;
+    if (shutdown) {
+      (deps.registerShutdownSignals ?? registerShutdownSignals)(shutdown);
+    }
     return 0;
   } catch (error) {
     if (error instanceof ZodError) {
@@ -101,6 +106,29 @@ export async function runCli(rawArgs: string[], deps: CliDeps = {}): Promise<num
 
 export async function runCliFromProcess() {
   process.exitCode = await runCli(process.argv.slice(2));
+}
+
+/**
+ * Ensures Ctrl+C / `kill` gracefully tears down the bridge, including the
+ * managed Codex app-server child process this driver spawns. Without this,
+ * that process is orphaned on every restart and keeps running indefinitely.
+ */
+function registerShutdownSignals(shutdown: () => Promise<void>): void {
+  let shuttingDown = false;
+  const handle = (signal: NodeJS.Signals) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log(`[qq-codex-bridge] received ${signal}, shutting down...`);
+    shutdown()
+      .catch((error) => {
+        console.error("[qq-codex-bridge] error during shutdown:", error);
+      })
+      .finally(() => process.exit(0));
+  };
+  process.on("SIGINT", handle);
+  process.on("SIGTERM", handle);
 }
 
 function initEnvTemplate(options: {

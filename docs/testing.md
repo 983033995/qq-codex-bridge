@@ -83,7 +83,7 @@ DESKTOP_DRIVER_TRANSPORT=app-server
 ### 已知真实环境限制（必须接受）
 
 - QQ 主动推送（HTTP/MCP）当前固定 `channel_unsupported`（腾讯未开放经验证 API）。
-- 微信入站目前只支持文本 + 语音转写，图片/视频会回复占位提示。
+- 微信入站目前只支持文本 + 语音转写，图片/视频会回复占位提示；出站 audio 会作为可播放的音频附件发送，因为 iLink 会静默丢弃主动 `voice_item`。
 - 飞书富文本走 post + md 渲染。
 - AppServer 协议可能随 Codex 版本演进（驱动会尽力兼容 + recency_at 排序等）。
 

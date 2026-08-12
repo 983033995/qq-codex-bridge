@@ -252,6 +252,19 @@ export class WeixinClient {
             video_md5: uploaded.fileMd5
           }
         };
+      case MediaArtifactKind.Audio:
+        // Current iLink bot API accepts outbound voice_item requests but
+        // silently drops them before they reach WeChat clients. Send audio as
+        // a file attachment so delivery is observable and the MP3 is playable.
+        return {
+          type: 4,
+          file_item: {
+            media: uploaded.media,
+            file_name: fileName,
+            md5: uploaded.fileMd5,
+            len: String(uploaded.fileData.length)
+          }
+        };
       case MediaArtifactKind.File:
       default:
         return {
@@ -326,7 +339,8 @@ export class WeixinClient {
     const cdnResponse = await this.fetchFn(uploadUrl, {
       method: "POST",
       headers: {
-        "content-type": "application/octet-stream"
+        "content-type": "application/octet-stream",
+        "content-length": String(encryptedData.length)
       },
       body: new Uint8Array(encryptedData),
       signal: AbortSignal.timeout(60_000)
@@ -346,6 +360,8 @@ export class WeixinClient {
     return {
       media: {
         encrypt_query_param: encryptQueryParam,
+        // iLink expects Base64 of the ASCII hex key, not the raw hex string.
+        // The CDN encryption itself still uses the original 16-byte key.
         aes_key: Buffer.from(aesKey.toString("hex"), "utf8").toString("base64"),
         encrypt_type: 1
       }
@@ -384,6 +400,8 @@ export class WeixinClient {
         if (!shouldProcessInboundMessage(message)) {
           continue;
         }
+
+        logUnsupportedInboundMediaIfPresent(message);
 
         if (sanitizeText(message.context_token) && sanitizeText(message.from_user_id)) {
           this.options.stateStore.setContextToken(
@@ -432,6 +450,8 @@ function mapArtifactKindToMediaType(kind: MediaArtifactKind): WeixinMediaType {
       return 1;
     case MediaArtifactKind.Video:
       return 2;
+    case MediaArtifactKind.Audio:
+      return 3;
     case MediaArtifactKind.File:
     default:
       return 3;
@@ -610,21 +630,58 @@ export async function forwardWeixinInboundToBridge(
   }
 }
 
+/**
+ * Placeholder text used for inbound WeChat media items that this gateway
+ * cannot yet download. WeChat's real-network `ilink/bot` protocol does not
+ * document a public inbound media download endpoint, and the outbound
+ * upload protocol (`ilink/bot/getuploadurl` + AES-128-ECB encrypted CDN PUT)
+ * is not necessarily symmetric with how inbound media references are
+ * delivered. Rather than silently dropping these messages (the previous
+ * behavior), we surface a clear placeholder so the user knows why the bot
+ * didn't "see" the attachment, and log the raw item shape (see
+ * `logUnsupportedInboundMediaIfPresent`) so a future change can implement
+ * real download/decryption once the wire format has been captured from a
+ * live account.
+ */
+const WEIXIN_MEDIA_PLACEHOLDER_TEXT: Record<number, string> = {
+  2: "[收到一张图片。当前微信网关暂不支持下载入站图片，请改用文字描述你的问题，或改用 QQ/飞书发送图片给同一个 Agent。]",
+  4: "[收到一个文件。当前微信网关暂不支持下载入站文件，请改用文字描述文件内容，或改用 QQ/飞书发送文件。]",
+  5: "[收到一个视频。当前微信网关暂不支持下载入站视频，请改用文字描述，或改用 QQ/飞书发送视频。]"
+};
+
 export function extractWeixinText(message: WeixinInboundMessage): string {
   if (!message || !Array.isArray(message.item_list)) {
     return "";
   }
 
   for (const item of message.item_list) {
-    if (Number(item?.type) === 1 && typeof item.text_item?.text === "string") {
+    const type = Number(item?.type);
+    if (type === 1 && typeof item.text_item?.text === "string") {
       return sanitizeText(item.text_item.text);
     }
-    if (Number(item?.type) === 3 && typeof item.voice_item?.text === "string") {
+    if (type === 3 && typeof item.voice_item?.text === "string") {
       return sanitizeText(item.voice_item.text);
+    }
+    const placeholder = WEIXIN_MEDIA_PLACEHOLDER_TEXT[type];
+    if (placeholder) {
+      return placeholder;
     }
   }
 
   return "";
+}
+
+function logUnsupportedInboundMediaIfPresent(message: WeixinInboundMessage): void {
+  const mediaItem = message.item_list?.find((item) =>
+    Object.prototype.hasOwnProperty.call(WEIXIN_MEDIA_PLACEHOLDER_TEXT, Number(item?.type))
+  );
+  if (!mediaItem) {
+    return;
+  }
+  console.info("[weixin-gateway] inbound media placeholder used (download not implemented yet)", {
+    type: Number(mediaItem.type),
+    rawItemKeys: Object.keys(mediaItem)
+  });
 }
 
 function shouldProcessInboundMessage(message: WeixinInboundMessage): boolean {

@@ -10,6 +10,9 @@ import type { PublicPushTarget, PushChannel, PushTargetType } from "../../../pac
 import { ADMIN_HTML } from "./admin-html.js";
 
 const KEEP_SECRET_VALUE = "__QQ_CODEX_KEEP_SECRET__";
+const QQ_PUSH_UNSUPPORTED_WARNING =
+  "QQ 官方机器人当前没有经过验证的主动推送 API，此目标创建后所有推送都会返回 channel_unsupported，" +
+  "除非账号获得腾讯侧主动消息权限并接入真实接口。";
 
 type AdminRoutesDeps = {
   config: AppConfig;
@@ -161,7 +164,10 @@ export function createAdminRoutes(deps: AdminRoutesDeps): BridgeHttpRoute[] {
           ...resolved,
           enabled: input.enabled
         });
-        writeJson(response, 201, { target: toPublicTarget(saved) });
+        writeJson(response, 201, {
+          target: toPublicTarget(saved),
+          ...(resolved.channel === "qq" ? { warning: QQ_PUSH_UNSUPPORTED_WARNING } : {})
+        });
       }
     },
     {

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MediaArtifactKind } from "../../packages/domain/src/message.js";
-import { WeixinClient } from "../../apps/weixin-gateway/src/weixin-client.js";
+import { extractWeixinText, WeixinClient } from "../../apps/weixin-gateway/src/weixin-client.js";
 import { WeixinGatewayStateStore } from "../../apps/weixin-gateway/src/state.js";
 
 describe("weixin client media sending", () => {
@@ -93,6 +93,64 @@ describe("weixin client media sending", () => {
     );
   });
 
+  it("sends audio artifacts as playable file attachments", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "weixin-client-voice-"));
+    const audioPath = path.join(tempDir, "brief.mp3");
+    const statePath = path.join(tempDir, "state.json");
+    fs.writeFileSync(audioPath, Buffer.from("fake-mp3-payload"));
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ ret: 0, upload_param: "voice-upload" })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ "x-encrypted-param": "voice-cdn-param" })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ ret: 0 })
+      });
+    const client = new WeixinClient({
+      accountId: "default",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      token: "bot-token",
+      longPollTimeoutMs: 35_000,
+      apiTimeoutMs: 15_000,
+      stateStore: new WeixinGatewayStateStore(statePath),
+      fetchFn: fetchFn as never,
+      onInboundMessage: vi.fn()
+    });
+
+    await client.sendMessage({
+      peerId: "wxid_peer",
+      chatType: "c2c",
+      mediaArtifacts: [{
+        kind: MediaArtifactKind.Audio,
+        sourceUrl: "",
+        localPath: audioPath,
+        mimeType: "audio/mpeg",
+        fileSize: fs.statSync(audioPath).size,
+        originalName: "brief.mp3"
+      }]
+    });
+
+    const uploadBody = JSON.parse(String((fetchFn.mock.calls[0]?.[1] as RequestInit).body));
+    expect(uploadBody.media_type).toBe(3);
+    const sendBody = JSON.parse(String((fetchFn.mock.calls[2]?.[1] as RequestInit).body));
+    const encodedAesKey = sendBody.msg.item_list[0].file_item.media.aes_key as string;
+    expect(Buffer.from(encodedAesKey, "base64").toString("utf8")).toMatch(/^[0-9a-f]{32}$/);
+    expect(sendBody.msg.item_list[0]).toMatchObject({
+      type: 4,
+      file_item: {
+        media: { encrypt_query_param: "voice-cdn-param" },
+        file_name: "brief.mp3",
+        len: String(fs.statSync(audioPath).size)
+      }
+    });
+  });
+
   it("pairs thumbnail images with the following video into a single video item", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "weixin-client-video-"));
     const thumbPath = path.join(tempDir, "video-thumbnail.jpg");
@@ -179,5 +237,27 @@ describe("weixin client media sending", () => {
         }
       }
     });
+  });
+});
+
+describe("weixin inbound text extraction", () => {
+  it("still reads plain text and transcribed voice messages", () => {
+    expect(extractWeixinText({ item_list: [{ type: 1, text_item: { text: "你好" } }] })).toBe("你好");
+    expect(
+      extractWeixinText({ item_list: [{ type: 3, voice_item: { text: "语音转写内容" } }] })
+    ).toBe("语音转写内容");
+  });
+
+  it("surfaces a clear placeholder for image/file/video items instead of silently dropping them", () => {
+    expect(extractWeixinText({ item_list: [{ type: 2 }] })).toContain("图片");
+    expect(extractWeixinText({ item_list: [{ type: 2 }] })).toContain("暂不支持下载入站图片");
+    expect(extractWeixinText({ item_list: [{ type: 4 }] })).toContain("暂不支持下载入站文件");
+    expect(extractWeixinText({ item_list: [{ type: 5 }] })).toContain("暂不支持下载入站视频");
+  });
+
+  it("returns empty text when there is no recognizable item", () => {
+    expect(extractWeixinText({})).toBe("");
+    expect(extractWeixinText({ item_list: [] })).toBe("");
+    expect(extractWeixinText({ item_list: [{ type: 99 }] })).toBe("");
   });
 });

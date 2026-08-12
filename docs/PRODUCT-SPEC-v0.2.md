@@ -168,10 +168,13 @@ Response: 202 Accepted
 
 | 工具名 | 描述 | 参数 |
 |---|---|---|
-| `push_message` | 推送文本/图片消息到目标别名 | `target`, `text`, `format`, `media`, `idempotencyKey` |
+| `push_message` | 推送文本/图片消息到目标别名；description 内嵌各渠道排版摘要 | `target`, `text`, `format`, `media`, `idempotencyKey` |
 | `push_task_report` | 推送结构化任务报告 | `target`, `taskId`, `status`, `summary`, `details` |
-| `list_push_targets` | 列出可推送的公开目标信息 | 无 |
+| `list_push_targets` | 列出可推送的公开目标信息（附带 `recommendedFormat` / `formatSummary`） | 无 |
+| `get_channel_format_guide` | 查询飞书/微信/QQ 消息排版规范（可按 `channel` 或 `target` 过滤） | `channel?`, `target?` |
 | `get_push_status` | 查询单个推送任务状态 | `pushId` |
+
+推荐格式：`feishu → markdown`，`weixin → plain`，`qq` 主动推送当前不可用。详见 `docs/superpowers/specs/2026-08-05-mcp-channel-format-guide-design.md`。
 
 **MCP 配置示例**（在 Codex `.codex/mcp.json` 中）：
 ```json
@@ -227,7 +230,7 @@ Response: 202 Accepted
 |---|---|---|
 | QQ | `qq-outbound-format.ts` | Markdown 可选、图片 base64 | 
 | 微信 | `weixin-outbound-format.ts` | 纯文本为主、链接预览 |
-| 飞书 | `feishu-sender.ts` | 文本、post 富文本、图片 |
+| 飞书 | `feishu-sender.ts` | 文本、post 富文本、图片、文件（`im/v1/files`） |
 
 ---
 

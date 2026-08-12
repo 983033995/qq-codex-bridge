@@ -11,9 +11,14 @@ type ResolvedMcpPushOptions = {
   token: string;
 };
 
+type ResolveMcpPushOptionsDeps = {
+  isProcessRunning?: (pid: number) => boolean;
+};
+
 export function resolveMcpPushOptions(
   env: NodeJS.ProcessEnv = process.env,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  deps: ResolveMcpPushOptionsDeps = {}
 ): ResolvedMcpPushOptions {
   let baseUrl = env.MCP_PUSH_BASE_URL;
   let token = env.MCP_PUSH_TOKEN ?? env.PUSH_TOKEN;
@@ -37,6 +42,11 @@ export function resolveMcpPushOptions(
     if (fs.existsSync(stateFile)) {
       try {
         const state = JSON.parse(fs.readFileSync(stateFile, "utf8")) as Record<string, unknown>;
+        const pid = typeof state.pid === "number" ? state.pid : Number.NaN;
+        const isProcessRunning = deps.isProcessRunning ?? isRunningProcess;
+        if (!Number.isSafeInteger(pid) || pid <= 0 || !isProcessRunning(pid)) {
+          continue;
+        }
         if (!baseUrl && typeof state.baseUrl === "string" && state.baseUrl) {
           baseUrl = state.baseUrl;
         }
@@ -79,6 +89,15 @@ export function resolveMcpPushOptions(
     baseUrl: baseUrl ?? "http://127.0.0.1:3100",
     token: token ?? ""
   };
+}
+
+function isRunningProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "EPERM";
+  }
 }
 
 export async function runPushMcpServer(env: NodeJS.ProcessEnv = process.env): Promise<void> {

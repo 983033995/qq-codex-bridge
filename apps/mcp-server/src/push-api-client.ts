@@ -40,19 +40,38 @@ export class PushApiClient {
   }
 
   private async request(pathname: string, init: RequestInit = {}): Promise<unknown> {
-    const response = await this.fetchFn(`${this.baseUrl}${pathname}`, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${this.options.token}`,
-        ...init.headers
-      }
-    });
+    let response: Response;
+    try {
+      response = await this.fetchFn(`${this.baseUrl}${pathname}`, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${this.options.token}`,
+          ...init.headers
+        }
+      });
+    } catch (error) {
+      throw new Error(
+        `push API is unavailable at ${this.baseUrl}: ${networkErrorMessage(error)}`,
+        { cause: error }
+      );
+    }
     const body = await readResponseBody(response);
     if (!response.ok) {
       throw new Error(`push API request failed (${response.status}): ${errorMessage(body)}`);
     }
     return body;
   }
+}
+
+function networkErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const cause = error.cause;
+  if (cause instanceof Error && cause.message) {
+    return cause.message;
+  }
+  return error.message || "network request failed";
 }
 
 function assertLoopbackBaseUrl(baseUrl: string): void {

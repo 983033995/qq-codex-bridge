@@ -17,7 +17,32 @@ async function runDev() {
     remoteDebuggingPort: config.codexDesktop.remoteDebuggingPort
   });
 
-  await runBridgeDaemon();
+  const runtime = await runBridgeDaemon();
+  registerShutdownSignals(runtime);
+}
+
+/**
+ * Ensures Ctrl+C / `kill` gracefully tears down the bridge, including the
+ * managed Codex app-server child process this driver spawns. Without this,
+ * that process is orphaned on every restart and keeps running indefinitely.
+ */
+function registerShutdownSignals(runtime: { shutdown(): Promise<void> }): void {
+  let shuttingDown = false;
+  const handle = (signal: NodeJS.Signals) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log(`[qq-codex-bridge] received ${signal}, shutting down...`);
+    runtime
+      .shutdown()
+      .catch((error) => {
+        console.error("[qq-codex-bridge] error during shutdown:", error);
+      })
+      .finally(() => process.exit(0));
+  };
+  process.on("SIGINT", handle);
+  process.on("SIGTERM", handle);
 }
 
 runDev().catch((error) => {

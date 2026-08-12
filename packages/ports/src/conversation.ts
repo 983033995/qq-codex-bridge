@@ -21,6 +21,12 @@ export interface DesktopDriverPort {
     options?: ConversationRunOptions
   ): Promise<OutboundDraft[]>;
   markSessionBroken(sessionKey: string, reason: string): Promise<void>;
+  /**
+   * Releases any resources this driver owns (e.g. a spawned app-server
+   * child process, open sockets/timers). Optional: implementations that own
+   * nothing beyond in-memory state can omit it.
+   */
+  dispose?(): void | Promise<void>;
 }
 
 export type DesktopTransportMode = "auto" | "app-server" | "cdp";

@@ -72,6 +72,8 @@ implements DesktopDriverPort, DesktopTransportStatusPort {
       release();
     }
     this.cdpReleases.clear();
+    void this.options.appServer.dispose?.();
+    void this.options.cdp.dispose?.();
   }
 
   releaseSessionTurn(sessionKey: string): void {

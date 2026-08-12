@@ -916,4 +916,127 @@ describe("thread command handler", () => {
       expect.stringContaining("用户：用户问题 1")
     );
   });
+
+  it("reports that push is unavailable when /push is used without a push dependency", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/push targets"))).resolves.toBe(true);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("推送功能未启用") })
+    );
+
+    await expect(
+      handler.handleIfCommand(createPrivateMessage("/push weixin-bot 你好"))
+    ).resolves.toBe(true);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("无法执行 /push") })
+    );
+  });
+
+  it("lists push targets for /push targets when push is enabled", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const push = {
+      enqueue: vi.fn(),
+      listTargets: vi.fn().mockResolvedValue([
+        {
+          alias: "weixin-bot",
+          channel: "weixin",
+          accountKey: "weixin:default",
+          targetType: "user",
+          enabled: true,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z"
+        }
+      ])
+    };
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress,
+      push
+    });
+
+    await expect(handler.handleIfCommand(createPrivateMessage("/push"))).resolves.toBe(true);
+    expect(push.listTargets).toHaveBeenCalledTimes(1);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("| weixin-bot | weixin | user | 启用 |")
+      })
+    );
+  });
+
+  it("enqueues a push job for /push <alias> <message> using the message id as idempotency key", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const push = {
+      enqueue: vi.fn().mockResolvedValue({ pushId: "push-123", status: "queued", duplicate: false }),
+      listTargets: vi.fn()
+    };
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress,
+      push
+    });
+
+    await expect(
+      handler.handleIfCommand(createPrivateMessage("/push weixin-bot 今晚部署完成了"))
+    ).resolves.toBe(true);
+
+    expect(push.enqueue).toHaveBeenCalledWith(
+      "msg-1",
+      expect.objectContaining({
+        target: "weixin-bot",
+        message: { text: "今晚部署完成了", format: "plain", media: [] }
+      })
+    );
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("push-123")
+      })
+    );
+  });
+
+  it("surfaces enqueue failures for /push as a readable reply instead of throwing", async () => {
+    const sessionStore = createSessionStore();
+    const transcriptStore = createTranscriptStore();
+    const desktopDriver = createDriver();
+    const qqEgress = createEgress();
+    const push = {
+      enqueue: vi.fn().mockRejectedValue(new Error("push target not found")),
+      listTargets: vi.fn()
+    };
+    const handler = new ThreadCommandHandler({
+      sessionStore,
+      transcriptStore,
+      desktopDriver,
+      qqEgress,
+      push
+    });
+
+    await expect(
+      handler.handleIfCommand(createPrivateMessage("/push unknown-alias 你好"))
+    ).resolves.toBe(true);
+    expect(qqEgress.deliver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("推送失败：push target not found")
+      })
+    );
+  });
 });

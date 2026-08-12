@@ -126,6 +126,7 @@ describe("bridge daemon main", () => {
     const stopFailedIngress = vi.fn().mockRejectedValue(new Error("close failed"));
     const shutdownService = vi.fn().mockResolvedValue(undefined);
     const closeHttpServer = vi.fn().mockResolvedValue(undefined);
+    const removeStateFile = vi.fn().mockResolvedValue(undefined);
     const shutdown = createRuntimeShutdown({
       stopWorker,
       ingresses: [
@@ -133,7 +134,8 @@ describe("bridge daemon main", () => {
         { stop: stopFailedIngress }
       ],
       managedServices: [{ shutdown: shutdownService }],
-      closeHttpServer
+      closeHttpServer,
+      removeStateFile
     });
 
     await expect(Promise.all([shutdown(), shutdown()])).resolves.toEqual([undefined, undefined]);
@@ -142,5 +144,6 @@ describe("bridge daemon main", () => {
     expect(stopFailedIngress).toHaveBeenCalledTimes(1);
     expect(shutdownService).toHaveBeenCalledTimes(1);
     expect(closeHttpServer).toHaveBeenCalledTimes(1);
+    expect(removeStateFile).toHaveBeenCalledTimes(1);
   });
 });

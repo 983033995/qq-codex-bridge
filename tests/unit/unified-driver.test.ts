@@ -101,6 +101,22 @@ describe("unified desktop driver", () => {
     expect(cdp.sendUserMessage).not.toHaveBeenCalled();
     driver.dispose();
   });
+
+  it("disposes both underlying drivers so no spawned process is orphaned on shutdown", async () => {
+    const appServer = createDriver("codex-app-thread:primary");
+    const cdp = createDriver("cdp-target:fallback");
+    const driver = new UnifiedDesktopDriver({
+      appServer,
+      cdp,
+      transport: "auto",
+      probeIntervalMs: 0
+    });
+
+    driver.dispose();
+
+    expect(appServer.dispose).toHaveBeenCalledOnce();
+    expect(cdp.dispose).toHaveBeenCalledOnce();
+  });
 });
 
 function createDriver(threadRef: string): DesktopDriverPort {
@@ -125,6 +141,7 @@ function createDriver(threadRef: string): DesktopDriverPort {
     createThread: vi.fn(),
     sendUserMessage: vi.fn().mockResolvedValue(undefined),
     collectAssistantReply: vi.fn().mockResolvedValue([]),
-    markSessionBroken: vi.fn().mockResolvedValue(undefined)
+    markSessionBroken: vi.fn().mockResolvedValue(undefined),
+    dispose: vi.fn()
   };
 }

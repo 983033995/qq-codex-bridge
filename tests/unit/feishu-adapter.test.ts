@@ -3,8 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FeishuIngress, normalizeFeishuInbound } from "../../packages/adapters/feishu/src/feishu-ingress.js";
+import { buildFeishuPostContent } from "../../packages/adapters/feishu/src/feishu-message-client.js";
 import { FeishuPushEgress } from "../../packages/adapters/feishu/src/feishu-push-egress.js";
+import { FeishuSender, shouldUseFeishuRichText } from "../../packages/adapters/feishu/src/feishu-sender.js";
 import type { FeishuMessageEvent } from "../../packages/adapters/feishu/src/feishu-types.js";
+import { MediaArtifactKind } from "../../packages/domain/src/message.js";
 
 function event(overrides: Partial<FeishuMessageEvent> = {}): FeishuMessageEvent {
   return {
@@ -81,7 +84,9 @@ describe("Feishu adapter", () => {
     fs.writeFileSync(imagePath, "png");
     const createMessage = vi.fn()
       .mockResolvedValueOnce({ code: 0, data: { message_id: "om-text" } })
-      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-image" } });
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-image" } })
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-file" } })
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-audio" } });
     const uploadImage = vi.fn().mockImplementation(async (input: {
       data: { image: AsyncIterable<Buffer> };
     }) => {
@@ -90,8 +95,18 @@ describe("Feishu adapter", () => {
       }
       return { image_key: "img-key" };
     });
+    const uploadFile = vi.fn().mockImplementation(async (input: {
+      data: { file: NodeJS.ReadableStream };
+    }) => {
+      await new Promise<void>((resolve) => {
+        input.data.file.on("data", () => {});
+        input.data.file.on("end", resolve);
+        input.data.file.on("close", resolve);
+      });
+      return { file_key: "file-key" };
+    });
     const egress = new FeishuPushEgress({
-      im: { message: { create: createMessage }, image: { create: uploadImage } }
+      im: { message: { create: createMessage }, image: { create: uploadImage }, file: { create: uploadFile } }
     });
     const result = await egress.send({
       pushId: "push-feishu",
@@ -119,7 +134,9 @@ describe("Feishu adapter", () => {
     });
 
     createMessage.mockClear();
-    const unsupported = await egress.send({
+    const filePath = path.join(root, "report.pdf");
+    fs.writeFileSync(filePath, "pdf-bytes");
+    const fileResult = await egress.send({
       pushId: "push-file",
       target: {
         alias: "ops", channel: "feishu", accountKey: "feishu:work", targetType: "group",
@@ -127,12 +144,197 @@ describe("Feishu adapter", () => {
         createdAt: "2026-08-03T00:00:00.000Z", updatedAt: "2026-08-03T00:00:00.000Z"
       },
       payload: {
-        message: { text: "do not send", format: "plain", media: [{ type: "file", path: "report.pdf" }] },
+        message: { text: "", format: "plain", media: [{ type: "file", path: "report.pdf" }] },
         metadata: {}
       },
-      resolvedMediaPaths: [path.join(root, "report.pdf")]
+      resolvedMediaPaths: [filePath]
+    });
+    expect(fileResult).toEqual({ ok: true, providerMessageId: "om-file" });
+    expect(uploadFile).toHaveBeenCalledWith({
+      data: { file_type: "stream", file_name: "report.pdf", file: expect.anything() }
+    });
+    expect(createMessage.mock.calls[0][0].data).toMatchObject({
+      msg_type: "file",
+      content: JSON.stringify({ file_key: "file-key" })
+    });
+
+    createMessage.mockClear();
+    const audioPath = path.join(root, "brief.opus");
+    fs.writeFileSync(audioPath, "opus-bytes");
+    const audioResult = await egress.send({
+      pushId: "push-audio",
+      target: {
+        alias: "ops", channel: "feishu", accountKey: "feishu:work", targetType: "group",
+        providerTargetId: "oc-chat", enabled: true,
+        createdAt: "2026-08-03T00:00:00.000Z", updatedAt: "2026-08-03T00:00:00.000Z"
+      },
+      payload: {
+        message: { text: "", format: "plain", media: [{ type: "audio", path: "brief.opus" }] },
+        metadata: {}
+      },
+      resolvedMediaPaths: [audioPath]
+    });
+    expect(audioResult).toEqual({ ok: true, providerMessageId: "om-audio" });
+    expect(uploadFile).toHaveBeenLastCalledWith({
+      data: { file_type: "opus", file_name: "brief.opus", file: expect.anything() }
+    });
+    expect(createMessage.mock.calls[0][0].data).toMatchObject({
+      msg_type: "audio",
+      content: JSON.stringify({ file_key: "file-key" })
+    });
+
+    createMessage.mockClear();
+    const unsupported = await egress.send({
+      pushId: "push-sticker",
+      target: {
+        alias: "ops", channel: "feishu", accountKey: "feishu:work", targetType: "group",
+        providerTargetId: "oc-chat", enabled: true,
+        createdAt: "2026-08-03T00:00:00.000Z", updatedAt: "2026-08-03T00:00:00.000Z"
+      },
+      payload: {
+        message: { text: "do not send", format: "plain", media: [{ type: "sticker" as never, path: "sticker.webp" }] },
+        metadata: {}
+      },
+      resolvedMediaPaths: [path.join(root, "sticker.webp")]
     });
     expect(unsupported).toMatchObject({ ok: false, code: "channel_unsupported" });
     expect(createMessage).not.toHaveBeenCalled();
+  });
+
+  it("converts markdown structure into feishu post text/link tags without inventing unsupported style fields", () => {
+    const post = buildFeishuPostContent(
+      [
+        "# 标题",
+        "- 第一项",
+        "- 第二项",
+        "**重点** 和 `代码` 混排，还有 [文档](https://example.com/docs)"
+      ].join("\n")
+    );
+
+    // Official Feishu guidance: use a single `md` paragraph for CommonMark/GFM.
+    expect(post.zh_cn.title).toBe("标题");
+    expect(post.zh_cn.content).toEqual([
+      [{
+        tag: "md",
+        text: [
+          "- 第一项",
+          "- 第二项",
+          "**重点** 和 `代码` 混排，还有 [文档](https://example.com/docs)"
+        ].join("\n")
+      }]
+    ]);
+
+    const plainLink = buildFeishuPostContent("[文档](https://example.com/docs)");
+    expect(plainLink.zh_cn.content).toEqual([
+      [{ tag: "a", text: "文档", href: "https://example.com/docs" }]
+    ]);
+  });
+
+  it("treats markdown tables from /t as rich text and renders them via the post md tag", async () => {
+    const tableText = [
+      "最近 20 条最近有消息活动的 Codex 线程：",
+      "",
+      "| 序号 | 项目 | 线程标题 | 最近活动 |",
+      "| --- | --- | --- | --- |",
+      "| 👉🏻 1 | qq-codex-bridge | 使用 feishu-bot 发送消息 | 12 分钟前 |"
+    ].join("\n");
+
+    expect(shouldUseFeishuRichText(tableText)).toBe(true);
+    expect(buildFeishuPostContent(tableText).zh_cn.content).toEqual([
+      [{ tag: "md", text: tableText }]
+    ]);
+
+    const createMessage = vi.fn().mockResolvedValue({ code: 0, data: { message_id: "om-table" } });
+    const sender = new FeishuSender({
+      im: { message: { create: createMessage }, image: { create: vi.fn() }, file: { create: vi.fn() } }
+    });
+    await sender.deliver({
+      draftId: "draft-table",
+      sessionKey: "feishu:default::fs:c2c:oc-chat",
+      text: tableText,
+      createdAt: "2026-08-05T02:00:00.000Z"
+    });
+
+    expect(createMessage).toHaveBeenCalledWith({
+      params: { receive_id_type: "chat_id" },
+      data: {
+        receive_id: "oc-chat",
+        msg_type: "post",
+        content: JSON.stringify({
+          zh_cn: {
+            title: "",
+            content: [[{ tag: "md", text: tableText }]]
+          }
+        }),
+        uuid: "draft-table-text-0"
+      }
+    });
+  });
+
+  it("sends chat replies with real images inline and delivers other media kinds as real downloadable files", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "feishu-sender-"));
+    roots.push(root);
+    const imagePath = path.join(root, "cover.png");
+    fs.writeFileSync(imagePath, "png-bytes");
+    const pdfPath = path.join(root, "report.pdf");
+    fs.writeFileSync(pdfPath, "pdf-bytes");
+
+    const createMessage = vi.fn()
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-text" } })
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-image" } })
+      .mockResolvedValueOnce({ code: 0, data: { message_id: "om-file" } });
+    const uploadImage = vi.fn().mockImplementation(async (input: {
+      data: { image: AsyncIterable<Buffer> };
+    }) => {
+      for await (const _chunk of input.data.image) {
+        // Consume the stream exactly as the SDK upload path does.
+      }
+      return { image_key: "img-key" };
+    });
+    const uploadFile = vi.fn().mockImplementation(async (input: {
+      data: { file: NodeJS.ReadableStream };
+    }) => {
+      await new Promise<void>((resolve) => {
+        input.data.file.on("data", () => {});
+        input.data.file.on("end", resolve);
+        input.data.file.on("close", resolve);
+      });
+      return { file_key: "file-key" };
+    });
+    const sender = new FeishuSender({
+      im: { message: { create: createMessage }, image: { create: uploadImage }, file: { create: uploadFile } }
+    });
+
+    const result = await sender.deliver({
+      draftId: "draft-1",
+      sessionKey: "feishu:work::fs:c2c:ou-user",
+      text: `这是封面：\n![封面](${imagePath})`,
+      mediaArtifacts: [
+        {
+          kind: MediaArtifactKind.File,
+          sourceUrl: "",
+          localPath: pdfPath,
+          mimeType: "application/pdf",
+          fileSize: 10,
+          originalName: "report.pdf"
+        }
+      ],
+      createdAt: "2026-08-04T00:00:00.000Z"
+    });
+
+    expect(result.providerMessageId).toBe("om-file");
+    expect(createMessage.mock.calls[0][0].data.msg_type).toBe("text");
+    expect(createMessage.mock.calls[1][0].data).toMatchObject({
+      msg_type: "image",
+      content: JSON.stringify({ image_key: "img-key" })
+    });
+    expect(createMessage.mock.calls[2][0].data).toMatchObject({
+      msg_type: "file",
+      content: JSON.stringify({ file_key: "file-key" })
+    });
+    expect(uploadFile).toHaveBeenCalledWith({
+      data: { file_type: "stream", file_name: "report.pdf", file: expect.anything() }
+    });
+    expect(uploadImage).toHaveBeenCalledTimes(1);
   });
 });

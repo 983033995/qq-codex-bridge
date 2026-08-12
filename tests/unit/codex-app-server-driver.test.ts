@@ -163,6 +163,94 @@ describe("codex app-server driver", () => {
     });
   });
 
+  it("sets the thread name from /tn seed prompts and forwards thread/started to the desktop ui", async () => {
+    const socket = new FakeAppServerSocket();
+    const forwarded: Array<{ method: string; params: unknown }> = [];
+    socket.onRequest("initialize", (message) => {
+      socket.respond(message.id, {
+        userAgent: "fake",
+        codexHome: "/tmp/codex",
+        platformFamily: "unix",
+        platformOs: "macos"
+      });
+    });
+    socket.onRequest("thread/start", (message) => {
+      socket.respond(message.id, {
+        thread: {
+          id: "thread-new",
+          name: null,
+          cwd: "/tmp/project",
+          updatedAt: Math.floor(Date.now() / 1000)
+        }
+      });
+    });
+    socket.onRequest("thread/name/set", (message) => {
+      expect(message.params).toMatchObject({
+        threadId: "thread-new",
+        name: "快捷新线程"
+      });
+      socket.respond(message.id, {});
+    });
+    socket.onRequest("thread/read", (message) => {
+      socket.respond(message.id, {
+        thread: {
+          id: "thread-new",
+          name: "快捷新线程",
+          cwd: "/tmp/project",
+          updatedAt: Math.floor(Date.now() / 1000)
+        }
+      });
+    });
+    socket.onRequest("thread/resume", (message) => {
+      socket.respond(message.id, {});
+    });
+    socket.onRequest("turn/start", (message) => {
+      socket.respond(message.id, {
+        turn: {
+          id: "turn-seed"
+        }
+      });
+      setTimeout(() => {
+        socket.notify("turn/completed", {
+          threadId: "thread-new",
+          turn: {
+            id: "turn-seed",
+            status: "completed"
+          }
+        });
+      }, 0);
+    });
+
+    const driver = new CodexAppServerDriver({
+      appServerUrl: "ws://127.0.0.1:1",
+      createWebSocket: () => socket as never,
+      notificationForwarder: {
+        async forwardNotification(method, params) {
+          forwarded.push({ method, params });
+        }
+      },
+      requestTimeoutMs: 1_000,
+      replyTimeoutMs: 1_000,
+      sleep: async () => undefined
+    });
+
+    const binding = await driver.createThread(
+      "qqbot:default::qq:c2c:user-1",
+      ["线程标题：快捷新线程", "", "这是一个刚创建的新线程。"].join("\n")
+    );
+
+    expect(binding.codexThreadRef).toContain("thread-new");
+    expect(forwarded.some((entry) => entry.method === "thread/started")).toBe(true);
+    expect(
+      socket.sent.some(
+        (message) =>
+          typeof message === "object"
+          && message !== null
+          && (message as { method?: string }).method === "thread/name/set"
+      )
+    ).toBe(true);
+  });
+
   it("forwards app-server notifications to the desktop app ui in thread order", async () => {
     const socket = new FakeAppServerSocket();
     const forwarded: Array<{ method: string; params: unknown }> = [];
@@ -466,6 +554,148 @@ describe("codex app-server driver", () => {
     expect(state.quotaSummary).toContain("1 周 95%");
   });
 
+  it("switches models through config/value/write without requiring CDP", async () => {
+    const socket = new FakeAppServerSocket();
+    socket.onRequest("initialize", (message) => {
+      socket.respond(message.id, {
+        userAgent: "fake",
+        codexHome: "/tmp/codex",
+        platformFamily: "unix",
+        platformOs: "macos"
+      });
+    });
+    socket.onRequest("config/value/write", (message) => {
+      expect(message.params).toEqual({
+        keyPath: "model",
+        value: "gpt-5.6-sol",
+        mergeStrategy: "replace"
+      });
+      socket.respond(message.id, { status: "ok" });
+    });
+    socket.onRequest("config/read", (message) => {
+      socket.respond(message.id, {
+        config: {
+          model: "gpt-5.6-sol",
+          model_reasoning_effort: "high",
+          approval_policy: "on-request",
+          sandbox_mode: "workspace-write"
+        }
+      });
+    });
+    socket.onRequest("thread/list", (message) => {
+      socket.respond(message.id, { data: [] });
+    });
+    socket.onRequest("account/rateLimits/read", (message) => {
+      socket.respond(message.id, { rateLimits: null });
+    });
+
+    const driver = new CodexAppServerDriver({
+      appServerUrl: "ws://127.0.0.1:1",
+      createWebSocket: () => socket as never,
+      requestTimeoutMs: 1_000,
+      sleep: async () => undefined
+    });
+
+    const state = await driver.switchModel("gpt-5.6-sol");
+    expect(state.model).toBe("gpt-5.6-sol");
+  });
+
+  it("sorts recent threads by recency_at and derives relative time from it, matching the app's own sidebar ordering", async () => {
+    const socket = new FakeAppServerSocket();
+    socket.onRequest("initialize", (message) => {
+      socket.respond(message.id, {
+        userAgent: "fake",
+        codexHome: "/tmp/codex",
+        platformFamily: "unix",
+        platformOs: "macos"
+      });
+    });
+
+    let receivedSortKey: unknown;
+    socket.onRequest("thread/list", (message) => {
+      receivedSortKey = (message.params as { sortKey?: unknown }).sortKey;
+      socket.respond(message.id, {
+        data: [
+          {
+            id: "thread-1",
+            name: "线程一",
+            cwd: "/tmp/proj",
+            // A background write bumped updatedAt long ago, but the thread
+            // was genuinely just interacted with (recencyAt = now).
+            updatedAt: 1,
+            recencyAt: Math.floor(Date.now() / 1000)
+          }
+        ]
+      });
+    });
+
+    const driver = new CodexAppServerDriver({
+      appServerUrl: "ws://127.0.0.1:1",
+      createWebSocket: () => socket as never,
+      requestTimeoutMs: 1_000,
+      sleep: async () => undefined
+    });
+
+    const threads = await driver.listRecentThreads(20);
+
+    expect(receivedSortKey).toBe("recency_at");
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.title).toBe("线程一");
+    expect(threads[0]?.relativeTime).toBe("刚刚");
+  });
+
+  it("falls back to the updated_at sort key when the app-server rejects recency_at as unknown", async () => {
+    const socket = new FakeAppServerSocket();
+    socket.onRequest("initialize", (message) => {
+      socket.respond(message.id, {
+        userAgent: "fake",
+        codexHome: "/tmp/codex",
+        platformFamily: "unix",
+        platformOs: "macos"
+      });
+    });
+
+    const sortKeysSeen: unknown[] = [];
+    socket.onRequest("thread/list", (message) => {
+      const sortKey = (message.params as { sortKey?: unknown }).sortKey;
+      sortKeysSeen.push(sortKey);
+      if (sortKey === "recency_at") {
+        socket.emit(
+          "message",
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: {
+              code: -32600,
+              message: "Invalid request: unknown variant `recency_at`, expected one of `created_at`, `updated_at`"
+            }
+          })
+        );
+        return;
+      }
+      socket.respond(message.id, {
+        data: [{ id: "thread-legacy", name: "旧版线程", updatedAt: 1000 }]
+      });
+    });
+
+    const driver = new CodexAppServerDriver({
+      appServerUrl: "ws://127.0.0.1:1",
+      createWebSocket: () => socket as never,
+      requestTimeoutMs: 1_000,
+      sleep: async () => undefined
+    });
+
+    const first = await driver.listRecentThreads(20);
+    expect(first[0]?.title).toBe("旧版线程");
+
+    const second = await driver.listRecentThreads(20);
+    expect(second[0]?.title).toBe("旧版线程");
+
+    // First call probes recency_at, gets rejected, then retries with
+    // updated_at; the second call should skip straight to updated_at.
+    expect(sortKeysSeen).toEqual(["recency_at", "updated_at", "updated_at"]);
+  });
+
   it("suppresses noisy backend websocket reset logs from managed app-server stderr", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const driver = new CodexAppServerDriver();
@@ -489,4 +719,5 @@ describe("codex app-server driver", () => {
 
     warnSpy.mockRestore();
   });
+
 });

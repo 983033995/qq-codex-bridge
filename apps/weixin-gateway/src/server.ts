@@ -28,7 +28,14 @@ const inboundTextPayloadSchema = z.object({
 
 const mediaArtifactSchema = z.object({
   kind: z.nativeEnum(MediaArtifactKind),
-  sourceUrl: z.string().min(1),
+  // Agent push jobs (PushOrchestrator/WeixinPushEgress) only ever have a local
+  // file under PUSH_OUTBOX_ROOT and no remote source, so this is legitimately
+  // an empty string for that path; `localPath` below is required and is what
+  // WeixinClient actually reads from (see readArtifactData), falling back to
+  // sourceUrl only when localPath can't be read. Requiring a non-empty
+  // sourceUrl here rejected every real push image/file with a 400 before it
+  // ever reached WeChat.
+  sourceUrl: z.string(),
   localPath: z.string().min(1),
   mimeType: z.string().min(1),
   fileSize: z.number().nonnegative(),
@@ -166,7 +173,6 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
           createdAt: new Date().toISOString()
         };
 
-        messageStore.append(message);
         if (deps.outboundSender) {
           if (payload.mediaArtifacts?.length && deps.outboundSender.sendMessage) {
             await deps.outboundSender.sendMessage({
@@ -189,6 +195,10 @@ export function createWeixinGatewayServer(deps: WeixinGatewayDeps): Server {
             });
           }
         }
+        // Only successful provider submissions participate in deduplication.
+        // Persisting before send caused a failed request to be treated as a
+        // delivered duplicate when the push worker retried it.
+        messageStore.append(message);
         console.log("[weixin-gateway] outbound message", {
           id: message.id,
           chatType: message.chatType,

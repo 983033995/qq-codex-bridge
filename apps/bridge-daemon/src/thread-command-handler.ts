@@ -5,8 +5,17 @@ import { ensureAppVisible } from "../../../packages/adapters/chatgpt-desktop/src
 import { DesktopDriverError, type CodexControlState } from "../../../packages/domain/src/driver.js";
 import type { ConversationEntry, InboundMessage, OutboundDraft } from "../../../packages/domain/src/message.js";
 import type { DesktopDriverPort } from "../../../packages/ports/src/conversation.js";
+import type { PublicPushTarget, PushJobStatus } from "../../../packages/ports/src/push.js";
 import type { QqEgressPort } from "../../../packages/ports/src/qq.js";
 import type { SessionStorePort, TranscriptStorePort } from "../../../packages/ports/src/store.js";
+
+export type PushCommandPort = {
+  enqueue(
+    idempotencyKey: string,
+    body: unknown
+  ): Promise<{ pushId: string; status: PushJobStatus; duplicate: boolean }>;
+  listTargets(): Promise<PublicPushTarget[]>;
+};
 
 type ThreadCommandHandlerDeps = {
   sessionStore: SessionStorePort;
@@ -16,6 +25,7 @@ type ThreadCommandHandlerDeps = {
   chatgptDesktopAvailable?: boolean;
   chatgptDriver?: ChatgptDesktopDriver;
   accountKeys?: string[];
+  push?: PushCommandPort;
 };
 
 export class ThreadCommandHandler {
@@ -134,6 +144,18 @@ export class ThreadCommandHandler {
         return;
       }
 
+      if (text === "/push" || text === "/push targets") {
+        await this.deliverControlReply(message, await this.buildPushTargetsText());
+        return;
+      }
+
+      const pushMatch = text.match(/^\/push\s+(\S+)\s+([\s\S]+)$/);
+      if (pushMatch) {
+        const [, alias, body] = pushMatch;
+        await this.handlePushCommand(message, alias, body.trim());
+        return;
+      }
+
       if (text === "/cgpt" || text.startsWith("/cgpt ")) {
         await this.deliverControlReply(
           message,
@@ -199,9 +221,13 @@ export class ThreadCommandHandler {
           await this.deliverControlReply(message, this.formatModelSwitchReply(targetModel, state));
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
+          const isEnvironmentLimitation =
+            error instanceof DesktopDriverError && error.reason === "control_not_found";
           await this.deliverControlReply(
             message,
-            `切换模型失败：${reason}\n请检查模型名称是否正确，或当前 Codex Desktop 界面是否可操作。`
+            isEnvironmentLimitation
+              ? `切换模型失败：${reason}`
+              : `切换模型失败：${reason}\n请检查模型名称是否正确（AppServer 已支持无 UI 切换，一般不需要打开 CDP）。`
           );
         }
         return;
@@ -282,7 +308,14 @@ export class ThreadCommandHandler {
           this.buildNewThreadSeedPrompt(title)
         );
         await this.deps.sessionStore.updateBinding(message.sessionKey, binding.codexThreadRef);
-        await this.deliverControlReply(message, `已创建并切换到新线程：${title}`);
+        await this.deliverControlReply(
+          message,
+          [
+            `已创建并切换到新线程：${title}`,
+            `绑定标识：${binding.codexThreadRef ?? "未绑定"}`,
+            "说明：线程已写入 ~/.codex。若 Codex App 侧边栏暂时看不到，请重启 App 刷新；实时同步需要桌面端以 CDP 调试端口启动。"
+          ].join("\n")
+        );
         return;
       }
 
@@ -370,7 +403,10 @@ export class ThreadCommandHandler {
       text === "/cgpt new" ||
       /^\/cgpt\s+use\s+\d+$/.test(text) ||
       text === "/source" ||
-      /^\/source\s+(codex|chatgpt)$/.test(text)
+      /^\/source\s+(codex|chatgpt)$/.test(text) ||
+      text === "/push" ||
+      text === "/push targets" ||
+      /^\/push\s+\S+\s+[\s\S]+$/.test(text)
     );
   }
 
@@ -539,6 +575,83 @@ export class ThreadCommandHandler {
     await this.deliverControlReply(message, "已为本会话新建 ChatGPT 对话，下条消息将从新对话开始。");
   }
 
+  private async buildPushTargetsText(): Promise<string> {
+    if (!this.deps.push) {
+      return [
+        "Agent 主动推送功能未启用（PUSH_ENABLED=false）。",
+        "启用后可用：`/push <alias> <message>` 手动触发推送，`/push targets` 查看已登记目标。"
+      ].join("\n");
+    }
+
+    const targets = await this.deps.push.listTargets();
+    if (targets.length === 0) {
+      return [
+        "当前没有已登记的推送目标。",
+        "请先在管理页 `http://127.0.0.1:3100/admin` 的「推送目标」页面从已有会话创建目标别名。"
+      ].join("\n");
+    }
+
+    const escapeCell = (value: string) => value.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+    return [
+      "已登记的推送目标：",
+      "",
+      "| 别名 | 渠道 | 类型 | 状态 |",
+      "| --- | --- | --- | --- |",
+      ...targets.map(
+        (target) =>
+          `| ${escapeCell(target.alias)} | ${target.channel} | ${target.targetType} | ${target.enabled ? "启用" : "停用"} |`
+      ),
+      "",
+      "用法：`/push <alias> <message>`"
+    ].join("\n");
+  }
+
+  private async handlePushCommand(message: InboundMessage, alias: string, text: string): Promise<void> {
+    if (!this.deps.push) {
+      await this.deliverControlReply(
+        message,
+        "Agent 主动推送功能未启用（PUSH_ENABLED=false），无法执行 /push。"
+      );
+      return;
+    }
+
+    if (!text) {
+      await this.deliverControlReply(message, "推送内容不能为空。用法：`/push <alias> <message>`");
+      return;
+    }
+
+    try {
+      const result = await this.deps.push.enqueue(message.messageId, {
+        target: alias,
+        message: {
+          text,
+          format: "plain",
+          media: []
+        },
+        metadata: {
+          source: "thread-command"
+        }
+      });
+      await this.deliverControlReply(
+        message,
+        [
+          `已${result.duplicate ? "复用既有" : "提交"}推送任务：${result.pushId}`,
+          `目标：${alias}`,
+          `状态：${result.status}`
+        ].join("\n")
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await this.deliverControlReply(
+        message,
+        [
+          `推送失败：${reason}`,
+          "先发送 `/push targets` 确认目标别名是否存在且已启用。"
+        ].join("\n")
+      );
+    }
+  }
+
   private async deliverControlReply(message: InboundMessage, text: string): Promise<void> {
     const draft: OutboundDraft = {
       draftId: randomUUID(),
@@ -567,9 +680,12 @@ export class ThreadCommandHandler {
         "| 查看账号状态 | `/accounts` | - |",
         "| 切换到 Codex Desktop | `/source codex` | - |",
         "| 查看帮助 | `/help` | `/h` |",
+        "| 手动触发 Agent 推送 | `/push <alias> <message>` | - |",
+        "| 查看推送目标 | `/push targets` | - |",
         "",
         "建议先发 `/t` 刷新并查看 ChatGPT 对话列表，再用 `/tu 2` 切换。",
-        "模型、额度、状态和真正的 fork 命令目前只适用于 Codex Desktop。"
+        "模型、额度、状态和真正的 fork 命令目前只适用于 Codex Desktop。",
+        "推送目标需先在管理页登记；未启用推送功能时 `/push` 会提示未启用。"
       ].join("\n");
     }
 
@@ -592,10 +708,14 @@ export class ThreadCommandHandler {
       "| 查看账号状态 | `/accounts` | - |",
       "| 切换到 ChatGPT Desktop | `/source chatgpt` | - |",
       "| 切换到 Codex Desktop | `/source codex` | - |",
+      "| 手动触发 Agent 推送 | `/push <alias> <message>` | - |",
+      "| 查看推送目标 | `/push targets` | - |",
       "",
       "所有 `/` 开头的桥接快捷指令都会先由桥接层处理，不会直接发给 Codex。",
       "建议先用 `/source` 确认当前对话源，再发 `/t` 看列表，用 `/tu 2` 切换。",
-      "切到 ChatGPT 后，这套 `/t`、`/tu`、`/tn` 会自动操作 ChatGPT 对话。"
+      "切到 ChatGPT 后，这套 `/t`、`/tu`、`/tn` 会自动操作 ChatGPT 对话。",
+      "推送目标需先在管理页登记；未启用推送功能时 `/push` 会提示未启用。",
+      "各渠道媒体能力不同：QQ 已建立会话的回复支持图/音/视频/文件，但不支持主动推送；微信支持图/视频/文件，音频会作为可播放附件发送（iLink 不稳定支持主动语音条）；飞书 Agent 推送语音会转为 Opus 语音消息，其他文件按附件发送。"
     ].join("\n");
   }
 

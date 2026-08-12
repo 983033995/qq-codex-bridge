@@ -12,7 +12,9 @@ export class PushMediaGuard {
 
   resolve(mediaPath: string): string {
     if (/^(?:file|https?):\/\//i.test(mediaPath)) {
-      throw violation("media URLs are not allowed");
+      throw this.violation(
+        "media URLs are not allowed; copy the file into the push outbox and reference it by local path instead"
+      );
     }
     const candidate = path.isAbsolute(mediaPath)
       ? mediaPath
@@ -21,18 +23,25 @@ export class PushMediaGuard {
     try {
       realPath = fs.realpathSync.native(candidate);
     } catch {
-      throw violation("media file does not exist");
+      throw this.violation(
+        `media file does not exist: "${mediaPath}" was not found inside the push outbox. ` +
+          `Copy or move the file into the outbox directory first, then reference it with a path ` +
+          `relative to the outbox root (or the resulting absolute path).`
+      );
     }
     if (realPath !== this.root && !realPath.startsWith(`${this.root}${path.sep}`)) {
-      throw violation("media path escapes push outbox");
+      throw this.violation(
+        `media path escapes push outbox: "${mediaPath}" resolves outside the outbox root. ` +
+          `Copy the file into the outbox root before pushing it.`
+      );
     }
     if (!fs.statSync(realPath).isFile()) {
-      throw violation("media path must reference a file");
+      throw this.violation("media path must reference a file, not a directory");
     }
     return realPath;
   }
-}
 
-function violation(message: string): PushRequestError {
-  return new PushRequestError(400, "media_sandbox_violation", message);
+  private violation(message: string): PushRequestError {
+    return new PushRequestError(400, "media_sandbox_violation", `${message} (push outbox root: ${this.root})`);
+  }
 }

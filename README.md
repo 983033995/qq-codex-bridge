@@ -184,7 +184,7 @@ qq-codex-weixin-gateway
 
 ## 飞书通道
 
-飞书首版使用官方 Node SDK 长连接接收 `im.message.receive_v1`，不需要公网回调地址。出站支持文本、富文本和图片。
+飞书首版使用官方 Node SDK 长连接接收 `im.message.receive_v1`，不需要公网回调地址。出站支持文本、富文本、图片和文件，对话回复和 Agent 推送两条链路能力一致。富文本 `post` 消息会把 Markdown 结构（标题、列表、粗体、代码）降级为可读文本，并把 `[text](url)` 链接转换为真正的 Feishu 超链接标签；Agent 推送中的语音会转换为 Opus 并作为飞书语音消息发送，视频仍作为通用文件送达。
 
 ```env
 FEISHU_ENABLED=true
@@ -193,13 +193,24 @@ FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=your-app-secret
 ```
 
-飞书应用需要开通消息读取、消息发送和图片上传权限，并在事件订阅中启用 `im.message.receive_v1`。HTTP 回调、卡片交互和批量发送不属于 v0.2。
+飞书应用需要开通消息读取、消息发送、图片上传和文件上传权限，并在事件订阅中启用 `im.message.receive_v1`。HTTP 回调、卡片交互和批量发送不属于 v0.2。
 
 ---
 
 ## Agent 主动推送
 
 主动推送默认关闭。启用后先在管理页 `http://127.0.0.1:3100/admin` 的“推送目标”页面，从已有会话创建目标别名；API 和 MCP 只能使用别名，不能直接传群号、OpenID 或 wxid。
+
+> ⚠️ QQ 官方机器人目前没有经过验证的主动推送 API：即使登记了 QQ 会话作为推送目标，实际推送也会始终返回 `channel_unsupported`。管理页登记 QQ 目标时会有明确提示，建议优先使用微信或飞书会话作为推送目标。
+
+除了 HTTP API 和 MCP，任意已接入渠道的私聊里也可以直接用桥接快捷指令手动触发：
+
+```text
+/push targets
+/push daily-report-group 构建完成
+```
+
+`/push` 命令只支持纯文本消息（媒体推送请用 HTTP API 或 MCP），且会用当前这条聊天消息的 `messageId` 作为幂等键，重复发送同一条消息不会重复排队。
 
 ```env
 PUSH_ENABLED=true
@@ -235,7 +246,9 @@ Codex / Claude MCP 配置：
 }
 ```
 
-MCP 通过 stdio 工作，不监听额外网络端口，提供 `push_message`、`push_task_report`、`list_push_targets`、`get_push_status` 四个工具。
+MCP 通过 stdio 工作，不监听额外网络端口，提供 `push_message`、`push_task_report`、`list_push_targets`、`get_channel_format_guide`、`get_push_status` 五个工具。
+
+推送排版：飞书推荐 `format=markdown`（标题/列表/表格/代码块可渲染），微信推荐 `plain`；可先调 `get_channel_format_guide`，或看 `list_push_targets` 返回的 `recommendedFormat`。
 
 ---
 
@@ -315,14 +328,14 @@ pnpm dev
 ### 核心能力
 
 - QQ 官方 Bot WebSocket gateway 入站，支持多 bot 并行
-- 微信文本 long-poll 入站 / HTTP 文本出站，支持多账号
-- 飞书官方 SDK 长连接入站，支持文本、富文本和图片出站
+- 微信文本 long-poll 入站 / HTTP 文本+图片/视频/文件/音频附件出站，支持多账号（入站媒体见下方“已知限制”）
+- 飞书官方 SDK 长连接入站，对话回复与推送均支持文本、富文本、图片和文件出站
 - QQ 私聊 / 群聊会话隔离
 - 多通道会话隔离（QQ / 微信 / 飞书）
 - 统一桌面驱动：AppServer 主传输 + CDP 安全降级
 - 每个会话独立绑定统一 App 线程
 - SQLite 持久化会话、入站记录、出站任务
-- Agent 主动推送 API、MCP stdio 工具和持久化重试队列
+- Agent 主动推送 API、MCP stdio 工具和持久化重试队列，私聊内可用 `/push <alias> <message>` 手动触发、`/push targets` 查看已登记目标
 
 ### 媒体与语音
 
@@ -383,9 +396,11 @@ pnpm dev
 - CDP fallback 仍依赖页面 DOM，选择器配置可以独立更新，但大改版仍可能需要适配
 - 对 AI 回复的增量采集是**基于页面快照的伪流式**，不是官方内部事件流
 - QQ 客户端的消息样式、Markdown 支持、媒体卡片展示不完全可控
-- 微信当前只开放了**文本通道**，还没有内置图片、语音、文件与真实提供方签名适配
+- 微信**出站**已支持文本、图片、视频、文件和音频附件（iLink 会静默丢弃主动 `voice_item`，因此音频按可播放文件附件发送）；微信**入站**目前仍只解析文本和语音转写文本——收到入站图片/视频/文件时会明确回复"暂不支持下载"的占位提示，而不是静默丢弃，但不会真正下载附件内容
+- 飞书对话回复与推送支持图片和文件媒体（文件走 `im/v1/files` 通用上传，`file_type=stream`）；Agent 推送语音会通过 ffmpeg 转换为 Opus 并以 `msg_type=audio` 发送，视频仍作为通用文件；`post` 富文本不支持内联加粗/斜体/代码块样式（Feishu post 消息格式本身未公开这些字段），只会把标记转换为纯文本
 - 飞书真实租户权限、长连接重连和渠道限额需要用实际应用凭据联调
-- QQ 主动消息能力取决于腾讯侧账号权限；不支持时任务会返回 `channel_unsupported`
+- QQ 主动消息能力取决于腾讯侧账号权限；不支持时任务会返回 `channel_unsupported`（管理页创建 QQ 推送目标时会提示这一限制）
+- `/model use` 已走 AppServer 的 `config/value/write`，与桌面端共用 `~/.codex/config.toml`，**不再需要**单独开一个带 CDP 调试端口的 Codex 窗口；CDP 仅作为发送失败时的安全降级路径
 - 线程管理命令目前只在私聊中开放
 
 ---
@@ -434,7 +449,6 @@ pnpm run debug:codex-workers -- --duration-ms 12000
 - [变更记录](./CHANGELOG.md)
 - [贡献指南](./CONTRIBUTING.md)
 - [安全策略](./SECURITY.md)
-- [在线 Wiki（GitNexus 自动生成）](https://gistcdn.githack.com/983033995/e5715ad0d61605f039ca4e6055094083/raw/index.html#overview)
 
 ---
 

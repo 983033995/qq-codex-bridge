@@ -252,6 +252,65 @@ describe("weixin gateway server", () => {
     });
   });
 
+  it("does not persist or dedupe a provider submission that failed", async () => {
+    const items: WeixinGatewayOutboundMessage[] = [];
+    const store = {
+      append(message: WeixinGatewayOutboundMessage) {
+        items.push(message);
+      },
+      listRecent() {
+        return [...items].reverse();
+      }
+    };
+    const outboundSender = {
+      sendTextMessage: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("weixin sendmessage failed: ret=-2 errmsg=prepare failed"))
+        .mockResolvedValueOnce(undefined)
+    };
+    const server = createWeixinGatewayServer({
+      config: createGatewayConfig(),
+      messageStore: store,
+      fetchFn: vi.fn(),
+      outboundSender
+    });
+
+    const sendRequest = () =>
+      new Promise<{ statusCode: number; body?: string }>((resolve) => {
+        server.emit(
+          "request",
+          {
+            method: "POST",
+            url: "/messages",
+            headers: { authorization: "Bearer token" },
+            [Symbol.asyncIterator]: async function* () {
+              yield Buffer.from(JSON.stringify({
+                peerId: "wxid_peer",
+                chatType: "c2c",
+                content: "retry me"
+              }));
+            }
+          } as never,
+          {
+            statusCode: 200,
+            setHeader() {},
+            end(body?: string) {
+              resolve({ statusCode: this.statusCode, body });
+            }
+          }
+        );
+      });
+
+    const failed = await sendRequest();
+    const retried = await sendRequest();
+
+    expect(failed.statusCode).toBe(500);
+    expect(retried.statusCode).toBe(200);
+    expect(items).toHaveLength(1);
+    expect(outboundSender.sendTextMessage).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(retried.body ?? "{}")).not.toHaveProperty("deduped");
+  });
+
   it("accepts outbound media payloads and forwards them to the active client", async () => {
     const items: WeixinGatewayOutboundMessage[] = [];
     const store = {
@@ -329,5 +388,86 @@ describe("weixin gateway server", () => {
       replyToMessageId: undefined
     });
     expect(outboundSender.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("accepts push-originated media artifacts with an empty sourceUrl as long as localPath is set", async () => {
+    // Regression test: agent push jobs (PushOrchestrator -> WeixinPushEgress)
+    // never have a remote source, only a local file under PUSH_OUTBOX_ROOT, so
+    // sourceUrl is legitimately "". Requiring sourceUrl to be non-empty here
+    // rejected every real push image/file with a 400 before reaching WeChat.
+    const items: WeixinGatewayOutboundMessage[] = [];
+    const store = {
+      append(message: WeixinGatewayOutboundMessage) {
+        items.push(message);
+      },
+      listRecent() {
+        return [...items].reverse();
+      }
+    };
+    const outboundSender = {
+      sendTextMessage: vi.fn().mockResolvedValue(undefined),
+      sendMessage: vi.fn().mockResolvedValue(undefined)
+    };
+    const server = createWeixinGatewayServer({
+      config: createGatewayConfig(),
+      messageStore: store,
+      fetchFn: vi.fn(),
+      outboundSender
+    });
+
+    const postResponse = await new Promise<{ statusCode: number; body?: string }>((resolve) => {
+      server.emit(
+        "request",
+        {
+          method: "POST",
+          url: "/messages",
+          headers: {
+            authorization: "Bearer token"
+          },
+          [Symbol.asyncIterator]: async function* () {
+            yield Buffer.from(
+              JSON.stringify({
+                peerId: "wxid_peer",
+                chatType: "c2c",
+                content: "主动推送文件",
+                mediaArtifacts: [
+                  {
+                    kind: "file",
+                    sourceUrl: "",
+                    localPath: "/tmp/push-outbox/report.pdf",
+                    mimeType: "application/pdf",
+                    fileSize: 4096,
+                    originalName: "report.pdf"
+                  }
+                ]
+              })
+            );
+          }
+        } as never,
+        {
+          statusCode: 200,
+          headers: {} as Record<string, string>,
+          setHeader(name: string, value: string) {
+            this.headers[name] = value;
+          },
+          end(body?: string) {
+            resolve({ statusCode: this.statusCode, body });
+          }
+        }
+      );
+    });
+
+    expect(postResponse.statusCode).toBe(200);
+    expect(outboundSender.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mediaArtifacts: [
+          expect.objectContaining({
+            kind: "file",
+            sourceUrl: "",
+            localPath: "/tmp/push-outbox/report.pdf"
+          })
+        ]
+      })
+    );
   });
 });

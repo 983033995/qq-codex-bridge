@@ -58,18 +58,25 @@ describe("push api routes", () => {
       body
     });
     const first = await send();
-    const duplicate = await send();
     expect(first.status).toBe(202);
     expect(await first.json()).toEqual({ pushId: "push-api-1", status: "queued", duplicate: false });
+    await repository.claimNext("test-worker", "2026-08-03T10:00:01.000Z");
+    await repository.markDelivered({
+      pushId: "push-api-1",
+      workerId: "test-worker",
+      providerMessageId: "provider-1",
+      now: "2026-08-03T10:00:02.000Z"
+    });
+    const duplicate = await send();
     expect(duplicate.status).toBe(202);
-    expect(await duplicate.json()).toEqual({ pushId: "push-api-1", status: "queued", duplicate: true });
+    expect(await duplicate.json()).toEqual({ pushId: "push-api-1", status: "delivered", duplicate: true });
 
     const status = await fetch(`${baseUrl}/api/v1/push/push-api-1/`, {
       headers: { authorization: `Bearer ${token}` }
     });
     expect(status.status).toBe(200);
     const statusPayload = await status.json() as Record<string, unknown>;
-    expect(statusPayload).toMatchObject({ pushId: "push-api-1", status: "queued" });
+    expect(statusPayload).toMatchObject({ pushId: "push-api-1", status: "delivered" });
     expect(JSON.stringify(statusPayload)).not.toContain("private-wxid");
     const targets = await fetch(`${baseUrl}/api/v1/push-targets`, {
       headers: { authorization: `Bearer ${token}` }
