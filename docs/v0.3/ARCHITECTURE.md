@@ -1,10 +1,12 @@
-# v0.3 技术架构与开发规范
+# OmniAgent Gateway v0.3 技术架构与开发规范
 
 ## 1. 总体原则
 
 v0.3 必须建立在 `codex/v0.2-unified-refactor` 已有分层之上演进，不回退为“渠道代码直接操作 Codex / 配置 / Runtime”的模式。
 
-推荐主链路：
+产品显示名统一为 **OmniAgent Gateway**；旧的 `qq-codex-bridge` 仅作为兼容标识存在。
+
+### 1.1 推荐主链路
 
 ```text
 QQ / 微信 / 飞书
@@ -13,29 +15,183 @@ QQ / 微信 / 飞书
 Channel Adapter
         │
         ▼
-Application Service
+Inbound Gateway
         │
- ┌──────┼─────────┐
- │      │         │
-Setup  Task    Approval
- │      │         │
- └──────┼─────────┘
-        │
-      Ports
-        │
-   Codex AppServer
-        │
-      PRIMARY
-        │
-   CDP Recovery
-      FALLBACK
+        ▼
+Inbound Intelligent Router
+  ┌─────┼────────┬──────────┬──────────┐
+  ▼     ▼        ▼          ▼          ▼
+Conversation  Control     Setup     Approval   Clarify
+  │          │          │          │
+  └──────────┼──────────┼──────────┘
+             ▼
+      Application Services
+             │
+          Domain/Ports
+             │
+      Codex AppServer
+          PRIMARY
+             │
+       CDP Recovery
+          FALLBACK
 ```
 
-MCP 和 Admin 都必须调用 Application Service，不允许绕过应用层直接写配置、Secret 或 Session。
+### 1.2 强制边界
+
+- 所有渠道入站消息必须先进入 `InboundGateway`。
+- `InboundGateway` 默认必须调用 `InboundRouter`，不得由 Channel Adapter 直接调用 Codex。
+- Router 只负责“判断和分发”，不直接修改配置、不直接执行 Approval、不直接操作 Channel SDK。
+- Router 的输出必须交给 Application Service 执行。
+- MCP 和 Admin 同样调用 Application Service，不允许绕过应用层直接写配置、Secret、Session 或 Approval。
+- Codex AppServer 是 v0.3 唯一主 Conversation Transport；CDP 只是单 Session pre-submit recovery。
 
 ---
 
-## 2. RuntimeManager 规范
+## 2. Inbound Intelligent Router
+
+建议新增/重构为独立 package：
+
+```text
+packages/router/
+```
+
+核心接口：
+
+```ts
+type RouterIntentKind =
+  | "conversation"
+  | "control"
+  | "setup"
+  | "approval"
+  | "unknown";
+
+type RouterDecision = {
+  decisionId: string;
+  kind: RouterIntentKind;
+  action?: string;
+  target?: string;
+  confidence: number;
+  arguments?: Record<string, unknown>;
+  clarification?: string;
+  risk: "read" | "low" | "medium" | "high";
+};
+
+interface InboundRouterPort {
+  decide(input: RouterInput): Promise<RouterDecision>;
+}
+```
+
+### 2.1 Deterministic Parser First
+
+对于完全确定且安全的命令，优先在模型 Router 前解析：
+
+- `/approve`
+- `/decline`
+- 明确的内部命令别名
+
+确定性命令不需要消耗 Router 模型调用，也不能因为 Router Provider 故障而失效。
+
+### 2.2 Router Provider
+
+自然语言 Router 可以使用独立 LLM Endpoint，但必须封装在 Port 后面：
+
+```text
+RouterService
+    │
+    ▼
+RouterProviderPort
+    │
+    ├── OpenAI-compatible provider
+    └── future provider
+```
+
+Application 层不得依赖具体供应商 SDK。
+
+### 2.3 Mode
+
+```ts
+type RouterMode = "off" | "assist" | "auto";
+```
+
+- `off`：默认直接 `conversation`，仅确定性命令仍可生效。
+- `assist`：执行分类，但中高风险操作可以要求确认。
+- `auto`：高置信低/中风险意图自动分流；中等置信度进入 clarify。
+
+### 2.4 Threshold
+
+建议默认：
+
+```text
+highConfidenceThreshold = 0.90
+clarifyThreshold = 0.50
+```
+
+规则：
+
+```text
+>= high          → route
+>= clarify       → clarify
+< clarify        → conversation fallback
+```
+
+高风险动作仍必须通过对应 Service 的授权规则；Router confidence 不能代替授权。
+
+### 2.5 Failure Fallback
+
+Router timeout / provider error / invalid schema：
+
+1. 记录 `router.degraded` 事件。
+2. 不执行猜测出的 control/setup/approval。
+3. 默认将原消息作为 `conversation` 发送给 Codex。
+4. 如果 deterministic parser 已识别明确审批命令，则优先执行该命令。
+5. 不允许丢弃原始 InboundMessage。
+
+### 2.6 Decision Store
+
+所有决策持久化：
+
+```text
+router_decisions
+- decision_id
+- message_id
+- session_key / space_id
+- kind
+- action
+- target
+- confidence
+- risk
+- mode
+- latency_ms
+- result
+- fallback_reason
+- created_at
+```
+
+Router 决策必须进入 observability，Admin 可查询。
+
+### 2.7 Dispatcher
+
+Router 后必须通过统一 dispatcher：
+
+```ts
+interface IntentDispatcher {
+  dispatch(message: InboundMessage, decision: RouterDecision): Promise<void>;
+}
+```
+
+映射：
+
+- `conversation` → ConversationService / Codex
+- `control` → RuntimeService / ChannelControlService / ThreadControlService
+- `setup` → SetupService
+- `approval` → ApprovalService
+- `unknown` → ClarificationService 或 conversation fallback
+
+禁止 Channel Adapter 自己实现这些判断。
+
+---
+
+## 3. RuntimeManager 规范
 
 建议新增：
 
@@ -56,36 +212,32 @@ interface RuntimeManagerPort {
 }
 ```
 
-### 2.1 Runtime 状态文件
+### 3.1 Runtime 状态文件
 
-建议目录：
-
-```text
-~/.qq-codex-bridge/runtime/
-```
-
-文件：
+建议迁移后的产品目录：
 
 ```text
-runtime.json
-runtime.lock
-bridge.pid
-bridge.log
+~/.omniagent-gateway/
 ```
 
-`runtime.json` 至少包含：
+兼容期必须读取旧目录：
 
-```json
-{
-  "pid": 0,
-  "version": "0.3.0",
-  "state": "ready",
-  "startedAt": "",
-  "controlUrl": "http://127.0.0.1:0"
-}
+```text
+~/.qq-codex-bridge/
 ```
 
-### 2.2 启动算法
+新目录至少包含：
+
+```text
+runtime/runtime.json
+runtime/runtime.lock
+runtime/bridge.pid
+runtime/bridge.log
+config/config.json
+data/gateway.sqlite
+```
+
+### 3.2 启动算法
 
 ```text
 ensureRunning()
@@ -95,8 +247,7 @@ ensureRunning()
 PID 存活？
   ├─ 是 → health check
   │       ├─ ready → reuse
-  │       └─ unhealthy → 尝试恢复/重启
-  │
+  │       └─ unhealthy → recover/restart
   └─ 否 → 清理 stale state
           ↓
        获取 lock
@@ -110,9 +261,9 @@ PID 存活？
        写 runtime.json
 ```
 
-必须有二次检查，避免两个 MCP Host 同时获取启动机会时产生竞态。
+必须有二次检查，避免两个 MCP Host 并发启动两个 Runtime。
 
-### 2.3 生命周期
+### 3.3 生命周期
 
 - MCP 启动时可调用 `ensureRunning()`。
 - MCP 退出不得自动 stop Runtime。
@@ -121,9 +272,9 @@ PID 存活？
 
 ---
 
-## 3. MCP 规范
+## 4. MCP 规范
 
-建议新增独立 package：
+建议 package：
 
 ```text
 packages/mcp-control/
@@ -142,20 +293,21 @@ MCP 层只负责：
 - 自己写 Config Store
 - 自己管理 Channel SDK
 - 自己连接 Codex AppServer
+- 自己实现 Router 逻辑
 
-工具命名要保持任务语义，不暴露过多内部技术概念。
+MCP 与 Router 的职责必须严格分开。
 
 ---
 
-## 4. Setup Domain
+## 5. Setup Domain
 
-建议新增：
+建议：
 
 ```text
 packages/setup/
 ```
 
-核心类型：
+核心状态：
 
 ```ts
 type SetupState =
@@ -181,48 +333,21 @@ type SetupArtifact =
   | StatusArtifact;
 ```
 
-渠道不得定义完全独立的 Setup API；渠道应实现统一 Port，例如：
-
-```ts
-interface ChannelSetupProvider {
-  start(input: StartSetupInput): Promise<SetupSession>;
-  submit(input: SubmitSetupInput): Promise<SetupSession>;
-  getProgress(setupId: string): Promise<SetupSession>;
-  cancel(setupId: string): Promise<void>;
-}
-```
+渠道应实现统一 `ChannelSetupProvider`，MCP、Admin、Router 都调用同一个 SetupService。
 
 ---
 
-## 5. Config Store 与 Secret Store
+## 6. Config Store 与 Secret Store
 
-### 5.1 Config Store
+### Config Store
 
-普通业务配置持久化到结构化 Config Store。
+要求：schema version、migration、atomic write/transaction、revision、validation。
 
-要求：
+### Secret Store
 
-- schema version
-- migration
-- atomic write / transaction
-- revision
-- validation
+Config 只保存 `secretRef`。
 
-### 5.2 Secret Store
-
-Secret 与 Config 分离。
-
-Config：
-
-```json
-{
-  "channel": "qq",
-  "appId": "xxx",
-  "clientSecretRef": "channels/qq/default/client-secret"
-}
-```
-
-Secret API 只允许：
+Secret API 对外只允许：
 
 ```text
 set
@@ -231,222 +356,143 @@ replace
 delete
 ```
 
-禁止公开：
-
-```text
-getPlainTextSecret
-listSecretValues
-exportSecrets
-```
-
-如果内部 Channel Runtime 必须读取 Secret，应通过受限内部 Port 获取，不得通过 MCP/Control API 暴露。
+禁止 MCP/Control API/Admin 读取明文 Secret。
 
 ---
 
-## 6. Approval 架构
+## 7. Approval 架构
 
-Codex AppServer 需要区分三类消息：
+Codex AppServer 必须区分：
 
 1. JSON-RPC response
 2. notification
 3. server request
 
-Approval 属于 server request，不应被当普通 notification 处理。
+Approval 属于 server request。
 
-建议新增：
+建议：
 
 ```text
 packages/approval/
 ```
 
-接口：
-
-```ts
-interface ApprovalService {
-  listPending(): Promise<ApprovalRequest[]>;
-  resolve(id: string, decision: "approve" | "decline"): Promise<ApprovalRequest>;
-}
-```
-
-AppServer Adapter 必须保存 request id 与 Codex server request 的关联，并在用户决策后发送对应 JSON-RPC response。
-
-要求：
-
-- 幂等 resolve
-- 已 resolved 不重复执行
-- 可审计
-- 渠道和 Admin 状态同步
+渠道自然语言审批经过 Router 或 deterministic parser 后进入 ApprovalService；不得作为普通 Prompt 进入 Codex。
 
 ---
 
-## 7. Transport Isolation
+## 8. Transport 架构
 
-当前 UnifiedDesktopDriver 的目标结构应调整为：
+统一模型：
 
-```ts
-RuntimeTransportState {
-  preferred: "app-server";
-  appServerHealth: ...;
-  cdpHealth: ...;
-}
+```text
+Global Preferred = app-server
 
-SessionTransportState {
-  effectiveTransport: "app-server" | "cdp";
-  fallbackReason?: string;
-  fallbackAt?: string;
-  recoverOnNextTurn: boolean;
-}
+Per Session Effective
+├── app-server
+└── cdp
 ```
 
-规则：
+禁止单 Session fallback 调用全局 `setActive("cdp")` 影响其他 Session。
 
-1. AppServer 永远是全局 preferred transport。
-2. 单 Session fallback 不调用全局 `setActive("cdp")`。
-3. 只有 safe pre-submit failure 才允许自动 fallback。
-4. messageAccepted 后严禁自动切 transport 重新提交。
-5. 下一 Turn 默认重新 probe AppServer。
+`messageAccepted=true` 后不允许通过 CDP 重交同一消息。
 
 ---
 
-## 8. Durable Turn Ledger
+## 9. Durable Turn Ledger
 
-建议新增：
+建议：
 
 ```text
 packages/task-ledger/
 ```
 
-Turn 状态不得仅保存在 Map。
+持久化 Turn 状态、sequence、delivery offset、artifact checkpoint、failure 和时间信息。
 
-最低数据结构：
+Runtime 重启后必须 reconcile，而不是盲目重新 startTurn。
+
+---
+
+## 10. Application Service 边界
+
+推荐核心服务：
 
 ```text
-turns
-- turn_id
-- thread_id
-- session_key
-- space_id
-- status
-- transport
-- idempotency_key
-- last_sequence
-- delivered_text_offset
-- queued_at
-- started_at
-- completed_at
-- failure_code
-- failure_message
+ConversationService
+ChannelSetupService
+ChannelControlService
+RuntimeService
+TaskService
+ApprovalService
+RouterService
+DiagnosticsService
 ```
 
-如媒体需要独立 checkpoint，再新增：
+MCP、Admin、Router Dispatcher 都只能调用这些服务。
+
+---
+
+## 11. Control API 安全
+
+- 继续 loopback-only。
+- Local session + CSRF 保留。
+- 不因为 MCP 自动启动而开放公网地址。
+- Router Provider 的 Secret 只能通过 SecretRef 引用。
+
+---
+
+## 12. Observability
+
+统一结构化事件至少增加：
 
 ```text
-turn_artifact_delivery
+runtime.*
+router.decision
+router.degraded
+router.fallback
+setup.*
+approval.*
+turn.*
+channel.*
 ```
 
-要求：
-
-- 所有状态变化事务化。
-- Delivery checkpoint 在发送成功后更新。
-- 重启后可加载未终态 Turn。
-- 对未知状态执行 reconcile，而不是盲目重发。
+每个事件尽量带：correlationId / messageId / sessionKey / turnId / decisionId。
 
 ---
 
-## 9. Channel 规范
+## 13. 命名兼容规范
 
-QQ / 微信 / 飞书继续保持独立 Adapter/Runtime。
+产品显示名：`OmniAgent Gateway`。
 
-每个 Channel 至少实现：
+内部新模块避免继续使用 `qqcb` / `qq-codex` 作为领域名称；旧数据库表、ENV、CLI 可在兼容层保留。
 
-- health
-- start/restart/stop
-- setup
-- receive inbound
-- deliver outbound
-- approval notification
-- approval command parsing（最低能力）
+目标 CLI：
 
-Channel 层禁止直接操作 Codex。
+```text
+omniagent-gateway mcp
+omniagent-gateway status
+omniagent-gateway doctor
+```
 
----
+兼容 CLI：
 
-## 10. Control UI 规范
+```text
+qq-codex-bridge ...
+qq-codex-mcp ...
+```
 
-UI 不新增 Remote 页面。
-
-设计原则：
-
-- 行动优先：等待审批、失败任务、掉线渠道先显示。
-- 任务优先：Task 是用户对象，Thread/Turn 是高级技术信息。
-- 渐进披露：PID、transport、revision、threadId 放到详情/系统页。
-- Admin 与 MCP 使用同一个 SetupService / TaskService / ApprovalService。
+兼容命令在 v0.3 不删除，只转发到同一 Runtime/Application 层。
 
 ---
 
-## 11. Control API 规范
+## 14. 架构验收红线
 
-继续保持：
+任何实现若出现以下行为，视为不符合 v0.3：
 
-- loopback-only
-- local session
-- CSRF
-- SameSite
-
-不得为了 MCP 或 AI Setup 把 Control API 改为公网接口。
-
-如果 MCP 与 Runtime 在同机，可直接调用内部 Application Service 或受限本地 API，但权限边界需保持清晰。
-
----
-
-## 12. Migration 规范
-
-从 v0.2 升级时：
-
-1. 检测旧 `.env`。
-2. 读取可迁移普通配置。
-3. Secret 写入新 Secret Store。
-4. Config 中生成 secretRef。
-5. 保留 ENV override 兼容。
-6. Migration 必须可重复执行且幂等。
-7. 迁移失败不得破坏原配置。
-
----
-
-## 13. 测试规范
-
-每个新包必须有单测。
-
-关键集成测试：
-
-- Runtime 并发 ensureRunning。
-- stale PID / stale lock recovery。
-- MCP 首次自动启动 Runtime。
-- 微信 QR Setup 状态机。
-- QQ/飞书 Secret 不回显。
-- Approval server request -> resolve。
-- 单 Session CDP fallback 不污染全局。
-- messageAccepted 后禁止 fallback 重发。
-- Turn Ledger crash recovery。
-- 老配置 migration。
-
-端到端 smoke：
-
-- 微信完整链路
-- QQ 完整链路
-- 飞书完整链路
-- Approval 完整链路
-
----
-
-## 14. 禁止事项
-
-本分支实现期间禁止：
-
-- 新建 Remote Device / Remote UI。
-- 将 Control API 监听到 0.0.0.0。
-- 将 AppServer 暴露到非 loopback。
-- 以 Accessibility 替代 AppServer 主链路。
-- 在 MCP 中暴露任意 shell command。
-- 在 API/MCP/Admin 中读取 Secret 明文。
-- 为了快速实现让 MCP 和 Admin 各写一套配置逻辑。
+- Channel Adapter 直接把所有消息送 Codex，绕过 Router。
+- Router 直接操作 SDK/Secret/AppServer。
+- MCP 实现第二套配置逻辑。
+- Router Provider 故障导致入站消息丢失。
+- 单 Session CDP fallback 改变全局 Transport。
+- Secret 通过 MCP/Admin/API 被读回。
+- 为了“远程”开放 Control API/AppServer 公网监听。
+- 新代码继续把产品显示名写成 `QQ Codex Bridge`。
