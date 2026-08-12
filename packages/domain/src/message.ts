@@ -34,6 +34,7 @@ export type OutboundDraft = {
   turnId?: string;
   sessionKey: string;
   text: string;
+  format?: "plain" | "markdown";
   mediaArtifacts?: MediaArtifact[];
   createdAt: string;
   replyToMessageId?: string;

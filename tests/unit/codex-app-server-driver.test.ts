@@ -1,51 +1,23 @@
-import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerDriver,
   resolveDefaultCodexBinaryPath
 } from "../../packages/adapters/codex-desktop/src/codex-app-server-driver.js";
-
-class FakeAppServerSocket extends EventEmitter {
-  readyState = 0;
-  readonly sent: unknown[] = [];
-  private readonly handlers = new Map<string, (message: Record<string, unknown>) => void>();
-
-  constructor() {
-    super();
-    queueMicrotask(() => {
-      this.readyState = 1;
-      this.emit("open");
-    });
-  }
-
-  send(data: string): void {
-    const message = JSON.parse(data) as Record<string, unknown>;
-    this.sent.push(message);
-    const method = message.method;
-    if (typeof method === "string") {
-      this.handlers.get(method)?.(message);
-    }
-  }
-
-  close(): void {
-    this.readyState = 3;
-    this.emit("close");
-  }
-
-  onRequest(method: string, handler: (message: Record<string, unknown>) => void): void {
-    this.handlers.set(method, handler);
-  }
-
-  respond(id: unknown, result: unknown): void {
-    this.emit("message", JSON.stringify({ jsonrpc: "2.0", id, result }));
-  }
-
-  notify(method: string, params: unknown): void {
-    this.emit("message", JSON.stringify({ jsonrpc: "2.0", method, params }));
-  }
-}
+import { FakeAppServerSocket } from "../support/fake-app-server.js";
 
 describe("codex app-server driver", () => {
+  it("opens the fake socket asynchronously after the driver can register listeners", async () => {
+    const socket = new FakeAppServerSocket();
+    const opened = vi.fn();
+
+    socket.on("open", opened);
+    socket.connect();
+
+    expect(opened).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(opened).toHaveBeenCalledOnce();
+  });
+
   it("prefers the merged ChatGPT app binary before the legacy Codex app", () => {
     const visited: string[] = [];
     const resolved = resolveDefaultCodexBinaryPath((candidate) => {
@@ -133,7 +105,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       replyTimeoutMs: 1_000,
       requestTimeoutMs: 1_000,
       sleep: async () => undefined
@@ -223,7 +195,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       notificationForwarder: {
         async forwardNotification(method, params) {
           forwarded.push({ method, params });
@@ -293,7 +265,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       notificationForwarder: {
         async forwardNotification(method, params) {
           forwarded.push({ method, params });
@@ -371,7 +343,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       requestTimeoutMs: 1_000,
       staleTurnInterruptMs: 1,
       sleep: async () => undefined
@@ -438,7 +410,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       replyTimeoutMs: 5,
       requestTimeoutMs: 1_000,
       sleep: async () => undefined
@@ -530,7 +502,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       requestTimeoutMs: 1_000,
       sleep: async () => undefined
     });
@@ -591,7 +563,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       requestTimeoutMs: 1_000,
       sleep: async () => undefined
     });
@@ -631,7 +603,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       requestTimeoutMs: 1_000,
       sleep: async () => undefined
     });
@@ -680,7 +652,7 @@ describe("codex app-server driver", () => {
 
     const driver = new CodexAppServerDriver({
       appServerUrl: "ws://127.0.0.1:1",
-      createWebSocket: () => socket as never,
+      createWebSocket: () => socket.connect() as never,
       requestTimeoutMs: 1_000,
       sleep: async () => undefined
     });

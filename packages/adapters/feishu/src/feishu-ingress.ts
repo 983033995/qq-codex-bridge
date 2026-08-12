@@ -22,6 +22,15 @@ export class FeishuIngress {
     eventDispatcher: FeishuEventDispatcherLike;
     now?: () => number;
     onDispatchError?: (error: Error) => void;
+    onIgnoredMessage?: (diagnostic: {
+      reason: string;
+      senderType: string;
+      messageType: string;
+      hasMessageId: boolean;
+      hasChatId: boolean;
+      hasSenderId: boolean;
+      contentLength: number;
+    }) => void;
   }) {
     options.eventDispatcher.register({
       "im.message.receive_v1": (event) => this.receive(event)
@@ -42,11 +51,21 @@ export class FeishuIngress {
   }
 
   private receive(event: FeishuMessageEvent): void {
-    if (!this.handler || isBotSender(event.sender.sender_type)) {
+    if (!this.handler) {
+      this.reportIgnored("handler_unavailable", event);
+      return;
+    }
+    if (isBotSender(event.sender.sender_type)) {
+      this.reportIgnored("bot_sender", event);
       return;
     }
     const message = normalizeFeishuInbound(event, this.options.accountKey);
-    if (!message || this.isDuplicate(message.messageId)) {
+    if (!message) {
+      this.reportIgnored("invalid_payload", event);
+      return;
+    }
+    if (this.isDuplicate(message.messageId)) {
+      this.reportIgnored("duplicate", event);
       return;
     }
     this.remember(message.messageId);
@@ -54,6 +73,22 @@ export class FeishuIngress {
       this.options.onDispatchError?.(
         error instanceof Error ? error : new Error(String(error))
       );
+    });
+  }
+
+  private reportIgnored(reason: string, event: FeishuMessageEvent): void {
+    this.options.onIgnoredMessage?.({
+      reason,
+      senderType: event.sender?.sender_type ?? "missing",
+      messageType: event.message?.message_type ?? "missing",
+      hasMessageId: Boolean(event.message?.message_id?.trim()),
+      hasChatId: Boolean(event.message?.chat_id?.trim()),
+      hasSenderId: Boolean(
+        event.sender?.sender_id?.open_id?.trim()
+        || event.sender?.sender_id?.user_id?.trim()
+        || event.sender?.sender_id?.union_id?.trim()
+      ),
+      contentLength: typeof event.message?.content === "string" ? event.message.content.length : 0
     });
   }
 

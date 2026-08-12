@@ -121,13 +121,35 @@ describe("Feishu adapter", () => {
         updatedAt: "2026-08-03T00:00:00.000Z"
       },
       payload: {
-        message: { text: "**done**", format: "markdown", media: [{ type: "image", path: "report.png" }] },
+        message: {
+          text: "活动线程\n\n| # | 线程 |\n| --- | --- |\n| 1 | vNext |",
+          format: "markdown",
+          media: [{ type: "image", path: "report.png" }]
+        },
         metadata: {}
       },
       resolvedMediaPaths: [imagePath]
     });
     expect(result).toEqual({ ok: true, providerMessageId: "om-image" });
-    expect(createMessage.mock.calls[0][0].data.msg_type).toBe("post");
+    expect(createMessage.mock.calls[0][0].data.msg_type).toBe("interactive");
+    const card = JSON.parse(createMessage.mock.calls[0][0].data.content);
+    expect(card).toMatchObject({
+      schema: "2.0",
+      body: {
+        elements: [
+          { tag: "markdown", content: "活动线程" },
+          {
+            tag: "table",
+            page_size: 10,
+            columns: [
+              { name: "column_0", display_name: "#", data_type: "text" },
+              { name: "column_1", display_name: "线程", data_type: "lark_md" }
+            ],
+            rows: [{ column_0: "1", column_1: "vNext" }]
+          }
+        ]
+      }
+    });
     expect(createMessage.mock.calls[1][0].data).toMatchObject({
       msg_type: "image",
       content: JSON.stringify({ image_key: "img-key" })

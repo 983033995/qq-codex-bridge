@@ -2,66 +2,245 @@
 
 ## Snapshot
 
-- Updated: 2026-08-12
-- Branch / Worktree: `codex/vnext-m0` / `/Volumes/13759427003/AI/qq-codex-bridge-vnext-m0`
-- Base commit: `38aceb3df97537b84ea72429a35903efb709822c`
-- Current milestone: M1-01 — vNext 包结构
+- Updated: 2026-08-11
+- Branch / Worktree: `codex/vnext` / `/Volumes/13759427003/AI/qq-codex-bridge-vnext`
+- Current milestone: M4 — 微信优先链路
 - Overall status: on_track
 
 ## Completed
 
-- [x] v0.2 改动已在原工作区完成审查、验证并本地整理提交：`38aceb3 feat: complete v0.2 bridge refinements`。
-- [x] 原工作区既有未提交修改保持原样，未被清理或复制到本 worktree。
-- [x] 新建 sibling worktree：`/Volumes/13759427003/AI/qq-codex-bridge-vnext-m0`。
-- [x] 创建分支：`codex/vnext-m0`。
-- [x] 复制并核对三份 vNext 权威文档。
-- [x] 建立本进度台账和 `docs/decisions/vnext/` 目录。
+- [x] M0-01 — 从原仓库 `HEAD` `52839e76ddef083fd9af314207e5576998801b76` 创建独立 sibling worktree，复制并核对三份 vNext 权威文档；文档基线 Commit `5305b9d`。
+- [x] M0-02 — 建立本进度台账。
+- [x] M0-03 — 捕获环境、CodeGraph、Codex 可发现性以及 `check/test/build` 工程基线；旧测试基线为 5 个 AppServer Fake 时序超时。
+- [x] M0-04 — 建立 `docs/decisions/vnext/`。
+- [x] M0 Gate — 通过；报告见 `docs/reports/vnext/M0-GATE.md`。
+- [x] M1-01 — 建立 4 个 vNext App 与 10 个 Adapter/Application/Infrastructure 包的最小入口；现有 `domain`/`ports` 目录保留并将在后续任务内增量替换语义。
+- [x] M1-02 — 在 `packages/domain/src/vnext/` 实现 Channel/Space ID、核心聚合类型、Turn/Delivery 状态机、Binding 不变量和稳定错误分类；不修改 v0.x 高影响 Symbol。
+- [x] M1-03 — 在 `packages/ports/src/vnext/` 实现 Channel、Codex、Router、Config、Secret、Service、Repository 与基础设施 Ports，并建立可复用 Fake Contract Suite；Router 输入不暴露原始 `spaceId`。
+- [x] M1-04 — 实现严格 `config.json` Schema、SHA-256 Revision、0600 原子写入、Apply Planner、失败回滚、内存 Secret Store 与 macOS Keychain Adapter；Keychain 写入值通过 stdin 传递且不进入 argv。
+- [x] M1-05 — 实现独立 `runtime-vnext.db` Schema、WAL/Foreign Key/Busy Timeout、IMMEDIATE Migration Runner、核心运行表、Binding 数据库不变量、游标分页与全部 Repository；覆盖持久化恢复、幂等、约束分类及事务/Migration 回滚。
+- [x] M1-06 — 实现 `ReceiveInboundMessage`、`BindConversationSpace`、`StartConversationTurn`、`ExecuteControlAction`、`ApplyConfiguration`、`RunHealthCheck`、`EnqueuePush`；默认独占新线程、同线程串行/不同线程并行，三类高风险动作未确认时零副作用。
+- [x] M1-07 — 使用真实 SQLite Adapter + Fake Codex 完成 A/B/C 系统验收：微信/飞书/QQ Space 独立绑定，不同线程并行、同线程严格串行，Store 重启后 Binding 恢复，独占冲突明确失败并回滚原 Binding。
+- [x] M1 Gate — 通过；Domain 边界、Ports Contract、失败路径与 Fake A/B/C 验收完成，最终 `check/test/build` 全绿；报告见 `docs/reports/vnext/M1-GATE.md`。
+- [x] M2-01 — 建立可复用 Fake AppServer：监听器注册后异步 `open`，支持 JSON-RPC Request/Response、Notification、乱序、重复、断线、丢请求超时，以及 Thread Start/List/Rename/Fork 和 Turn Start/Delta/Complete/Interrupt；旧 driver 测试已统一复用。
+- [x] M2-02 — 实现独立 vNext `CodexAppServerAdapter`：安全的本地进程发现与受管启动、JSON-RPC Request Map、`threadId + turnId` Pending Map、Thread/Turn 路由、增量/最终文本与媒体归一化、断线拒绝且不重发已接受 Turn、自动重连、Dispose 清理、Capability/Health，并通过真实 `CodexPort` Contract。
+- [x] M2-03 — 实现 `ThreadCoordinator` 并接入 Binding/Control 用例：新 Space 默认独占真实 Thread ID，支持 Active/共享/独占 Binding、创建/切换/重命名/分叉/解绑、标题缓存刷新、冲突前置检查与替换回滚；AppServer Thread 消失时将旧 Binding 标记 `broken` 并重建。
+- [x] M2-04 — 以有界 `ThreadScheduler` 替换无界 Promise Tail：同 Space 与同 Thread 均严格 FIFO，不同 Thread 默认最多并行 3；实现 Space 接收序号校验、Thread/全局队列上限、持久化排队事件、队列取消、运行中断和失败释放；新增显式 `unknown` Turn 状态、SQLite v2 无损 Migration，并通过稳定 `thread/read(includeTurns)` 对遗留 Turn 做 AppServer 状态对账。
+- [x] M2-05 — 实现独立 `CodexRecoveryPort`、`CdpRecoveryAdapter` 和 `CodexTransportCoordinator`：仅支持已知线程选择、纯文本单次提交、最终回复与基本状态；Recovery 全局互斥且始终报告 `degraded`，只在 AppServer 明确 `accepted: false` 时进入，UI 点击后必须再次确认提交且绝不自动重发；Turn 持久化记录真实 transport。
+- [x] M2-06 — 实现并运行真实 Codex Smoke：安全跳过 cwd 已失效的陈旧 AppServer、等待受管 listener 就绪；创建 A/B/C 三线程并行回收唯一 marker，使用隔离 readiness probe 验证真实运行中断，并仅在通知或状态确认 `interrupted` 后成功。最终 run `m2-06-20260810-2035` 通过，测试线程保留并列入 M2 Gate 报告。
+- [x] M2 Gate — Fake 时序、A/B/C 并发与同线程 FIFO、断线无重提、Recovery 限制和真实 Codex Smoke 均通过；报告见 `docs/reports/vnext/M2-GATE.md`。
+- [x] M3-01 — 实现 Control Daemon Composition Root、动态 Health Registry 与有界 Structured Event Bus：组件按序启动/失败回滚、逆序停止、串行生命周期、hot reload/组件重启/全组件重启、Active Revision、结构化状态事件和 SIGINT/SIGTERM 单次优雅退出；Bootstrap 不内联 Use Case。
+- [x] M3-02 — 实现完整 `/api/v1` 管理 API 路由契约：System/Health、Channels、Spaces/Messages/Bindings、Threads/Turns、Router、Config Plan/Apply、Diagnostics 和 Push Targets；仅允许 Loopback Bind/Client/Host，使用有界本地 Session、CSRF、严格 Zod/JSON 校验、1 MiB Body 上限、稳定错误响应与内部错误脱敏。
+- [x] M3-03 — 在认证后的 `/api/v1/events` 提供有界 Structured Event SSE：先订阅后重放消除连接竞态，支持 Last-Event-ID 精确续传与过期游标保留窗口重放、实时事件、2 秒重试提示、15 秒心跳、慢消费者断开恢复，以及 Daemon 停止前显式关闭全部长连接。
+- [x] M3-04 — 建立 Vite + React + TypeScript 管理台基础：Daemon 安全静态托管与 SPA fallback、七个嵌套路由、响应式 App Shell、同源 Session/CSRF API Client、稳定错误响应和请求去重；Dashboard 仅保留真实加载态，业务数据接入归入 M3-05。
+- [x] M3-05 — Dashboard 与 Channels 接入真实管理 API 数据契约：并行加载 Health/System/Channels/Events、SSE 自动刷新、四态健康与真实空/错/重试状态、渠道添加/测试/重启/删除；修复浏览器原生 `fetch` 错误绑定导致的 `Illegal invocation`。
+- [x] M3-06 — 完成管理台可访问性与响应式加固：Skip Link、路由与表单焦点管理、原生数据表、异步 `aria-live`、非颜色状态文本、Secret Reference 限界、键盘核心路径、200% Zoom 与窄屏单列验收。
+- [x] M3 Gate — 打通生产 `ControlApiServices`、Composition Root、SQLite/Codex/Config/Keychain Adapter、静态 UI 与启动 CLI；六个一级页面均接入真实 API，Config Apply 仅在 Active Revision 更新后成功，Binding/SSE/诊断导出与键盘、窄屏路径完成验收；无运行 Adapter 的渠道与 Router 操作明确失败，不伪造成功。
+- [x] M4-01 — 实现隔离微信 Worker IPC：32-byte 随机本地鉴权、严格消息 Schema、协议/Worker 版本协商、心跳与 ping、优雅停机、握手/心跳超时、连续崩溃有界退避和稳定运行后重置；单 Worker 承载多个微信账户，首次添加账号的 Config Apply 可动态启动 Worker，Health/渠道操作/结构化事件均接入生产 Runtime。
+- [x] M4-02 — 完成微信登录体验：真实 iLink 二维码获取/轮询协议、待扫码/已扫描/待确认/已登录/过期/失效状态机、强制重登与注销；登录凭据仅写入 macOS Keychain，0600 状态文件只保存脱敏状态与 Secret Reference；Control API、生产 Worker IPC、管理台二维码和响应式操作闭环均已接通。
+- [x] M4-03 — 完成微信消息 Fake Gate：文本与 Provider 语音转写入站、图片/文件/语音/视频 CDN AES-128-ECB 下载解密、账户隔离 0700 缓存与 0600 原子落盘、25 MiB/16 附件上限；附件经严格 Worker IPC、SQLite 消息账本和 Codex AppServer 传递；Codex 本地媒体引用可回传，图片/文件/视频上传，音频按可播放文件发送；长文本按 1800 Unicode code point 稳定幂等分段，单媒体失败保留正文并明确降级。
+- [x] M4-04 — 完成 Daemon→Worker 入站应用级 ACK：协议 v3 使用请求 ID 关联 ACK，SQLite 落账或确认重复后才确认，负 ACK、断连、超时和 ACK 后 Cursor 落盘崩溃均不丢消息；DeliveryRepository 持久化恢复负载与 `nextAttemptAt`，启动扫描 `sending/retry_wait`，复用原 `deliveryKey`，有界指数退避与最大尝试次数；429、5xx、认证失效、媒体失败、Worker/ACK 崩溃窗口和重启恢复故障矩阵已覆盖。
 
 ## In Progress
 
-- 当前无进行中的 M0 实现项；M0 Gate 已完成，下一步进入 M1-01。
+- 当前无进行中的实现项；M4-05 等待真实账号 Gate 授权。
 
 ## Next
 
-- [ ] M1-01 — 建立 vNext 包结构。
+- [ ] M4-05 — 真实微信账号专用 Space Gate：文本/图片/文件/语音、重启恢复与 24 小时连续运行；需要用户扫码与授权。
 
 ## Verification
 
 | Command / Check | Result | Date |
 |---|---|---|
-| `git worktree add -b codex/vnext-m0 ... 38aceb3` | PASS；新 worktree 创建成功 | 2026-08-12 |
-| 三份 vNext 权威文档 | PASS；已复制并完成 SHA-256 核对 | 2026-08-12 |
-| 原工作区状态指纹 | PASS；创建 worktree 前后保持 `24f2e07c42ebb31586989636f200dc2ee855202cce901ca69b2365f5fedbf50f` | 2026-08-12 |
-| Node / pnpm / macOS | Node `v22.23.0` / pnpm `10.27.0` / macOS `26.5.2` | 2026-08-12 |
-| Codex CLI | `0.147.0-alpha.6.5` | 2026-08-12 |
-| `pnpm install --frozen-lockfile` | PASS；212 个包，lockfile 未修改 | 2026-08-12 |
-| 新 worktree CodeGraph | PASS；157 files / 2,685 nodes / 7,497 edges，索引最新 | 2026-08-12 |
-| `pnpm check` | PASS | 2026-08-12 |
-| `pnpm build` | PASS | 2026-08-12 |
-| `pnpm test` 首次基线 | PASS；52 files / 279 tests | 2026-08-12 |
-| `pnpm test` 稳定性复跑 | BASELINE FAIL；52 files，270/279 tests 通过；`tests/unit/codex-app-server-driver.test.ts` 9 个 Fake AppServer 时序测试超时 | 2026-08-12 |
-| 单文件复跑 | BASELINE FAIL；该文件 11 tests 中 2 通过、9 超时 | 2026-08-12 |
-| AppServer CLI 能力 | PASS；`codex app-server --help` 提供 stdio/ws/unix transport 与 daemon 管理命令 | 2026-08-12 |
-| 运行中桌面进程 | PASS；检测到 ChatGPT/Codex 进程，ChatGPT 使用 `127.0.0.1:9341` remote debugging 参数 | 2026-08-12 |
-| `codex app-server daemon version` | BLOCKED；本机无受管 daemon control socket，未宣称 daemon 已可连接 | 2026-08-12 |
-| 直接 CDP HTTP 探测 | BLOCKED；当前执行环境拒绝该本机网络探测请求 | 2026-08-12 |
-| `git diff --check` | PASS | 2026-08-12 |
+| `git worktree add -b codex/vnext ... 52839e7` | PASS；新 worktree 创建成功 | 2026-08-10 |
+| 原工作区 `git status --porcelain=v1` | 57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| 原工作区 `codegraph status` | PASS；155 files / 2,665 nodes / 7,360 edges，索引最新 | 2026-08-10 |
+| 新 worktree `codegraph status` | PASS；155 files / 2,611 nodes / 7,127 edges，索引最新 | 2026-08-10 |
+| `pnpm install --frozen-lockfile` | PASS；212 个包，lockfile 未修改 | 2026-08-10 |
+| `pnpm check` | PASS | 2026-08-10 |
+| `pnpm build` | PASS | 2026-08-10 |
+| `pnpm test` | BASELINE FAIL；50/51 test files、247/252 tests 通过；5 个 AppServer Fake 时序超时 | 2026-08-10 |
+| Codex/AppServer 可发现性 | PASS；CLI `0.147.0-alpha.6.5`，默认 binary 存在且运行中进程可见 | 2026-08-10 |
+| M1-01 `pnpm check` | PASS | 2026-08-10 |
+| M1-01 `pnpm build` | PASS | 2026-08-10 |
+| M1-02 `vitest`（vNext + legacy domain） | PASS；2 files / 17 tests | 2026-08-10 |
+| M1-02 `pnpm check` | PASS | 2026-08-10 |
+| M1-02 `pnpm build` | PASS | 2026-08-10 |
+| M1-03 Port Contract | PASS；1 file / 5 tests | 2026-08-10 |
+| M1-03 vNext 回归 | PASS；2 files / 19 tests | 2026-08-10 |
+| M1-03 `pnpm check` | PASS | 2026-08-10 |
+| M1-03 `pnpm build` | PASS | 2026-08-10 |
+| M1-04 Config/Keychain Unit + Contract | PASS；4 files / 31 vNext regression tests | 2026-08-10 |
+| M1-04 `pnpm check` | PASS | 2026-08-10 |
+| M1-04 `pnpm build` | PASS | 2026-08-10 |
+| M1-05 SQLite Repository Contract + Failure Paths | PASS；2 files / 14 tests | 2026-08-10 |
+| M1-05 vNext 回归 | PASS；6 files / 45 tests | 2026-08-10 |
+| M1-05 `pnpm check` | PASS | 2026-08-10 |
+| M1-05 `pnpm build` | PASS | 2026-08-10 |
+| M1-06 Application Use Cases | PASS；3 files / 18 tests | 2026-08-10 |
+| M1-06 vNext 回归 | PASS；9 files / 63 tests | 2026-08-10 |
+| M1-06 `pnpm check` | PASS | 2026-08-10 |
+| M1-06 `pnpm build` | PASS | 2026-08-10 |
+| M1-07 Fake A/B/C Integration | PASS；1 file / 2 tests | 2026-08-10 |
+| M1-07 `pnpm check` | PASS | 2026-08-10 |
+| M1-07 `pnpm build` | PASS | 2026-08-10 |
+| M1 Gate Fake AppServer Regression | PASS；1 file / 8 tests；原 5 个超时已消除 | 2026-08-10 |
+| M1 Gate `pnpm check` | PASS | 2026-08-10 |
+| M1 Gate `pnpm test` | PASS；61 files / 319 tests | 2026-08-10 |
+| M1 Gate `pnpm build` | PASS | 2026-08-10 |
+| M1 Gate 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M2-01 Fake AppServer + Legacy Driver | PASS；2 files / 11 tests | 2026-08-10 |
+| M2-01 `pnpm check` | PASS | 2026-08-10 |
+| M2-01 `pnpm test` | PASS；62 files / 322 tests | 2026-08-10 |
+| M2-01 `pnpm build` | PASS | 2026-08-10 |
+| M2-02 AppServer Unit + Contract + Fake | PASS；3 files / 14 tests | 2026-08-10 |
+| M2-02 `pnpm check` | PASS | 2026-08-10 |
+| M2-02 `pnpm test` | PASS；64 files / 333 tests | 2026-08-10 |
+| M2-02 `pnpm build` | PASS | 2026-08-10 |
+| M2-03 Coordinator + Application + AppServer Regression | PASS；4 files / 29 tests | 2026-08-10 |
+| M2-03 vNext Binding Integration | PASS；4 files / 21 tests | 2026-08-10 |
+| M2-03 `pnpm check` | PASS | 2026-08-10 |
+| M2-03 `pnpm test` | PASS；65 files / 340 tests | 2026-08-10 |
+| M2-03 `pnpm build` | PASS | 2026-08-10 |
+| M2-04 OpenAI Docs + 本机 AppServer Schema | PASS；稳定 `thread/read` 支持 `includeTurns`，本机 CLI `0.147.0-alpha.6.5` Turn 状态 Schema 已核对 | 2026-08-10 |
+| M2-04 Scheduler/Application 精确回归 | PASS；4 files / 24 tests | 2026-08-10 |
+| M2-04 vNext Unit/Contract/Integration | PASS；14 files / 95 tests | 2026-08-10 |
+| M2-04 `pnpm check` | PASS | 2026-08-10 |
+| M2-04 `pnpm test` | PASS；66 files / 351 tests | 2026-08-10 |
+| M2-04 `pnpm build` | PASS | 2026-08-10 |
+| M2-04 `git diff --check` | PASS | 2026-08-10 |
+| M2-04 CodeGraph 同步与影响复核 | PASS；222 files / 3,838 nodes / 11,137 edges，索引最新；无 HIGH/CRITICAL 调用面 | 2026-08-10 |
+| M2-04 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M2-05 Recovery/Coordinator/Legacy Driver 精确回归 | PASS；5 files / 65 tests | 2026-08-10 |
+| M2-05 vNext Unit/Contract/Integration | PASS；17 files / 108 tests | 2026-08-10 |
+| M2-05 `pnpm check` | PASS | 2026-08-10 |
+| M2-05 `pnpm test` | PASS；69 files / 365 tests | 2026-08-10 |
+| M2-05 `pnpm build` | PASS | 2026-08-10 |
+| M2-05 `git diff --check` | PASS | 2026-08-10 |
+| M2-05 CodeGraph 同步与影响复核 | PASS；228 files / 3,990 nodes / 11,608 edges，索引最新；Recovery 未扩展为完整 `CodexPort` | 2026-08-10 |
+| M2-05 原工作区保护复核 | PASS；57 项；SHA-256 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M2-06 AppServer/Smoke 精确回归 | PASS；3 files / 16 tests | 2026-08-10 |
+| M2-06 真实 Codex Smoke | PASS；run `m2-06-20260810-2035`；3 个独立 Thread/Turn marker 对应，中断 Turn 状态 `interrupted`，测试 Thread 全部保留 | 2026-08-10 |
+| M2 Gate vNext Unit/Contract/Integration | PASS；18 files / 112 tests | 2026-08-10 |
+| M2 Gate `pnpm check` | PASS | 2026-08-10 |
+| M2 Gate `pnpm test` | PASS；70 files / 369 tests | 2026-08-10 |
+| M2 Gate `pnpm build` | PASS | 2026-08-10 |
+| M2 Gate `git diff --check` | PASS | 2026-08-10 |
+| M2 Gate CodeGraph 同步与影响复核 | PASS；231 files / 4,057 nodes / 11,789 edges，索引最新；改动调用面均由对应 vNext Unit/Contract/Integration 覆盖 | 2026-08-10 |
+| M2 Gate 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-01 Composition Root / Observability 精确回归 | PASS；3 files / 22 tests | 2026-08-10 |
+| M3-01 vNext Unit/Contract/Integration | PASS；19 files / 117 tests | 2026-08-10 |
+| M3-01 `pnpm check` | PASS | 2026-08-10 |
+| M3-01 `pnpm build` | PASS | 2026-08-10 |
+| M3-01 `git diff --check` | PASS | 2026-08-10 |
+| M3-02 Control API + Config 精确回归 | PASS；2 files / 18 tests | 2026-08-10 |
+| M3-02 `pnpm check` | PASS | 2026-08-10 |
+| M3-02 `pnpm test` | PASS；72 files / 380 tests | 2026-08-10 |
+| M3-02 `pnpm build` | PASS | 2026-08-10 |
+| M3-02 `git diff --check` | PASS | 2026-08-10 |
+| M3-02 CodeGraph 影响复核 | PASS；新增管理 API 调用面由 Contract 覆盖，配置 Schema 由 Unit/Contract 覆盖，无 HIGH/CRITICAL 调用面 | 2026-08-10 |
+| M3-02 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-03 SSE + Control Daemon 精确回归 | PASS；2 files / 14 tests | 2026-08-10 |
+| M3-03 `pnpm check` | PASS | 2026-08-10 |
+| M3-03 `pnpm test` | PASS；72 files / 383 tests | 2026-08-10 |
+| M3-03 `pnpm build` | PASS | 2026-08-10 |
+| M3-03 `git diff --check` | PASS | 2026-08-10 |
+| M3-03 CodeGraph 同步与影响复核 | PASS；237 files / 4,269 nodes / 12,469 edges；SSE 调用面集中于 Control API，现有调用者均已更新，无 HIGH/CRITICAL | 2026-08-10 |
+| M3-03 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-04 Static UI / API Client 精确回归 | PASS；3 files / 12 tests | 2026-08-10 |
+| M3-04 `pnpm check` | PASS | 2026-08-10 |
+| M3-04 `pnpm test` | PASS；74 files / 386 tests | 2026-08-10 |
+| M3-04 `pnpm build` | PASS；Vite JS 287.48 kB（gzip 91.39 kB），CSS 7.40 kB（gzip 2.46 kB） | 2026-08-10 |
+| M3-04 `git diff --check` | PASS | 2026-08-10 |
+| M3-04 Browser 桌面 / 移动 QA | PASS；内置浏览器 1440×960 与 390×844；验证渠道、设置、诊断路由/选中态/URL，控制台无 error/warn，移动页面无整体横向溢出且主导航可独立横向滚动 | 2026-08-10 |
+| M3-04 概念图视觉对照 | PASS；已用 `view_image` 复核文案、布局、字体层级、颜色、间距/容器、图标与响应式；真实数据和完成态明确留给 M3-05，不填充假数据 | 2026-08-10 |
+| M3-04 CodeGraph 同步与影响复核 | PASS；248 files / 4,366 nodes / 12,673 edges；索引最新，新增 UI 调用面由 Unit/Browser QA 覆盖，无 HIGH/CRITICAL | 2026-08-10 |
+| M3-04 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-05 Data/API Client 精确回归 | PASS；2 files / 6 tests；四请求并行、响应契约校验、渠道动作路径和原生 `fetch` 无绑定调用均覆盖 | 2026-08-10 |
+| M3-05 `pnpm check` | PASS | 2026-08-10 |
+| M3-05 `pnpm test` | PASS；75 files / 390 tests | 2026-08-10 |
+| M3-05 `pnpm build` | PASS；Vite JS 303.25 kB（gzip 96.08 kB），CSS 12.18 kB（gzip 3.46 kB） | 2026-08-10 |
+| M3-05 `git diff --check` | PASS | 2026-08-10 |
+| M3-05 Browser Dashboard / Channels QA | PASS；内置浏览器 + 未提交的确定性本地 API fixture；1440×960 显示 3 个组件/渠道/活动与 SSE 已连接，渠道测试成功提示和添加表单可操作，控制台无 error/warn | 2026-08-10 |
+| M3-05 Browser 移动 QA | PASS；390×844 页面 `390/390` 无整体横向溢出；导航 `648→390`、渠道表 `820→352` 独立横向滚动 | 2026-08-10 |
+| M3-05 概念图视觉对照 | PASS；最终 1440×960 截图已用 `view_image` 与概念图直接核对文案、布局、字体层级、颜色、状态图标、间距/容器与响应式，无遗留可修视觉偏差 | 2026-08-10 |
+| M3-05 CodeGraph 同步与影响复核 | PASS；250 files / 4,463 nodes / 12,938 edges；调用面限于 Control UI Router/API Client，并由 Unit/Browser QA 覆盖，无 HIGH/CRITICAL | 2026-08-10 |
+| M3-05 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3-06 Control UI 精确回归 | PASS；2 files / 6 tests | 2026-08-10 |
+| M3-06 `pnpm check` | PASS | 2026-08-10 |
+| M3-06 `pnpm test` | PASS；75 files / 390 tests | 2026-08-10 |
+| M3-06 `pnpm build` | PASS；Vite JS 304.45 kB（gzip 96.44 kB），CSS 13.44 kB（gzip 3.74 kB） | 2026-08-10 |
+| M3-06 `git diff --check` | PASS | 2026-08-10 |
+| M3-06 Browser 键盘 / 语义 QA | PASS；Skip Link 首个 Tab 可达并聚焦 `main-content`；纯键盘进入渠道页并展开添加表单；路由切换聚焦主内容；真实 DOM 为原生 Table，表单标签、名称、异步播报和非颜色状态文本完整 | 2026-08-10 |
+| M3-06 Browser Zoom / 窄屏 QA | PASS；390×844 与 200% 等效 720px 重排均无整页横向溢出，App Shell 单列，渠道表仅在容器内部滚动；CDP Page Scale 2 已验证并恢复为 1 | 2026-08-10 |
+| M3-06 CodeGraph 与原工作区保护复核 | PASS；250 files / 4,464 nodes / 12,941 edges，索引最新；原工作区仍为 57 项，SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-10 |
+| M3 Gate Production Services / Runtime / SQLite 精确回归 | PASS；3 files / 12 tests；真实管理服务映射、生产静态 UI/API 启动、Health 组件标识、运行事件持久化与 Turn 稳定游标分页均覆盖 | 2026-08-11 |
+| M3 Gate `pnpm check` | PASS | 2026-08-11 |
+| M3 Gate `pnpm test` | PASS；77 files / 395 tests | 2026-08-11 |
+| M3 Gate `pnpm build` | PASS；Vite JS 320.79 kB（gzip 100.30 kB），CSS 16.55 kB（gzip 4.22 kB） | 2026-08-11 |
+| M3 Gate `git diff --check` | PASS | 2026-08-11 |
+| M3 Gate Production HTTP Smoke | PASS；无浏览器 fixture；静态 UI 200、System `running`、Active Revision 生效、Health/Diagnostics 返回真实数据、持久化 8 条启动/配置事件、Codex 线程列表返回真实线程 | 2026-08-11 |
+| M3 Gate 六页 Browser QA | PASS；概览、渠道、会话空间、任务、Router、设置与诊断均无 placeholder/error；390px 无整页横向溢出；Config Apply 等待 Active Revision；控制台 0 error / 0 warning | 2026-08-11 |
+| M3 Gate CodeGraph 影响复核 | PASS；258 files / 4,687 nodes / 13,657 edges，索引最新；生产 Runtime、Application Services、Turn 分页与六页 UI 调用面均有对应 Unit/Integration/Browser 验证 | 2026-08-11 |
+| M3 Gate 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-01 Worker Runtime / Supervisor / Production 精确回归 | PASS；5 files / 22 tests；真实隔离子进程、错误鉴权/协议拒绝、心跳超时、1→5ms 连续崩溃退避、空配置不启动、首次账号 Config Apply 与 IPC test 路由均覆盖 | 2026-08-11 |
+| M4-01 `pnpm check` | PASS | 2026-08-11 |
+| M4-01 `pnpm test` | PASS；80 files / 404 tests | 2026-08-11 |
+| M4-01 `pnpm build` | PASS；Vite JS 320.79 kB（gzip 100.30 kB），CSS 16.55 kB（gzip 4.22 kB） | 2026-08-11 |
+| M4-01 `git diff --check` | PASS | 2026-08-11 |
+| M4-01 Production Runtime Smoke | PASS；构建产物启动于 `127.0.0.1:3100`；无账号时不派生 Worker 进程，Health 明确显示 disabled；Codex、Worker、Router、Push、Queues、Management API 共 6 个组件可见 | 2026-08-11 |
+| M4-01 CodeGraph 影响复核 | PASS；265 files / 4,875 nodes / 14,154 edges，索引最新；Worker Runtime/Supervisor、Apply Planner 与生产 Runtime 调用面由 Unit/Integration 覆盖 | 2026-08-11 |
+| M4-01 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-02 Login/API/UI 精确回归 | PASS；7 files / 30 tests；完整登录状态机、并发账号持久化串行、HTTP Provider、脱敏持久化、Worker IPC、Control API、Application Services 与 UI 数据契约均覆盖 | 2026-08-11 |
+| M4-02 Production Runtime + Fake iLink | PASS；真实隔离 Worker 经本地 HTTP Server 完成二维码、已扫描、待确认、强制重登和注销；状态文件与诊断事件均不含 QR 内容 | 2026-08-11 |
+| M4-02 `pnpm check` | PASS | 2026-08-11 |
+| M4-02 `pnpm test` | PASS；81 files / 411 tests | 2026-08-11 |
+| M4-02 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
+| M4-02 Browser Desktop / Mobile / Zoom QA | PASS；生产管理台显示 1 个本地微信账户与未登录操作；隔离 Fake iLink 环境验证 QR Data URL、强制重登、注销；390×844 与 200% 等效 640px 布局可操作，页面控制台 0 error / 0 warning | 2026-08-11 |
+| M4-02 CodeGraph 影响复核 | PASS；270 files / 5,055 nodes / 14,727 edges，索引最新；登录状态机、Worker IPC、Control API 与 UI 调用面均有对应 Unit/Contract/Integration/Browser 验证 | 2026-08-11 |
+| M4-02 原工作区保护复核 | PASS；仍为 57 项；NUL 分隔 `git status --porcelain=v1 -z` SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-03/04 微信消息精确回归 | PASS；5 files / 26 tests；文本、图片、文件、语音、长文本、IPC、SQLite、Codex 媒体回传、故障降级与幂等均覆盖 | 2026-08-11 |
+| M4-03/04 `pnpm check` | PASS | 2026-08-11 |
+| M4-03/04 `pnpm test` | PASS；84 files / 426 tests；旧 E2E 已隔离宿主机飞书/微信环境变量 | 2026-08-11 |
+| M4-03/04 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
+| M4-03/04 `git diff --check` | PASS | 2026-08-11 |
+| M4-03/04 CodeGraph 与原工作区保护复核 | PASS；同步 10 个变更文件；原工作区仍为 57 项，NUL 分隔状态 SHA-256 仍为 `55b004726404ce5b08d61ced56c56294439e4a4721e3c5b1b2ec5d21c89b5649` | 2026-08-11 |
+| M4-04 ACK / Delivery Recovery 精确回归 | PASS；ACK 前后 Cursor 崩溃窗口、SQLite 去重、负 ACK、429、5xx、`sending/retry_wait` 重启恢复、稳定 `deliveryKey` 与最大尝试次数均覆盖 | 2026-08-11 |
+| M4-04 `pnpm check` | PASS | 2026-08-11 |
+| M4-04 `pnpm test` | PASS；84 files / 432 tests | 2026-08-11 |
+| M4-04 `pnpm build` | PASS；Vite JS 348.02 kB（gzip 110.07 kB），CSS 17.87 kB（gzip 4.44 kB） | 2026-08-11 |
+| M4-04 `git diff --check` | PASS | 2026-08-11 |
+| M4-04 CodeGraph 同步与影响复核 | PASS；277 files / 5,345 nodes / 15,760 edges，索引最新；ACK/Delivery 调用面由 42 项精确 Unit/Contract/Integration 回归覆盖 | 2026-08-11 |
 
 ## Risks and Blockers
 
 | ID | Impact | Mitigation | Owner |
 |---|---|---|---|
-| R-M0-01 | 极高：原工作区仍有用户未提交修改，误操作可能覆盖 | 所有 vNext 工作只在本 worktree；每次关键操作后复核原工作区状态指纹 | Codex |
-| R-M0-02 | 推荐路径 `/Volumes/13759427003/AI/qq-codex-bridge-vnext` 已有另一条推进中的 `codex/vnext` 工作树 | 使用独立路径 `/Volumes/13759427003/AI/qq-codex-bridge-vnext-m0`，不修改现有工作树 | Codex |
-| R-M0-03 | 当前 vNext 是从已整理的 v0.2 提交启动，需确认 legacy 基线行为保持 | 先运行完整 check/test/build；不为了绿色基线修改 legacy 代码 | Codex |
-| R-M0-04 | v0.2 AppServer Fake 测试基线不稳定，当前 9 个时序用例超时 | 在 M1-01/M1 Gate 重新处理 Fake 连接 `open` 时序；M0 不跳过、不放宽断言、不改 legacy 实现 | Codex |
+| R-M0-01 原工作区含 57 项用户修改 | 极高：误操作会覆盖用户工作 | 所有业务开发只在 sibling worktree；每次 M0 关键写操作后复核状态指纹 | Codex |
+| R-M0-02 v0.x AppServer Fake 有 5 个时序超时 | 已关闭：全量测试恢复绿色 | Fake 仅在连接创建后异步触发 `open`；精确 8/8、全量 319/319 通过 | Codex |
+| R-M2-01 AppServer WebSocket 传输仍由官方标记为实验性 | 中：协议或传输行为变化可能影响主链路 | 固定 loopback、Capability/Health、版本精确 Schema 核对、Fake 故障矩阵与 CDP 提交前 Recovery；不把已接受 Turn 自动重发 | Codex |
+| R-M2-02 AppServer 中断 RPC 与真实 Turn 状态存在竞态 | 已关闭：RPC 成功或 `no active turn` 都不再被当作充分证据 | 仅以 `turn/completed(interrupted)` 或 `thread/read` 的 `interrupted` 确认成功；真实 readiness probe 与“RPC 成功但 Turn 完成”反例已锁定 | Codex |
+| R-M3-01 生产 ControlApiServices/Composition Root 尚未接线 | 已关闭：生产 Runtime 已组合真实 Repository/Codex/Config/Keychain/API/UI，CLI 与无 fixture HTTP Smoke 通过 | 保持 Integration Smoke 与六页 Browser QA；fixture 不进入生产源码、不作为 fallback | Codex |
+| R-M4-01 微信入站媒体 CDN 下载契约尚未用真实账号抓包确认 | 中：Fake iLink 已覆盖固定 CDN、AES key 两种编码、大小/校验/失败路径，但真实字段细节可能不同 | M4-05 用专用测试 Space 逐类验证；失败时记录脱敏字段名，不记录 Token、媒体参数或正文 | User / Codex |
+| R-M4-02 Worker IPC 入站仅确认写入 Daemon IPC，未等待 SQLite ACK | 已关闭：协议 v3 应用 ACK 仅在 SQLite 落账或确认重复后返回；ACK 前后崩溃均保持旧 Cursor 并重投去重 | 保持请求 ID ACK、60 秒超时、Provider ID/SQLite 去重与崩溃窗口回归 | Codex |
+| R-M4-03 出站 `retry_wait` 尚无恢复调度器 | 已关闭：Delivery 恢复负载与 `nextAttemptAt` 已持久化，启动扫描 `sending/retry_wait` 并有界重试 | 保持原 `deliveryKey`/分段键、最大 3 次默认尝试与 429/5xx/重启回归 | Codex |
+| R-EXT-01 微信真实账号扫码与测试联系人/群聊授权尚未提供 | M4-05 双向媒体、重启恢复与 24 小时连续运行 Gate 无法执行 | 先完成 Fake Worker、二维码/状态机、消息与韧性自动化；真实 Gate 前集中请求一次扫码和专用测试 Space 授权，不主动联系真实联系人 | User |
+| R-EXT-02 飞书/QQ/Router 真实凭据尚未提供 | 真实租户、真实 API 与外部消息 Gate 无法执行 | 先完成 Fake SDK/Server、Contract、故障矩阵与本地配置检查；到对应 Gate 再请求最小 Secret Reference/测试租户 | User |
+| R-EXT-03 Apple Developer ID、Notarization 与发布凭据尚未提供 | M8/M9 可完成未签名开发包与安装验收，但不能执行签名、公证或正式发布 | 产出可重复的未签名 macOS 构建、launchd 安装/卸载与清单；把签名/Notarization 保持为单独外部 Gate，未经授权不执行 | User |
 
-## Architecture Decisions
+## Decisions
 
-- v0.2 改动先形成独立本地提交，再从该提交创建 vNext M0 worktree，保证新架构基线可追溯且不混入原始脏工作区。
-- 已存在的 `/Volumes/13759427003/AI/qq-codex-bridge-vnext` 是独立进行中的 vNext 工作，不覆盖、不复用、不改写。
-- 本 worktree 只承载 vNext M0 及其后续开发；未经授权不 push、发 PR、联系真实外部用户或执行正式发布。
-
-## Latest Update
-
-M0 Gate 已完成，下一步进入 M1-01。
+| ADR / Decision | Reason |
+|---|---|
+| 以 `52839e76ddef083fd9af314207e5576998801b76` 创建 `codex/vnext` | 避免把原始脏工作区的任何非 vNext 修改带入新分支 |
+| 新 worktree 使用 `/Volumes/13759427003/AI/qq-codex-bridge-vnext` | 计划推荐路径不存在，满足 sibling 隔离要求 |
+| 代码理解和现有 Symbol 影响分析仅使用 CodeGraph | 用户明确要求后续不再使用 GitNexus；新 worktree CodeGraph 已初始化且索引最新 |
+| 遗留 Turn 使用稳定 `thread/read(includeTurns)` 对账 | 官方 OpenAI Docs 与本机生成 Schema 均确认可按真实 Thread ID 读取完整 Turn 历史；避免依赖实验性 `thread/turns/list` |
+| CDP Recovery 仅按唯一精确缓存标题操作桌面 UI | AppServer 的真实 `threadId` 仍是持久化身份；桌面 UI 不暴露可靠 ID 时，标题无匹配或重复均明确失败，避免猜测导致跨线程错投递 |
+| `turn/interrupt` 必须以真实终态确认 | 本机 AppServer 存在 RPC 成功但 Turn 继续完成，以及实际已中断但 RPC 返回 `no active turn` 两种竞态；请求响应本身不能代表业务终态 |
+| 微信使用单个受监督 Worker 承载多个账号 | 实施计划要求隔离 Worker，且 Config Apply 原本指向运行时不存在的逐账号组件；固定 `weixin-worker` 使首次添加/删除账号可被 Composition Root 重启，同时为 M4-02/03 保留多账号协议载荷 |
+| Worker 鉴权 Token 仅通过子进程环境注入并在 Worker 启动后立即删除 | Node IPC 已限定父子本地通道；随机 32-byte Token 防止错误/伪造子进程完成握手，且不进入 argv、事件、日志或持久化配置；Worker 只继承 locale/timezone，不继承 Daemon 的其他环境 Secret |
+| QR 内容只在 Worker→Daemon 命令响应与当前 UI 内存中短暂存在 | `qrcode` 仅在浏览器内生成 Data URL；二维码不写状态文件、Keychain、结构化事件或诊断包，Worker 事件只上报账号、状态和时间 |
+| 微信媒体只使用固定 CDN 且禁止重定向 | 入站下载固定 `novac2c.cdn.weixin.qq.com/c2c/download`，出站上传 URL 必须是同主机 `/c2c/upload`；API/CDN 均 `redirect: error`，错误不包含响应正文 |
+| Codex 出站媒体只接受本机绝对路径或 `file://` | 不自动下载 HTTP/Data URI；真实文件、25 MiB 和 16 附件上限通过后才进入 Worker IPC，拒绝项在回复正文中明确提示 |

@@ -21,7 +21,8 @@ export class FeishuSender implements ChatEgressPort {
           continue;
         }
         lastProviderMessageId = await sendFeishuText(this.client, targetId, text, {
-          rich: shouldUseFeishuRichText(text),
+          rich: draft.format === "markdown" || shouldUseFeishuRichText(text),
+          interactive: draft.format === "markdown",
           uuid: `${draft.draftId}-text-${textSegmentIndex++}`
         });
         sentAnything = true;
@@ -49,12 +50,12 @@ export class FeishuSender implements ChatEgressPort {
       const fallbackText = draft.text.trim();
       lastProviderMessageId = fallbackText
         ? await sendFeishuText(this.client, targetId, fallbackText, {
-            rich: shouldUseFeishuRichText(fallbackText),
+          rich: draft.format === "markdown" || shouldUseFeishuRichText(fallbackText),
+          interactive: draft.format === "markdown",
             uuid: draft.draftId
           })
         : null;
     }
-
     return {
       jobId: draft.draftId,
       sessionKey: draft.sessionKey,

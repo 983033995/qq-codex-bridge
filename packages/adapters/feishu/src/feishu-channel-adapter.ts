@@ -14,6 +14,7 @@ export function createFeishuChannelAdapter(config: {
   appId: string;
   appSecret: string;
   onDispatchError?: (error: Error) => void;
+  onIgnoredMessage?: ConstructorParameters<typeof FeishuIngress>[0]["onIgnoredMessage"];
 }): FeishuChannelAdapter {
   const client = new Lark.Client({
     appId: config.appId,
@@ -33,7 +34,8 @@ export function createFeishuChannelAdapter(config: {
       accountKey: config.accountKey,
       wsClient,
       eventDispatcher,
-      onDispatchError: config.onDispatchError
+      onDispatchError: config.onDispatchError,
+      onIgnoredMessage: config.onIgnoredMessage
     }),
     egress: new FeishuSender(client),
     pushEgress: new FeishuPushEgress(client)

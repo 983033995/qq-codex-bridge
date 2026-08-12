@@ -35,6 +35,7 @@ export class FeishuPushEgress implements PushEgressPort {
           input.payload.message.text,
           {
             rich: input.payload.message.format === "markdown",
+            interactive: input.payload.message.format === "markdown",
             uuid: input.pushId
           }
         );

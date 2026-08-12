@@ -56,7 +56,7 @@
 执行方式：
 - 先建立 docs/VNEXT-PROGRESS.md；
 - 从 M0 开始严格按 VNEXT-IMPLEMENTATION-PLAN.md 顺序推进；
-- 每个任务先使用 CodeGraph/GitNexus 理解和做影响分析；
+- 每个任务先使用 CodeGraph 理解和做影响分析；
 - 修改现有 Symbol 前必须完成上游影响分析；
 - 采用小步实现、精确测试、模块测试、全量验证；
 - 每个里程碑结束更新进度台账、运行全量测试并形成 Gate 报告；
@@ -118,4 +118,3 @@ macOS Release Gate 达成前，目标保持进行中。每次汇报都要包含�
 - `VNEXT-PROGRESS.md`；
 - 基线 `check/test/build` 结果；
 - M1 当前任务和下一步。
-

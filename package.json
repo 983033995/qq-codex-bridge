@@ -25,6 +25,7 @@
   ],
   "bin": {
     "qq-codex-bridge": "bin/qq-codex-bridge.js",
+    "qq-codex-bridge-vnext": "bin/qq-codex-bridge-vnext.js",
     "qq-codex-mcp": "bin/qq-codex-mcp.js",
     "qq-codex-weixin-gateway": "bin/qq-codex-weixin-gateway.js"
   },
@@ -41,17 +42,22 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm build:server && pnpm build:ui",
+    "build:server": "tsc -p tsconfig.json",
+    "build:ui": "tsc -p apps/control-ui/tsconfig.json --noEmit && vite build --config apps/control-ui/vite.config.mts",
     "dev": "tsx --env-file=.env apps/bridge-daemon/src/dev.ts",
     "weixin:login": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login",
     "weixin:login:force": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-login-force",
     "weixin:logout": "tsx --env-file=.env apps/weixin-gateway/src/dev.ts -- --weixin-logout",
     "start": "node dist/apps/bridge-daemon/src/cli.js",
+    "start:vnext": "node dist/apps/control-daemon/src/cli.js",
     "start:weixin-gateway": "node dist/apps/weixin-gateway/src/cli.js",
     "debug:codex-workers": "tsx apps/bridge-daemon/src/debug-codex-workers.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p apps/control-ui/tsconfig.json --noEmit",
+    "dev:ui": "vite --config apps/control-ui/vite.config.mts",
+    "smoke:vnext:codex": "tsx apps/control-daemon/src/codex-smoke.ts",
     "prepare-release": "pnpm run build && npm pack --dry-run",
     "prepublishOnly": "pnpm run build"
   },
@@ -59,14 +65,23 @@
     "@larksuiteoapi/node-sdk": "1.72.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "better-sqlite3": "^11.7.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router": "^8.3.0",
     "ws": "^8.18.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@types/ws": "^8.5.14",
+    "@vitejs/plugin-react": "^6.0.5",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
+    "vite": "^8.2.1",
     "vitest": "^3.1.1"
   }
 }
