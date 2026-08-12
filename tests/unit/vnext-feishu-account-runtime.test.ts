@@ -60,12 +60,14 @@ describe("vNext Feishu account runtime", () => {
       accountId: "feishu:default",
       peerId: "chat-1",
       chatType: "c2c",
-      text: "reply"
+      text: "reply",
+      format: "markdown"
     })).resolves.toBe("feishu-out-1");
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
       draftId: expect.stringMatching(/^[a-f0-9]{32}$/),
       sessionKey: "feishu:default::fs:c2c:chat-1",
-      text: "reply"
+      text: "reply",
+      format: "markdown"
     }));
     await runtime.stop();
     expect(stop).toHaveBeenCalledOnce();

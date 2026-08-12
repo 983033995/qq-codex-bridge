@@ -6,7 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   BindConversationSpace,
+  EnqueuePush,
+  ExecuteControlAction,
   ReceiveInboundMessage,
+  RouteInboundMessage,
   StartConversationTurn,
   ThreadScheduler
 } from "../../../packages/application/src/index.js";
@@ -188,17 +191,54 @@ export async function createProductionControlDaemon(options: {
     clock: { now: () => new Date() }
   });
   const receiveInboundMessage = new ReceiveInboundMessage({ spaces, messages });
+  const scheduler = new ThreadScheduler({
+    events: runtimeEvents,
+    ids: { next: randomUUID },
+    clock: { now: () => new Date() }
+  });
   const startConversationTurn = new StartConversationTurn({
     bindings,
     turns,
     codex,
     ids: { next: randomUUID },
     clock: { now: () => new Date() },
-    scheduler: new ThreadScheduler({
-      events: runtimeEvents,
+    scheduler
+  });
+  const executeControlAction = new ExecuteControlAction({
+    codex,
+    bindings,
+    turns,
+    pushes: push,
+    bindConversationSpace,
+    enqueuePush: new EnqueuePush({
+      pushes: push,
       ids: { next: randomUUID },
       clock: { now: () => new Date() }
-    })
+    }),
+    runHealthCheck: { execute: () => daemon.health.check() },
+    clock: { now: () => new Date() },
+    scheduler,
+    threadListLimit: 20
+  });
+  const routeInboundMessage = new RouteInboundMessage({
+    router,
+    decisions,
+    bindings,
+    codex,
+    controlActions: executeControlAction,
+    ids: { next: randomUUID },
+    clock: { now: () => new Date() },
+    onRoutingError(error, message) {
+      eventBus.publish({
+        component: "intent-router",
+        type: "router.inbound.degraded",
+        payload: {
+          providerMessageId: message.providerMessageId,
+          spaceId: message.spaceId,
+          error: error.message
+        }
+      });
+    }
   });
   weixinMessages = new WeixinMessageRuntime({
     spaces,
@@ -206,13 +246,26 @@ export async function createProductionControlDaemon(options: {
     receive: receiveInboundMessage,
     bind: bindConversationSpace,
     startTurn: startConversationTurn,
+    route: routeInboundMessage,
     worker: weixinWorker,
     ids: { next: randomUUID },
     clock: { now: () => new Date() },
+    progress: { heartbeatIntervalMs: 60_000, maxUpdates: 60 },
     onProcessingError(error, message) {
       eventBus.publish({
         component: "weixin-message-runtime",
         type: "weixin.message.processing_failed",
+        payload: {
+          providerMessageId: message.providerMessageId,
+          spaceId: message.spaceId,
+          error: error.message
+        }
+      });
+    },
+    onProgressError(error, message) {
+      eventBus.publish({
+        component: "weixin-message-runtime",
+        type: "weixin.message.progress_failed",
         payload: {
           providerMessageId: message.providerMessageId,
           spaceId: message.spaceId,
@@ -228,6 +281,7 @@ export async function createProductionControlDaemon(options: {
     receive: receiveInboundMessage,
     bind: bindConversationSpace,
     startTurn: startConversationTurn,
+    route: routeInboundMessage,
     worker: {
       async deliver(input) {
         const account = feishuAccounts.get(input.accountId);
@@ -237,10 +291,22 @@ export async function createProductionControlDaemon(options: {
     },
     ids: { next: randomUUID },
     clock: { now: () => new Date() },
+    progress: { heartbeatIntervalMs: 60_000, maxUpdates: 60 },
     onProcessingError(error, message) {
       eventBus.publish({
         component: "feishu-message-runtime",
         type: "feishu.message.processing_failed",
+        payload: {
+          providerMessageId: message.providerMessageId,
+          spaceId: message.spaceId,
+          error: error.message
+        }
+      });
+    },
+    onProgressError(error, message) {
+      eventBus.publish({
+        component: "feishu-message-runtime",
+        type: "feishu.message.progress_failed",
         payload: {
           providerMessageId: message.providerMessageId,
           spaceId: message.spaceId,

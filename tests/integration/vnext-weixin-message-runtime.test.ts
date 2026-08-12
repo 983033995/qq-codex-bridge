@@ -113,6 +113,62 @@ describe("vNext Weixin message runtime", () => {
     expect(deliveries).toHaveLength(1);
   });
 
+  it("delivers a routed control reply without starting a Codex turn", async () => {
+    const fixture = createFixture();
+    const deliveries: Array<{ deliveryKey: string; text: string }> = [];
+    const runtime = fixture.runtime({
+      async deliver(input) {
+        deliveries.push(input);
+        return input.deliveryKey;
+      }
+    }, undefined, "weixin", {
+      route: {
+        async execute() {
+          return { kind: "reply" as const, text: "当前线程：vNext 开发" };
+        }
+      }
+    });
+
+    await expect(runtime.handle(inbound("provider-control-route"))).resolves.toMatchObject({
+      delivery: { status: "delivered" }
+    });
+    expect(fixture.codex.starts).toHaveLength(0);
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        deliveryKey: expect.stringContaining(":assistant-final"),
+        text: "当前线程：vNext 开发"
+      })
+    ]);
+  });
+
+  it("sends bounded progress updates and keeps the final reply independent of progress failures", async () => {
+    const fixture = createFixture();
+    const keys: string[] = [];
+    const progressErrors: Error[] = [];
+    const runtime = fixture.runtime({
+      async deliver(input) {
+        keys.push(input.deliveryKey);
+        if (input.deliveryKey.endsWith(":progress:2")) {
+          throw new Error("progress channel unavailable");
+        }
+        return input.deliveryKey;
+      }
+    }, undefined, "weixin", {
+      progress: { heartbeatIntervalMs: 5, maxUpdates: 2 },
+      onProgressError(error) { progressErrors.push(error); }
+    });
+
+    const execution = runtime.handle(inbound("provider-progress"));
+    await fixture.codex.waitForStartCount(1);
+    await eventually(() => keys.some((key) => key.endsWith(":progress:2")));
+    fixture.codex.complete(fixture.codex.starts[0]!.handle.turnId, "final after progress");
+    await expect(execution).resolves.toMatchObject({ delivery: { status: "delivered" } });
+
+    expect(keys.filter((key) => key.includes(":progress:"))).toHaveLength(2);
+    expect(keys.at(-1)).toContain(":assistant-final");
+    expect(progressErrors).toHaveLength(1);
+  });
+
   it("persists a permanent authentication failure without exposing reply content", async () => {
     const fixture = createFixture();
     const runtime = fixture.runtime({
@@ -305,7 +361,13 @@ function createFixture() {
       maxAttempts?: number;
       baseDelayMs?: number;
       maxDelayMs?: number;
-    }, channel: "weixin" | "feishu" = "weixin") {
+    }, channel: "weixin" | "feishu" = "weixin", options?: {
+      route?: { execute(space: unknown, message: unknown): Promise<
+        { kind: "chat" } | { kind: "reply"; text: string }
+      > };
+      progress?: { heartbeatIntervalMs?: number; maxUpdates?: number };
+      onProgressError?(error: Error): void;
+    }) {
       return new WeixinMessageRuntime({
         channel,
         spaces,
@@ -316,6 +378,9 @@ function createFixture() {
         worker,
         ids: new SequenceIdGenerator("delivery"),
         clock,
+        ...(options?.route ? { route: options.route as never } : {}),
+        ...(options?.progress ? { progress: options.progress } : {}),
+        ...(options?.onProgressError ? { onProgressError: options.onProgressError } : {}),
         ...(retry ? { retry } : {})
       });
     }

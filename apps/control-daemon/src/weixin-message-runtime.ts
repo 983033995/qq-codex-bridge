@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type {
   BindConversationSpace,
   ReceiveInboundMessage,
+  RouteInboundMessage,
   StartConversationTurn
 } from "../../../packages/application/src/index.js";
 import { WeixinDeliveryError, type WeixinInboundTextMessage } from "../../../packages/channel-weixin/src/index.js";
@@ -63,22 +64,29 @@ export class WeixinMessageRuntime {
     receive: Pick<ReceiveInboundMessage, "execute">;
     bind: Pick<BindConversationSpace, "execute">;
     startTurn: Pick<StartConversationTurn, "execute">;
+    route?: Pick<RouteInboundMessage, "execute">;
     worker: { deliver(input: {
       deliveryKey: string;
       accountId: string;
       peerId: string;
       chatType: "c2c" | "group";
       text: string;
+      format?: "plain" | "markdown";
       attachments?: Attachment[];
     }): Promise<string | null> };
     ids: IdGenerator;
     clock: Clock;
     onProcessingError?(error: Error, message: InboundEnvelope): void;
+    onProgressError?(error: Error, message: InboundEnvelope): void;
     retry?: {
       maxAttempts?: number;
       baseDelayMs?: number;
       maxDelayMs?: number;
       recoveryLimit?: number;
+    };
+    progress?: {
+      heartbeatIntervalMs?: number;
+      maxUpdates?: number;
     };
     channel?: "weixin" | "feishu";
   }) {
@@ -185,25 +193,44 @@ export class WeixinMessageRuntime {
     message: InboundEnvelope
   ): Promise<WeixinMessageRuntimeResult> {
     const { spaceId } = space;
-    const deliveryKey = `${message.messageId}:assistant-final`;
-    await this.deps.bind.execute({ spaceId });
-    const turn = await this.deps.startTurn.execute(message);
-    const outboundMedia = await resolveOutboundAttachments(turn.result.mediaReferences);
-    const text = [
-      turn.result.finalText.trim(),
-      outboundMedia.rejected > 0
-        ? `[有 ${outboundMedia.rejected} 个媒体附件未发送：仅支持本机 25 MiB 以内的有效文件]`
-        : ""
-    ].filter(Boolean).join("\n");
-    if (!text && outboundMedia.attachments.length === 0) {
-      throw new Error("Codex turn completed without a deliverable reply");
+    const route = await this.deps.route?.execute(space, message) ?? { kind: "chat" as const };
+    if (route.kind === "reply") {
+      return this.deliverFinalReply(space, message, route.text, [], route.format);
     }
 
+    const progress = await this.startProgress(space, message);
+    try {
+      await this.deps.bind.execute({ spaceId });
+      const turn = await this.deps.startTurn.execute(message);
+      const outboundMedia = await resolveOutboundAttachments(turn.result.mediaReferences);
+      const text = [
+        turn.result.finalText.trim(),
+        outboundMedia.rejected > 0
+          ? `[有 ${outboundMedia.rejected} 个媒体附件未发送：仅支持本机 25 MiB 以内的有效文件]`
+          : ""
+      ].filter(Boolean).join("\n");
+      if (!text && outboundMedia.attachments.length === 0) {
+        throw new Error("Codex turn completed without a deliverable reply");
+      }
+      return this.deliverFinalReply(space, message, text, outboundMedia.attachments);
+    } finally {
+      progress.stop();
+    }
+  }
+
+  private async deliverFinalReply(
+    space: ConversationSpace,
+    message: InboundEnvelope,
+    text: string,
+    attachments: Attachment[],
+    format: "plain" | "markdown" = "plain"
+  ): Promise<WeixinMessageRuntimeResult> {
+    const deliveryKey = `${message.messageId}:assistant-final`;
     const createdAt = this.deps.clock.now().toISOString();
     let delivery: Delivery = {
       deliveryId: this.deps.ids.next(),
       deliveryKey,
-      spaceId,
+      spaceId: space.spaceId,
       status: "pending",
       providerMessageId: null,
       attempts: 0,
@@ -212,10 +239,60 @@ export class WeixinMessageRuntime {
       createdAt,
       updatedAt: createdAt
     };
-    const content = { text, mentions: [], attachments: outboundMedia.attachments };
+    const content: MessageContent = { text, mentions: [], attachments, format };
     await this.deps.deliveries.save(delivery, content);
     delivery = await this.attemptDelivery(delivery, content, space);
     return { duplicate: false, message, delivery };
+  }
+
+  private async startProgress(
+    space: ConversationSpace,
+    message: InboundEnvelope
+  ): Promise<{ stop(): void }> {
+    if (!this.deps.progress) return { stop() {} };
+    const heartbeatIntervalMs = positiveInteger(
+      this.deps.progress.heartbeatIntervalMs ?? 60_000,
+      "progress.heartbeatIntervalMs"
+    );
+    const maxUpdates = positiveInteger(this.deps.progress.maxUpdates ?? 60, "progress.maxUpdates");
+    const startedAt = Date.now();
+    let update = 1;
+    await this.sendProgress(space, message, update, "已收到任务，正在交给 Codex 处理。");
+    const timer = setInterval(() => {
+      if (update >= maxUpdates) {
+        clearInterval(timer);
+        return;
+      }
+      update += 1;
+      const elapsedMinutes = Math.max(1, Math.floor((Date.now() - startedAt) / 60_000));
+      void this.sendProgress(
+        space,
+        message,
+        update,
+        `任务仍在处理中，已运行约 ${elapsedMinutes} 分钟。完成后会自动发送最终结果。`
+      );
+    }, heartbeatIntervalMs);
+    timer.unref();
+    return { stop: () => clearInterval(timer) };
+  }
+
+  private async sendProgress(
+    space: ConversationSpace,
+    message: InboundEnvelope,
+    update: number,
+    text: string
+  ): Promise<void> {
+    try {
+      await this.deps.worker.deliver({
+        deliveryKey: `${message.messageId}:progress:${update}`,
+        accountId: space.accountId,
+        peerId: space.providerConversationId,
+        chatType: space.scope,
+        text
+      });
+    } catch (error) {
+      this.deps.onProgressError?.(normalizeError(error), message);
+    }
   }
 
   private async scanRecoverable(): Promise<void> {
@@ -275,6 +352,7 @@ export class WeixinMessageRuntime {
         peerId: space.providerConversationId,
         chatType: space.scope,
         text: content.text,
+        ...(this.channel === "feishu" && content.format ? { format: content.format } : {}),
         ...(content.attachments.length > 0
           ? { attachments: content.attachments }
           : {})

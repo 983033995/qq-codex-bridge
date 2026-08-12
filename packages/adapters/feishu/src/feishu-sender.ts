@@ -9,6 +9,7 @@ export class FeishuSender implements ChatEgressPort {
   async deliver(draft: OutboundDraft): Promise<DeliveryRecord> {
     const targetId = parseFeishuSessionTarget(draft.sessionKey);
     const providerMessageId = await sendFeishuText(this.client, targetId, draft.text, {
+      rich: draft.format === "markdown",
       uuid: draft.draftId
     });
     return {

@@ -21,6 +21,7 @@ export type RouterHealth = ComponentHealth & {
 };
 
 export interface IntentRouterPort {
+  routeFast?(input: Pick<IntentRouterInput, "message" | "allowedActionTypes">): Promise<RoutingDecision | null>;
   route(input: IntentRouterInput): Promise<RoutingDecision>;
   health(): Promise<RouterHealth>;
 }

@@ -270,7 +270,11 @@ export class SqliteRoutingDecisionRepository implements RoutingDecisionRepositor
       record.spaceId,
       record.messageId,
       record.decision.kind,
-      record.decision.action ? JSON.stringify(record.decision.action) : null,
+      record.decision.actions
+        ? JSON.stringify(record.decision.actions)
+        : record.decision.action
+          ? JSON.stringify(record.decision.action)
+          : null,
       record.decision.confidence,
       record.decision.clarification ?? null,
       record.decision.providerRequestId ?? null,
@@ -545,6 +549,7 @@ function mapTurn(row: TurnRow): Turn {
   };
 }
 function mapRoutingDecision(row: RoutingDecisionRow): RoutingDecisionRecord {
+  const storedActions = row.action_json ? JSON.parse(row.action_json) as unknown : null;
   return {
     decisionId: row.decision_id,
     spaceId: row.space_id as ConversationSpaceId,
@@ -552,7 +557,11 @@ function mapRoutingDecision(row: RoutingDecisionRow): RoutingDecisionRecord {
     decision: {
       kind: row.kind,
       confidence: row.confidence,
-      ...(row.action_json ? { action: JSON.parse(row.action_json) as NonNullable<RoutingDecisionRecord["decision"]["action"]> } : {}),
+      ...(Array.isArray(storedActions)
+        ? { actions: storedActions as NonNullable<RoutingDecisionRecord["decision"]["actions"]> }
+        : storedActions
+          ? { action: storedActions as NonNullable<RoutingDecisionRecord["decision"]["action"]> }
+          : {}),
       ...(row.clarification ? { clarification: row.clarification } : {}),
       ...(row.provider_request_id ? { providerRequestId: row.provider_request_id } : {})
     },

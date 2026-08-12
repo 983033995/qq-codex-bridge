@@ -67,6 +67,7 @@ export type MessageContent = {
   text: string;
   mentions: Mention[];
   attachments: Attachment[];
+  format?: "plain" | "markdown";
 };
 
 export type InboundEnvelope = {
@@ -143,6 +144,7 @@ export type ControlAction =
 export type RoutingDecision = {
   kind: "chat" | "control" | "clarify";
   action?: ControlAction;
+  actions?: ControlAction[];
   confidence: number;
   clarification?: string;
   providerRequestId?: string;

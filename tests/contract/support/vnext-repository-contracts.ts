@@ -192,6 +192,20 @@ export function repositoryPortContract(
         result: null,
         createdAt: "2026-08-10T06:00:00.000Z"
       });
+      await harness.decisions.save({
+        decisionId: "decision-2",
+        spaceId: space.spaceId,
+        messageId: message.messageId,
+        decision: {
+          kind: "control",
+          actions: [{ type: "thread.current" }, { type: "model.current" }],
+          confidence: 1
+        },
+        latencyMs: 1,
+        confirmationStatus: "not_required",
+        result: "control:completed:2",
+        createdAt: "2026-08-10T06:00:01.000Z"
+      });
       const decisionPage = await harness.decisions.list({ limit: 10 });
       expect(decisionPage.items).toEqual([
         expect.objectContaining({
@@ -199,6 +213,13 @@ export function repositoryPortContract(
           decision: expect.objectContaining({
             kind: "control",
             action: { type: "thread.rename", title: "Renamed" }
+          })
+        }),
+        expect.objectContaining({
+          decisionId: "decision-2",
+          decision: expect.objectContaining({
+            kind: "control",
+            actions: [{ type: "thread.current" }, { type: "model.current" }]
           })
         })
       ]);

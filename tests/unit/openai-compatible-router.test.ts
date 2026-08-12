@@ -46,6 +46,68 @@ describe("OpenAiCompatibleIntentRouter", () => {
     await expect(router.health()).resolves.toMatchObject({ status: "degraded", code: "ROUTER_REQUEST_FAILED" });
   });
 
+  it.each([
+    ["现在在哪个线程", "thread.current"],
+    ["现在是在哪个线程中", "thread.current"],
+    ["当前线程是什么", "thread.current"],
+    ["有哪些活动线程", "thread.list"],
+    ["现在有哪些活跃会话", "thread.list"],
+    ["当前任务进度", "turn.status"]
+  ])("routes high-confidence channel control language deterministically: %s", async (text, actionType) => {
+    const fetchFn = vi.fn();
+    const router = new OpenAiCompatibleIntentRouter({
+      configStore: fixedConfig(configuredRouter()),
+      secretStore: new MemorySecretStore(),
+      fetchFn
+    });
+
+    await expect(router.route({
+      ...input(),
+      message: text,
+      allowedActionTypes: [actionType]
+    })).resolves.toEqual({
+      kind: "control",
+      action: { type: actionType },
+      confidence: 1
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("routes multiple independent control intents as an ordered action batch", async () => {
+    const fetchFn = vi.fn();
+    const router = new OpenAiCompatibleIntentRouter({
+      configStore: fixedConfig(configuredRouter()),
+      secretStore: new MemorySecretStore(),
+      fetchFn
+    });
+
+    await expect(router.routeFast({
+      message: "现在哪个线程，使用的什么模型",
+      allowedActionTypes: ["thread.current", "model.current"]
+    })).resolves.toEqual({
+      kind: "control",
+      actions: [{ type: "thread.current" }, { type: "model.current" }],
+      confidence: 1
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/h", { kind: "control", action: { type: "help" }, confidence: 1 }],
+    ["/tn", { kind: "clarify", clarification: "用法：`/tn <新线程标题>`", confidence: 1 }],
+    ["/tn 新会话", { kind: "control", action: { type: "thread.create", title: "新会话" }, confidence: 1 }]
+  ])("handles legacy slash commands locally: %s", async (text, expected) => {
+    const router = new OpenAiCompatibleIntentRouter({
+      configStore: fixedConfig(configuredRouter()),
+      secretStore: new MemorySecretStore(),
+      fetchFn: vi.fn()
+    });
+    await expect(router.routeFast({
+      message: text,
+      allowedActionTypes: ["help", "thread.create"]
+    })).resolves.toEqual(expected);
+  });
+
   it("reports missing secrets without calling the provider", async () => {
     const fetchFn = vi.fn();
     const router = new OpenAiCompatibleIntentRouter({
@@ -88,7 +150,7 @@ function fixedConfig(value: ReturnType<typeof configuredRouter>): ConfigStorePor
 
 function input() {
   return {
-    message: "列出线程",
+    message: "请帮我管理一下线程",
     spaceDisplayName: "管理台测试",
     currentThreadTitle: null,
     candidateThreads: [],

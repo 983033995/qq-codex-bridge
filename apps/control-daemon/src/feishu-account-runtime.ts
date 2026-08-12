@@ -138,6 +138,7 @@ export class FeishuAccountRuntime implements ControlDaemonComponent {
     peerId: string;
     chatType: "c2c" | "group";
     text: string;
+    format?: "plain" | "markdown";
     attachments?: Attachment[];
   }): Promise<string | null> {
     if (input.accountId !== `feishu:${this.options.accountId}`) {
@@ -153,6 +154,7 @@ export class FeishuAccountRuntime implements ControlDaemonComponent {
       draftId: feishuUuid(input.deliveryKey),
       sessionKey: `${input.accountId}::fs:${input.chatType}:${input.peerId}`,
       text: input.text,
+      format: input.format ?? "plain",
       createdAt: new Date().toISOString()
     });
     this.lastSuccessAt = new Date().toISOString();

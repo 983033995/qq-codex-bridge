@@ -40,8 +40,8 @@ export class ExecuteControlAction {
     turns: TurnRepository;
     pushes: PushRepository;
     bindConversationSpace: BindConversationSpace;
-    enqueuePush: EnqueuePush;
-    runHealthCheck: RunHealthCheck;
+    enqueuePush: Pick<EnqueuePush, "execute">;
+    runHealthCheck: Pick<RunHealthCheck, "execute">;
     clock: Clock;
     scheduler?: ThreadScheduler;
     threadListLimit?: number;
@@ -69,7 +69,21 @@ export class ExecuteControlAction {
         return completed(action, "Threads listed", threads);
       }
       case "thread.current": {
-        const binding = await this.deps.bindings.getActiveBySpace(input.spaceId);
+        let binding = await this.deps.bindings.getActiveBySpace(input.spaceId);
+        if (binding) {
+          const current = await withTimeout(this.listThreads(), 2_000).then(
+            (threads) => threads.find((thread) => thread.threadId === binding!.threadId) ?? null,
+            () => null
+          );
+          if (current && current.title !== binding.threadTitle) {
+            binding = {
+              ...binding,
+              threadTitle: current.title,
+              updatedAt: this.deps.clock.now().toISOString()
+            };
+            await this.deps.bindings.save(binding);
+          }
+        }
         return completed(action, binding ? "Current thread resolved" : "No thread is bound", binding);
       }
       case "thread.switch": {
@@ -256,4 +270,21 @@ function requiredValue(field: string, value: string): string {
 function optionalValue(value: string | undefined): string | null {
   const normalized = value?.trim() ?? "";
   return normalized || null;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Control query timed out")), timeoutMs);
+    timeout.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
 }

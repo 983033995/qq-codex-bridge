@@ -4,6 +4,7 @@ export * from "./codex-transport-coordinator.js";
 export * from "./enqueue-push.js";
 export * from "./execute-control-action.js";
 export * from "./receive-inbound-message.js";
+export * from "./route-inbound-message.js";
 export * from "./reconcile-recoverable-turns.js";
 export * from "./run-health-check.js";
 export * from "./run-codex-smoke.js";
