@@ -1,17 +1,24 @@
-# v0.3 原型与交互链路
+# OmniAgent Gateway v0.3 原型与交互链路
 
 ## 1. 原型目标
 
-本原型说明不设计新的远程聊天端。用户的实际对话仍发生在 QQ、微信、飞书；MCP 只负责 AI 驱动的初始化、管理、诊断与任务控制；Control UI 负责可视化管理。
+本原型说明不设计新的远程聊天端。用户的实际对话仍发生在 QQ、微信、飞书；MCP 负责 AI 驱动的初始化、管理、诊断与任务控制；Control UI 负责可视化管理。
+
+所有渠道入站消息必须先进入 **Inbound Intelligent Router**，再决定是普通 Codex 对话、系统控制、渠道配置还是审批。
+
+产品显示名统一为 **OmniAgent Gateway**。
+
+---
 
 ## 2. 核心角色
 
-- 用户：在 AI Agent 中配置和管理 Bridge，在 QQ/微信/飞书中日常使用。
+- 用户：在 AI Agent 中配置和管理 OmniAgent Gateway，在 QQ/微信/飞书中日常使用。
 - AI Agent：Codex / Claude / OpenCode 等 MCP Host。
 - MCP：AI Control Plane。
-- Runtime：Bridge 常驻服务。
+- Runtime：Gateway 常驻服务。
 - Channel：QQ / 微信 / 飞书。
-- Codex：通过 AppServer 执行任务。
+- Router：渠道入站自然语言意图判断与分发。
+- Codex：v0.3 的渠道 Conversation 执行 Agent，通过 AppServer 执行任务。
 
 ---
 
@@ -19,18 +26,20 @@
 
 ### 3.1 用户添加 MCP
 
-推荐配置：
+兼容期配置示例：
 
 ```json
 {
   "mcpServers": {
-    "qq-codex-bridge": {
+    "omniagent-gateway": {
       "command": "npx",
       "args": ["-y", "qq-codex-bridge@latest", "mcp"]
     }
   }
 }
 ```
+
+正式发布后目标为 `omniagent-gateway` 包/CLI，旧包名保留兼容。
 
 ### 3.2 MCP 启动
 
@@ -39,9 +48,9 @@ MCP process
   ↓
 ensureRuntime()
   ↓
-检查 runtime.lock / runtime.json / PID
+检查 lock / runtime.json / PID
   ↓
-未运行 → 启动 Bridge Runtime
+未运行 → 启动 Gateway Runtime
   ↓
 等待 /health ready
   ↓
@@ -52,13 +61,9 @@ ensureRuntime()
 
 用户：
 
-> 帮我检查 qq-codex-bridge。
+> 帮我检查 OmniAgent Gateway。
 
-AI 调用：
-
-```text
-get_setup_status
-```
+AI 调用：`get_setup_status`
 
 理想返回：
 
@@ -66,24 +71,18 @@ get_setup_status
 {
   "runtime": "ready",
   "codex": "ready",
+  "router": "ready",
   "channels": {
     "qq": "not_configured",
     "weixin": "not_configured",
     "feishu": "not_configured"
-  },
-  "suggestedActions": ["connect_weixin", "connect_qq", "connect_feishu"]
+  }
 }
 ```
-
-AI 文案：
-
-> qq-codex-bridge 已经运行，Codex 连接正常。当前还没有配置消息渠道。你可以先连接微信、QQ 或飞书。
 
 ---
 
 ## 4. 微信 Setup 原型
-
-### 4.1 开始
 
 用户：
 
@@ -95,118 +94,29 @@ AI 调：
 start_setup({ target: "channel", type: "weixin" })
 ```
 
-返回：
+返回 QR Artifact。
 
-```json
-{
-  "setupId": "setup_xxx",
-  "state": "waiting_scan",
-  "artifacts": [
-    {
-      "type": "qr_code",
-      "purpose": "login",
-      "content": "...",
-      "expiresAt": "..."
-    }
-  ]
-}
-```
-
-### 4.2 对话显示
+状态：
 
 ```text
-连接微信
-
-请使用微信扫描二维码：
-
-[二维码]
-
-二维码有效期 2 分钟。
+waiting_scan → scanned → confirming → connected
 ```
 
-### 4.3 状态变化
+成功后 AI：
 
-```text
-waiting_scan
-   ↓
-scanned
-   ↓
-confirming
-   ↓
-connected
-```
-
-AI 根据 `get_setup_progress` 输出：
-
-- scanned：`已扫码，请在手机上确认登录。`
-- confirming：`正在确认账号状态。`
-- connected：`微信已经连接成功。`
-
-### 4.4 过期
-
-如果二维码过期：
-
-```text
-二维码已过期。
-
-需要我重新生成吗？
-```
-
-重新调用 `start_setup(... force=true)`。
-
-### 4.5 成功后建议
-
-```text
-微信已经连接成功。
-
-状态：在线
-
-你现在可以直接在微信里给这个账号发送一条消息测试 Codex。
-```
+> 微信已经连接成功。现在可以直接在微信里发消息，OmniAgent Gateway 会先判断你的意图，再决定是让 Codex 执行还是处理系统控制。
 
 ---
 
 ## 5. QQ Setup 原型
 
-### 5.1 开始
-
 用户：
 
 > 帮我连接 QQ。
 
-MCP 返回：
+MCP 返回 AppID / ClientSecret 表单 Artifact。
 
-```json
-{
-  "setupId": "setup_qq_xxx",
-  "state": "needs_input",
-  "artifacts": [
-    {
-      "type": "form",
-      "fields": [
-        { "key": "appId", "label": "QQ Bot AppID", "secret": false, "required": true },
-        { "key": "clientSecret", "label": "QQ Bot ClientSecret", "secret": true, "required": true }
-      ]
-    }
-  ]
-}
-```
-
-### 5.2 对话交互
-
-AI：
-
-> 连接 QQ Bot 需要 AppID 和 ClientSecret。如果你已经创建了 Bot，请先把 AppID 发给我。
-
-用户提交 AppID。
-
-AI：
-
-> AppID 已记录。接下来请提供 ClientSecret。
-
-用户提交 Secret。
-
-### 5.3 后台执行
+流程：
 
 ```text
 submit_setup
@@ -215,118 +125,199 @@ submit_setup
   ↓
 SecretStore.set()
   ↓
-写入 Channel Config + secretRef
+Channel Config + secretRef
   ↓
 启动 QQ Channel
   ↓
 test_channel
 ```
 
-### 5.4 错误状态
-
-ClientSecret 错误：
-
-```text
-QQ 连接失败。
-
-AppID 可以识别，但 ClientSecret 验证失败。请检查后重新提交。
-```
-
-不得回显 Secret。
-
-### 5.5 成功
-
-```text
-QQ 已连接成功。
-
-Bot：xxx
-状态：在线
-```
+Secret 不得回显。
 
 ---
 
 ## 6. 飞书 Setup 原型
 
-与 QQ 保持一致的交互范式。
-
-字段：
-
-- App ID
-- App Secret
-
-成功状态：
-
-```text
-飞书连接成功。
-
-长连接：正常
-消息接收：正常
-消息发送：正常
-```
+与 QQ 一致：App ID + App Secret，完成后自动启动长连接并检查收发能力。
 
 ---
 
-## 7. AI 驱动的异常修复流程
+## 7. 渠道入站 Router 主链路
 
-### 7.1 用户直接要求使用未配置渠道
+### 7.1 普通对话
 
-用户：
+微信用户：
 
-> 发一条消息到微信。
+> 帮我排查一下订单详情页为什么报错。
 
-MCP 返回：
+链路：
+
+```text
+微信
+ ↓
+Inbound Gateway
+ ↓
+Router
+ ↓
+kind=conversation
+confidence=0.97
+ ↓
+ConversationService
+ ↓
+Codex AppServer turn/start
+ ↓
+结果回微信
+```
+
+用户不需要输入任何特殊前缀。
+
+### 7.2 Control 意图
+
+QQ 用户：
+
+> 重启一下微信渠道。
+
+Router：
 
 ```json
 {
-  "code": "CHANNEL_NOT_CONFIGURED",
-  "channel": "weixin",
-  "setupAvailable": true
+  "kind": "control",
+  "action": "channel.restart",
+  "target": "weixin",
+  "confidence": 0.98,
+  "risk": "medium"
 }
 ```
 
-AI：
-
-> 微信还没有连接。我可以现在帮你完成扫码连接。
-
-### 7.2 Runtime 不存在
-
-任何 MCP 工具调用前先 `ensureRuntime()`。
-
-若启动失败：
+执行：
 
 ```text
-qq-codex-bridge 无法启动。
-
-检测结果：Codex App 未找到。
-
-需要我运行完整诊断吗？
+Router
+ ↓
+IntentDispatcher
+ ↓
+ChannelControlService
+ ↓
+重启微信
+ ↓
+QQ 返回执行结果
 ```
 
-### 7.3 Setup 被中断
+该消息不得进入 Codex。
 
-MCP 重启后发现未完成 Setup：
+### 7.3 Setup 意图
+
+飞书用户：
+
+> 帮我重新登录微信。
+
+Router：
 
 ```text
-发现一个尚未完成的微信登录流程，但二维码已经过期。需要重新生成吗？
+kind=setup
+action=channel.login
+target=weixin
+```
+
+如果渠道能力允许在当前会话呈现二维码，则直接返回 QR；否则返回清晰说明并引导到 Admin/MCP 对话完成。
+
+### 7.4 Approval 意图
+
+用户：
+
+> 允许刚才那个 pnpm test。
+
+Router：
+
+```text
+kind=approval
+action=resolve.approve
+```
+
+ApprovalService 根据当前 Space/Task 找到唯一 pending approval。
+
+若存在多个候选：
+
+```text
+当前有 2 个请求等待确认：
+1. pnpm test — 重构订单详情页
+2. npm install — 数据迁移任务
+
+请告诉我你要允许哪一个。
+```
+
+不得猜测。
+
+---
+
+## 8. Router 置信度原型
+
+### 高置信
+
+> 重启飞书。
+
+```text
+confidence=0.98
+→ 自动进入 ChannelControlService
+```
+
+### 中等置信
+
+> 把微信那个重新弄一下。
+
+```text
+confidence=0.72
+→ clarify
+```
+
+回复：
+
+> 你是想重新登录微信，还是只重启微信连接？
+
+### 低置信
+
+> 帮我看看微信相关代码有没有问题。
+
+```text
+confidence=0.31 for control/setup
+→ conversation fallback
+→ Codex
 ```
 
 ---
 
-## 8. Approval 原型
+## 9. Router Provider 故障原型
 
-### 8.1 渠道内
+Router 模型超时：
 
-Codex 请求执行命令：
+```text
+InboundMessage
+ ↓
+Router timeout
+ ↓
+记录 router.degraded
+ ↓
+安全 fallback = conversation
+ ↓
+Codex
+```
+
+用户仍然得到正常回答，不显示内部模型异常，除非确实影响执行。
+
+但 `/approve`、`/decline` 等确定性命令仍应通过 deterministic parser 工作。
+
+---
+
+## 10. Approval 原型
+
+Codex 请求执行：
 
 ```text
 Codex 等待你的确认
 
 任务：重构订单详情页
-
-请求执行：
-pnpm test
-
-原因：验证本次修改是否通过测试
+请求执行：pnpm test
+原因：验证本次修改
 
 回复：
 /approve
@@ -334,29 +325,13 @@ pnpm test
 /decline
 ```
 
-对于支持卡片的平台，可升级为按钮，但 v0.3 以文本命令作为统一最低能力。
+自然语言 `允许` / `拒绝` 也可由 Router 识别，但确定性命令是最低保证。
 
-### 8.2 Admin 首页
-
-```text
-┌──────────────────────────────────────┐
-│ 需要处理                             │
-│                                      │
-│ ⚠ Codex 等待确认                     │
-│ 重构订单详情页                       │
-│ pnpm test                            │
-│                                      │
-│ [拒绝]                       [允许] │
-└──────────────────────────────────────┘
-```
-
-### 8.3 已处理
-
-审批一旦 resolved，所有渠道和 Admin 必须同步显示已处理状态，重复点击不可再次执行。
+审批一旦 resolved，所有渠道/Admin 状态同步，重复执行返回“已处理”。
 
 ---
 
-## 9. Admin 信息架构
+## 11. Admin 信息架构
 
 ```text
 首页
@@ -394,12 +369,12 @@ pnpm test
 
 ---
 
-## 10. 首页原型
+## 12. 首页原型
 
 ```text
 ┌────────────────────────────────────────────┐
-│ QQ Codex Bridge                    ● 正常 │
-│ Codex AppServer · 本机运行                 │
+│ OmniAgent Gateway                  ● 正常 │
+│ Codex AppServer · Router Ready · 本机运行 │
 └────────────────────────────────────────────┘
 
 ┌───────────┐ ┌───────────┐ ┌───────────┐
@@ -418,6 +393,7 @@ pnpm test
 ────────────────────────────────────────────
 ● 排查支付页面错误
   微信 · admin-refactor
+  Router: Conversation · 97%
   正在执行 · 42 秒
 
 渠道
@@ -427,64 +403,57 @@ QQ        ● 在线
 飞书      ○ 未配置
 ```
 
-首页以行动项为中心，不以组件数量和内部 Revision 为中心。
+---
+
+## 13. 智能路由页原型
+
+```text
+智能路由                                      ● 正常
+
+模式
+( ) 关闭   (●) 辅助   ( ) 自动
+
+决策策略
+────────────────────────────────────────────
+高置信度 ≥ 90%
+自动分流到对应能力
+
+中等置信度 50%–89%
+向用户澄清后再执行
+
+低置信度 < 50%
+按普通 Codex 对话处理
+
+最近决策
+────────────────────────────────────────────
+97%  Conversation   微信   “帮我排查订单页...”
+98%  Control        QQ     “重启一下微信渠道”
+72%  Clarify        飞书   “把微信那个重新弄一下”
+31%  Conversation   微信   “看看微信相关代码...”
+
+[高级设置]
+```
+
+高级设置：Endpoint / Model / Secret Reference / timeout / thresholds。
 
 ---
 
-## 11. 渠道页原型
+## 14. 渠道页原型
 
 ```text
 渠道
+通过 QQ、微信和飞书与 Codex 交互；系统控制类消息会由智能路由直接处理。
 
-通过 QQ、微信和飞书与 Codex 交互。
-
-┌──────────────────────────────────────┐
-│ 微信                           ● 在线 │
-│ 默认账号                              │
-│ 最后收到消息：2 分钟前                │
-│ [测试] [重新登录] [更多]              │
-└──────────────────────────────────────┘
-
-┌──────────────────────────────────────┐
-│ QQ                             ● 在线 │
-│ My Codex Bot                          │
-│ [测试] [编辑配置] [更多]              │
-└──────────────────────────────────────┘
-
-┌──────────────────────────────────────┐
-│ 飞书                           未配置  │
-│ [连接飞书]                           │
-└──────────────────────────────────────┘
+微信  ● 在线
+QQ    ● 在线
+飞书  未配置
 ```
 
-Admin 里的“连接渠道”调用同一个 Setup Service。
+连接/重新登录统一调用 SetupService。
 
 ---
 
-## 12. 任务列表原型
-
-```text
-任务
-
-[全部] [进行中] [等待确认] [已完成] [失败]
-
-● 重构订单详情页
-  admin-refactor
-  来源：微信
-  状态：正在运行
-  已运行：01:42
-
-⚠ 更新数据库结构
-  来源：飞书
-  状态：等待确认
-  [查看]
-```
-
-列表不将 Thread ID / Turn ID / Transport 作为第一信息层。
-
----
-
-## 13. Task Detail 原型
+## 15. Task Detail 原型
 
 ```text
 重构订单详情页
@@ -499,6 +468,7 @@ Thread    ••••a93c
 任务时间线
 ────────────────────────────────
 21:21  收到用户消息
+21:21  Router → Conversation · 97%
 21:21  Codex 开始分析项目
 21:22  读取 12 个文件
 21:22  修改 src/pages/order/detail.tsx
@@ -508,72 +478,43 @@ Thread    ••••a93c
 21:24  完成
 ```
 
-技术字段保留，但不抢占任务语义。
-
 ---
 
-## 14. MCP 页面原型
+## 16. MCP 页面原型
 
 ```text
 MCP
-
 状态                     ● 可用
 Runtime 自动拉起          ✓
 
 最近 Host
 Codex                     2 分钟前
 Claude Code               1 小时前
-
-推荐配置
-[配置代码块]
-[复制]
+OpenCode                  3 小时前
 ```
+
+说明文案必须明确：Claude/OpenCode 在 v0.3 通过 MCP 管理 Gateway、Push 渠道消息，但 QQ/微信/飞书的入站 Conversation 仍由 Codex 执行。
 
 ---
 
-## 15. Runtime 页面原型
+## 17. Runtime / Diagnostics
 
-```text
-Runtime
+Runtime：Gateway Runtime / Codex AppServer / Router Provider / CDP Recovery / SQLite。
 
-Bridge Runtime        ● Ready
-Codex AppServer       ● Ready
-CDP Recovery          ● Available
-SQLite                ● Ready
-
-PID                   18271
-运行时间              14h 22m
-版本                   0.3.0
-
-[重启 Runtime] [运行诊断]
-```
+Diagnostics 优先输出“发生了什么、为什么、怎么修复”，技术日志默认折叠。
 
 ---
 
-## 16. Diagnostics 原型原则
+## 18. 原型验收链路
 
-先解释，再给日志。
+v0.3 至少完成以下 9 条端到端链路：
 
-```text
-⚠ 微信登录已失效
-
-原因
-登录凭据已经过期。
-
-建议操作
-[重新扫码]
-
-▼ 展开技术信息
-```
-
----
-
-## 17. 原型验收链路
-
-v0.3 至少完成以下 5 条端到端原型链路：
-
-1. `添加 MCP -> 自动启动 Runtime -> 微信扫码 -> 微信消息进入 Codex -> 回复微信`
-2. `添加 MCP -> QQ 凭据配置 -> QQ Channel ready -> QQ 消息进入 Codex`
-3. `Codex Approval -> 渠道通知 -> 用户 approve -> Codex 继续 -> 状态同步`
-4. `单 Session AppServer pre-submit failure -> CDP fallback -> 其他 Session 仍使用 AppServer`
-5. `Bridge 在 Turn 中途重启 -> Ledger 恢复 -> 不产生明显重复最终回复`
+1. `添加 MCP -> 自动启动 Runtime -> 微信扫码 -> 微信普通消息 -> Router Conversation -> Codex -> 回复微信`
+2. `QQ 配置 -> QQ 消息“重启微信” -> Router Control -> 微信重启 -> QQ 返回结果`
+3. `飞书消息“帮我重新登录微信” -> Router Setup -> SetupService`
+4. `Codex Approval -> 渠道通知 -> 用户自然语言“允许”/命令 /approve -> ApprovalService -> Codex 继续`
+5. `Router 中等置信度 -> 澄清 -> 用户补充 -> 正确执行`
+6. `Router Provider timeout -> conversation fallback -> 消息不丢失`
+7. `单 Session AppServer pre-submit failure -> CDP fallback -> 其他 Session 仍 AppServer`
+8. `Runtime Turn 中途重启 -> Ledger 恢复 -> 不明显重复最终回复`
+9. `旧 qq-codex-bridge 配置升级 -> OmniAgent Gateway UI/Runtime 正常 -> 旧 CLI 仍可兼容调用`
