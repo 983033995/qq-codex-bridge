@@ -7,7 +7,7 @@ export const navigation = [
   { path: "/channels", label: "渠道", icon: "channels" },
   { path: "/spaces", label: "会话空间", icon: "spaces" },
   { path: "/threads", label: "任务", icon: "threads" },
-  { path: "/router", label: "Router", icon: "router" },
+  { path: "/router", label: "智能路由", icon: "router" },
   { path: "/settings", label: "设置与诊断", icon: "settings" }
 ] as const satisfies ReadonlyArray<{
   path: string;
@@ -36,7 +36,7 @@ export function AppShell() {
           <span className="window-dot window-dot-amber" />
           <span className="window-dot window-dot-green" />
         </div>
-        <div className="brand" translate="no">QQ Codex Bridge</div>
+        <div className="brand" translate="no">OmniAgent Gateway</div>
         <nav className="primary-nav" aria-label="主导航">
           {navigation.map((item) => (
             <NavLink
@@ -51,7 +51,7 @@ export function AppShell() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <span translate="no">vNext 0.2.0</span>
+          <span translate="no">v0.3</span>
           <span className="info-mark" aria-label="版本信息">i</span>
         </div>
       </aside>
