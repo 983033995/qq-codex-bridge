@@ -38,6 +38,27 @@ export class SqliteTranscriptStore implements TranscriptStorePort {
       .run(draft.draftId, draft.sessionKey, JSON.stringify(draft), draft.createdAt, draft.createdAt);
   }
 
+  async markOutboundDelivered(draftId: string): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE delivery_jobs
+         SET status = 'delivered', last_error = NULL, updated_at = ?
+         WHERE job_id = ? AND status = 'pending'`
+      )
+      .run(new Date().toISOString(), draftId);
+  }
+
+  async markOutboundFailed(draftId: string, error: string): Promise<void> {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE delivery_jobs
+         SET status = 'failed', attempt_count = attempt_count + 1, last_error = ?, updated_at = ?
+         WHERE job_id = ? AND status = 'pending'`
+      )
+      .run(error, now, draftId);
+  }
+
   async hasInbound(messageId: string): Promise<boolean> {
     const row = this.db.prepare(`SELECT 1 FROM message_ledger WHERE message_id = ? AND direction = 'inbound'`).get(messageId);
     return row !== undefined && row !== null;

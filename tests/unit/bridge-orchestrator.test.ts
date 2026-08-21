@@ -90,6 +90,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(true),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
     const sessionStore: SessionStorePort = {
@@ -131,6 +133,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
     const sessionStore: SessionStorePort = {
@@ -195,6 +199,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
     const sessionStore: SessionStorePort = {
@@ -265,6 +271,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
     const sessionStore: SessionStorePort = {
@@ -335,6 +343,12 @@ describe("BridgeOrchestrator", () => {
       }),
       recordOutbound: vi.fn(async (draft: OutboundDraft) => {
         events.push(`recordOutbound:${draft.draftId}`);
+      }),
+      markOutboundDelivered: vi.fn(async (draftId: string) => {
+        events.push(`markOutboundDelivered:${draftId}`);
+      }),
+      markOutboundFailed: vi.fn(async (draftId: string) => {
+        events.push(`markOutboundFailed:${draftId}`);
       }),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
@@ -423,8 +437,10 @@ describe("BridgeOrchestrator", () => {
       "runTurn",
       "recordOutbound:draft-1",
       "deliver:draft-1",
+      "markOutboundDelivered:draft-1",
       "recordOutbound:draft-2",
       "deliver:draft-2",
+      "markOutboundDelivered:draft-2",
       "updateSessionStatus:active:null"
     ]);
   });
@@ -437,6 +453,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
@@ -497,6 +515,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
@@ -564,6 +584,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
@@ -632,6 +654,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
@@ -699,6 +723,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
@@ -784,6 +810,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 
@@ -873,6 +901,8 @@ describe("BridgeOrchestrator", () => {
       hasInbound: vi.fn().mockResolvedValue(false),
       recordInbound: vi.fn(),
       recordOutbound: vi.fn(),
+        markOutboundDelivered: vi.fn(),
+        markOutboundFailed: vi.fn(),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };
 

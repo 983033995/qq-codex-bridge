@@ -19,6 +19,8 @@ export interface SessionStorePort {
 export interface TranscriptStorePort {
   recordInbound(message: InboundMessage): Promise<void>;
   recordOutbound(draft: OutboundDraft): Promise<void>;
+  markOutboundDelivered(draftId: string): Promise<void>;
+  markOutboundFailed(draftId: string, error: string): Promise<void>;
   hasInbound(messageId: string): Promise<boolean>;
   listRecentConversation(sessionKey: string, limit: number): Promise<ConversationEntry[]>;
 }

@@ -157,6 +157,50 @@ describe("sqlite store", () => {
     await expect(transcriptStore.hasInbound("msg-2")).resolves.toBe(false);
   });
 
+  it("advances delivery job status after outbound delivery succeeds or fails", async () => {
+    const dbPath = createTempDbPath();
+    const db = createSqliteDatabase(dbPath);
+    const transcriptStore = new SqliteTranscriptStore(db);
+    const sessionKey = "qqbot:default::qq:c2c:abc-123";
+
+    await transcriptStore.recordOutbound({
+      draftId: "draft-delivered",
+      sessionKey,
+      text: "ok reply",
+      createdAt: "2026-08-21T08:00:00.000Z"
+    });
+    await transcriptStore.recordOutbound({
+      draftId: "draft-failed",
+      sessionKey,
+      text: "failing reply",
+      createdAt: "2026-08-21T08:00:01.000Z"
+    });
+
+    await transcriptStore.markOutboundDelivered("draft-delivered");
+    await transcriptStore.markOutboundFailed("draft-failed", "qq api 500");
+
+    const statuses = db
+      .prepare(
+        `SELECT job_id, status, attempt_count, last_error
+         FROM delivery_jobs WHERE job_id IN ('draft-delivered', 'draft-failed')`
+      )
+      .all() as Array<{ job_id: string; status: string; attempt_count: number; last_error: string | null }>;
+
+    const delivered = statuses.find((row) => row.job_id === "draft-delivered");
+    const failed = statuses.find((row) => row.job_id === "draft-failed");
+    expect(delivered?.status).toBe("delivered");
+    expect(delivered?.last_error).toBeNull();
+    expect(failed?.status).toBe("failed");
+    expect(failed?.attempt_count).toBe(1);
+    expect(failed?.last_error).toBe("qq api 500");
+
+    await transcriptStore.markOutboundDelivered("draft-delivered");
+    const afterRepeat = db
+      .prepare(`SELECT status FROM delivery_jobs WHERE job_id = 'draft-delivered'`)
+      .get() as { status: string };
+    expect(afterRepeat.status).toBe("delivered");
+  });
+
   it("serializes overlapping work for the same session key", async () => {
     const dbPath = createTempDbPath();
     const db = createSqliteDatabase(dbPath);

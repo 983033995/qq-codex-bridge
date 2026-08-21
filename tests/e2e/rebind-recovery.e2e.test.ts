@@ -38,6 +38,8 @@ describe("rebind recovery", () => {
     const transcriptStore = {
       recordInbound: vi.fn().mockResolvedValue(undefined),
       recordOutbound: vi.fn().mockResolvedValue(undefined),
+        markOutboundDelivered: vi.fn().mockResolvedValue(undefined),
+        markOutboundFailed: vi.fn().mockResolvedValue(undefined),
       hasInbound: vi.fn().mockResolvedValue(false),
       listRecentConversation: vi.fn().mockResolvedValue([])
     };

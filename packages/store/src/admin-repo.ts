@@ -95,7 +95,7 @@ export class AdminRepository {
       );
   }
 
-  async listRuntimeEvents(limit = 100): Promise<RuntimeEventRow[]> {
+  async listRuntimeEvents(limit = 100, level?: string): Promise<RuntimeEventRow[]> {
     const rows = this.db
       .prepare(
         `SELECT event_id AS eventId,
@@ -105,10 +105,11 @@ export class AdminRepository {
                 details_json AS detailsJson,
                 created_at AS createdAt
          FROM runtime_events
+         ${level ? "WHERE level = ?" : ""}
          ORDER BY created_at DESC
          LIMIT ?`
       )
-      .all(clampLimit(limit)) as Array<RuntimeEventRow & { detailsJson: string | null }>;
+      .all(...(level ? [level, clampLimit(limit)] : [clampLimit(limit)])) as Array<RuntimeEventRow & { detailsJson: string | null }>;
 
     return rows.map(({ detailsJson, ...row }) => ({
       ...row,

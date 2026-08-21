@@ -662,7 +662,14 @@ export class ThreadCommandHandler {
     };
 
     await this.deps.transcriptStore.recordOutbound(draft);
-    await this.deps.qqEgress.deliver(draft);
+    try {
+      await this.deps.qqEgress.deliver(draft);
+      await this.deps.transcriptStore.markOutboundDelivered(draft.draftId);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await this.deps.transcriptStore.markOutboundFailed(draft.draftId, reason);
+      throw error;
+    }
   }
 
   private buildHelpText(provider: ConversationProviderKind = "codex-desktop"): string {

@@ -104,9 +104,11 @@ export class BridgeOrchestrator {
           await this.deps.transcriptStore.recordOutbound(formattedDraft);
           try {
             await this.deps.qqEgress.deliver(formattedDraft);
+            await this.deps.transcriptStore.markOutboundDelivered(formattedDraft.draftId);
             this.recordDeliveredDraft(formattedDraft);
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
+            await this.deps.transcriptStore.markOutboundFailed(formattedDraft.draftId, reason);
             deliveryErrors.push(`${formattedDraft.draftId}: ${reason}`);
             console.warn("[qq-codex-bridge] draft delivery failed", {
               sessionKey: message.sessionKey,
@@ -212,7 +214,14 @@ export class BridgeOrchestrator {
       }
 
       await this.deps.transcriptStore.recordOutbound(normalizedDraft);
-      await this.deps.qqEgress.deliver(normalizedDraft);
+      try {
+        await this.deps.qqEgress.deliver(normalizedDraft);
+        await this.deps.transcriptStore.markOutboundDelivered(normalizedDraft.draftId);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        await this.deps.transcriptStore.markOutboundFailed(normalizedDraft.draftId, reason);
+        throw error;
+      }
       this.recordDeliveredDraft(normalizedDraft);
       state.sentText = state.assembledText;
       state.completed = true;

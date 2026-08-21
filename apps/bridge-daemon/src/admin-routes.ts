@@ -211,8 +211,9 @@ export function createAdminRoutes(deps: AdminRoutesDeps): BridgeHttpRoute[] {
       handleRequest: async (request, response) => {
         const url = requestUrl(request);
         const limit = numberParam(url, "limit", 100);
+        const level = url.searchParams.get("level") ?? undefined;
         writeJson(response, 200, {
-          events: await deps.repository.listRuntimeEvents(limit),
+          events: await deps.repository.listRuntimeEvents(limit, level),
           deliveryErrors: await deps.repository.listDeliveryErrors(Math.min(limit, 100))
         });
       }
