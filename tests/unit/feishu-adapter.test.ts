@@ -48,6 +48,16 @@ describe("Feishu adapter", () => {
     }), "feishu:work")?.text).toBe("日报\n完成");
   });
 
+  it.each([
+    [{ parent_id: "om-parent" }, "om-parent"],
+    [{ root_id: "om-root" }, "om-root"]
+  ])("normalizes Feishu reply reference fields", (fields, expected) => {
+    const normalized = normalizeFeishuInbound(event({
+      message: { ...event().message, ...fields }
+    }), "feishu:work");
+    expect(normalized?.replyToMessageId).toBe(expected);
+  });
+
   it("acknowledges events without awaiting business work, suppresses duplicates, and ignores bot senders", async () => {
     let receive!: (payload: FeishuMessageEvent) => void;
     const dispatcher = {

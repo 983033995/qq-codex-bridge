@@ -1,6 +1,7 @@
 import type {
   InboundEnvelope,
   StableErrorCode,
+  SourceIdentity,
   ThreadBinding,
   Turn,
   TurnTransport
@@ -34,8 +35,12 @@ export class StartConversationTurn {
     scheduler: ThreadScheduler;
   }) {}
 
-  async execute(message: InboundEnvelope): Promise<StartConversationTurnResult> {
-    const binding = await this.deps.bindings.getActiveBySpace(message.spaceId);
+  async execute(
+    message: InboundEnvelope,
+    targetBinding?: ThreadBinding,
+    resultSource?: SourceIdentity
+  ): Promise<StartConversationTurnResult> {
+    const binding = targetBinding ?? await this.deps.bindings.getActiveBySpace(message.spaceId);
     if (!binding) {
       throw new VNextDomainError(
         "CODEX_THREAD_NOT_FOUND",
@@ -49,7 +54,7 @@ export class StartConversationTurn {
       spaceId: message.spaceId,
       threadId: binding.threadId,
       receivedSequence: message.receivedSequence,
-      work: () => this.start(binding, message, async (handle) => {
+      work: () => this.start(binding, message, resultSource, async (handle) => {
         acceptedHandle = handle;
         if (interruptionRequested) {
           await this.interruptAccepted(binding, message, handle);
@@ -68,6 +73,7 @@ export class StartConversationTurn {
   private async start(
     binding: ThreadBinding,
     message: InboundEnvelope,
+    resultSource: SourceIdentity | undefined,
     onAccepted: (handle: AcceptedTurnHandle) => Promise<void>,
     isInterruptionRequested: () => boolean
   ): Promise<StartConversationTurnResult> {
@@ -144,7 +150,12 @@ export class StartConversationTurn {
     const completed: Turn = {
       ...running,
       status: "completed",
-      completedAt: this.deps.clock.now().toISOString()
+      completedAt: this.deps.clock.now().toISOString(),
+      result: {
+        finalText: result.finalText,
+        mediaReferences: [...result.mediaReferences],
+        ...(resultSource ? { source: resultSource } : {})
+      }
     };
     await this.deps.turns.save(completed);
     return { binding, turn: completed, result };

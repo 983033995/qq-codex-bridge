@@ -159,6 +159,7 @@ export function repositoryPortContract(
       const running = sampleTurn("turn-running", messages[1]!, "running");
       const unknown = sampleTurn("turn-unknown", messages[2]!, "unknown");
       const completed = sampleTurn("turn-completed", messages[3]!, "completed");
+      completed.result = { finalText: "completed reply", mediaReferences: [] };
       await harness.turns.save(queued);
       await harness.turns.save(running);
       await harness.turns.save(unknown);
@@ -169,6 +170,7 @@ export function repositoryPortContract(
         .toEqual(["turn-queued", "turn-running", "turn-unknown"]);
       expect((await harness.turns.listRecoverable()).map((turn) => turn.turnId))
         .toEqual(["turn-running", "turn-unknown"]);
+      expect(await harness.turns.listCompleted()).toEqual([completed]);
     });
 
     it("round-trips routing decisions and delivery state", async () => {
@@ -185,6 +187,8 @@ export function repositoryPortContract(
           kind: "control",
           action: { type: "thread.rename", title: "Renamed" },
           confidence: 0.98,
+          risk: "low",
+          mode: "auto",
           providerRequestId: "router-request-1"
         },
         latencyMs: 12,
@@ -199,7 +203,9 @@ export function repositoryPortContract(
         decision: {
           kind: "control",
           actions: [{ type: "thread.current" }, { type: "model.current" }],
-          confidence: 1
+          confidence: 1,
+          risk: "read",
+          mode: "auto"
         },
         latencyMs: 1,
         confirmationStatus: "not_required",

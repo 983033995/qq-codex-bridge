@@ -1,6 +1,6 @@
 {
   "name": "qq-codex-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A local QQ, Weixin, and Feishu bridge for the unified Codex/ChatGPT App, with durable Agent push APIs and MCP tools.",
   "type": "module",
   "homepage": "https://github.com/983033995/qq-codex-bridge",
@@ -24,6 +24,7 @@
     "weixin"
   ],
   "bin": {
+    "omniagent-gateway": "bin/omniagent-gateway.js",
     "qq-codex-bridge": "bin/qq-codex-bridge.js",
     "qq-codex-bridge-vnext": "bin/qq-codex-bridge-vnext.js",
     "qq-codex-mcp": "bin/qq-codex-mcp.js",

@@ -7,7 +7,7 @@ import type {
   RouterHealth,
   SecretStorePort
 } from "../../ports/src/vnext/index.js";
-import type { ControlAction, RoutingDecision } from "../../domain/src/vnext/index.js";
+import type { ControlAction, ConversationAction, RouterAction, RoutingDecision } from "../../domain/src/vnext/index.js";
 
 const threadSelectorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("id"), threadId: z.string().min(1) }).strict(),
@@ -37,14 +37,31 @@ const controlActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("help") }).strict()
 ]);
 
+const conversationActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("conversation.list") }).strict(),
+  z.object({ type: z.literal("conversation.current") }).strict(),
+  z.object({ type: z.literal("conversation.switch"), alias: z.string().min(1) }).strict()
+]);
+
+const channelSchema = z.enum(["qq", "weixin", "feishu"]);
+const routerActionSchema = z.discriminatedUnion("type", [
+  ...controlActionSchema.options,
+  ...conversationActionSchema.options,
+  z.object({ type: z.literal("channel.restart"), channel: channelSchema }).strict(),
+  z.object({ type: z.literal("setup.channel.connect"), channel: channelSchema, accountId: z.string().min(1).optional() }).strict(),
+  z.object({ type: z.literal("setup.channel.login"), channel: channelSchema, accountId: z.string().min(1).optional() }).strict(),
+  z.object({ type: z.literal("approval.resolve"), resolution: z.enum(["approve", "decline"]) }).strict()
+]);
+
 const decisionSchema = z.object({
-  kind: z.enum(["chat", "control", "clarify"]),
-  action: controlActionSchema.optional(),
-  actions: z.array(controlActionSchema).min(1).max(5).optional(),
+  kind: z.enum(["conversation", "control", "setup", "approval", "unknown"]),
+  action: routerActionSchema.optional(),
+  actions: z.array(routerActionSchema).min(1).max(5).optional(),
   confidence: z.number().min(0).max(1),
+  risk: z.enum(["read", "low", "medium", "high"]),
   clarification: z.string().min(1).optional()
 }).strict().superRefine((decision, context) => {
-  if (decision.kind === "control" && !decision.action && !decision.actions) {
+  if (["control", "setup", "approval"].includes(decision.kind) && !decision.action && !decision.actions) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["action"],
@@ -58,7 +75,7 @@ const decisionSchema = z.object({
       message: "Control decisions must use action or actions, not both"
     });
   }
-  if (decision.kind === "clarify" && !decision.clarification) {
+  if (decision.kind === "unknown" && !decision.clarification) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["clarification"],
@@ -88,14 +105,14 @@ export class OpenAiCompatibleIntentRouter implements IntentRouterPort {
 
   async route(input: IntentRouterInput): Promise<RoutingDecision> {
     const router = await this.configuration();
-    if (router.mode === "off") {
-      throw new Error("Router is disabled");
-    }
-    const deterministic = deterministicDecision(input);
+    const deterministic = deterministicDecision(input, router.mode, false);
     if (deterministic) {
       this.lastSuccessAt = new Date().toISOString();
       this.lastError = undefined;
       return deterministic;
+    }
+    if (router.mode === "off") {
+      return conversationDecision("off", "router_off");
     }
     const secret = await this.options.secretStore.get(router.secretRef!);
     if (!secret) {
@@ -124,7 +141,8 @@ export class OpenAiCompatibleIntentRouter implements IntentRouterPort {
       if (!response.ok) {
         throw new Error(`Router provider returned HTTP ${response.status}: ${providerError(payload)}`);
       }
-      const decision = decisionSchema.parse(JSON.parse(extractJson(outputText(payload))));
+      const parsed = decisionSchema.parse(JSON.parse(extractJson(outputText(payload))));
+      const decision = applyConfidencePolicy(parsed, router);
       const actions = decision.actions ?? (decision.action ? [decision.action] : []);
       const disallowed = actions.find((action) => !input.allowedActionTypes.includes(action.type));
       if (disallowed) {
@@ -134,11 +152,12 @@ export class OpenAiCompatibleIntentRouter implements IntentRouterPort {
       this.lastError = undefined;
       return {
         ...decision,
+        mode: router.mode,
         ...(providerRequestId(payload, response) ? { providerRequestId: providerRequestId(payload, response) } : {})
       };
     } catch (error) {
       this.lastError = errorMessage(error);
-      throw error;
+      return conversationDecision(router.mode, this.lastError);
     } finally {
       clearTimeout(timeout);
     }
@@ -148,13 +167,12 @@ export class OpenAiCompatibleIntentRouter implements IntentRouterPort {
     input: Pick<IntentRouterInput, "message" | "allowedActionTypes">
   ): Promise<RoutingDecision | null> {
     const router = await this.configuration();
-    if (router.mode === "off") return null;
-    const decision = deterministicDecision(input);
+    const decision = deterministicDecision(input, router.mode, true);
     if (decision) {
       this.lastSuccessAt = new Date().toISOString();
       this.lastError = undefined;
     }
-    return decision;
+    return decision ?? (router.mode === "off" ? conversationDecision("off", "router_off") : null);
   }
 
   async health(): Promise<RouterHealth> {
@@ -199,12 +217,12 @@ export class OpenAiCompatibleIntentRouter implements IntentRouterPort {
 
 function buildPrompt(input: IntentRouterInput, controlThreshold: number): string {
   return [
-    "You are the intent-routing skill for a Codex channel bridge. Classify the user's intent; never answer the user's question.",
+    "You are the inbound intent router for OmniAgent Gateway. Classify the user's intent; never answer the user's question.",
     "Return exactly one JSON object and no markdown, explanation, or surrounding text.",
-    `Choose kind chat, control, or clarify. Choose control only when confidence is at least ${controlThreshold}.`,
-    "Use chat for content work that Codex should perform: questions, coding, research, writing, debugging, and follow-up details for an ongoing task.",
-    "Use control for commands about this bridge, its Codex threads, running turns, model, quota, or health. Context fields are evidence for routing, not content to answer yourself.",
-    "Use clarify only when a required target or parameter is ambiguous. Never ask the user to choose between multiple independent control requests.",
+    `Choose kind conversation, control, setup, approval, or unknown. Choose a side-effect kind only when confidence is at least ${controlThreshold}.`,
+    "Use conversation for coding, research, writing, debugging, questions, and content mentioning channel code.",
+    "Use control for Gateway/Runtime/channel/thread control. Use setup for connecting or re-login. Use approval for approve/decline intent.",
+    "Use unknown with clarification when a required target or action is ambiguous.",
     "If one message contains multiple control intents, return kind control with an ordered actions array and include every requested action. Use action only for a single intent.",
     "Control action semantics:",
     "- thread.current: asks which/current/active thread, task, conversation, or session this channel is bound to.",
@@ -213,50 +231,84 @@ function buildPrompt(input: IntentRouterInput, controlThreshold: number): string
     "- thread.create: asks to create/start a new thread; optional title.",
     "- thread.rename: asks to rename the current thread; title is required.",
     "- thread.fork: asks to fork/branch the current thread; optional title.",
+    "- conversation.list: asks to list recent source conversations or sessions.",
+    "- conversation.current: asks which source conversation is currently active in this channel.",
+    "- conversation.switch: asks to switch to a source alias; alias must be copied from candidate conversations and never invented.",
     "- turn.status: asks whether the current task is running, its status, or progress.",
     "- turn.interrupt: asks to stop/cancel/interrupt the running task.",
     "- model.current: asks which model is active. quota.read: asks about remaining quota. system.status: asks bridge health. help: asks what controls are supported.",
+    "- channel.restart: restart one configured channel; include channel.",
+    "- setup.channel.connect/setup.channel.login: connect or login a channel; include channel.",
+    "- approval.resolve: approve or decline a pending approval.",
     "Critical distinction: '现在在哪个线程', '当前线程是什么', and 'which thread am I in' are thread.current, never chat.",
     "Examples:",
     "User: 现在在哪个线程 -> {\"kind\":\"control\",\"action\":{\"type\":\"thread.current\"},\"confidence\":1}",
     "User: 有哪些活动线程 -> {\"kind\":\"control\",\"action\":{\"type\":\"thread.list\"},\"confidence\":0.99}",
     "User: 切换到第2个线程 -> {\"kind\":\"control\",\"action\":{\"type\":\"thread.switch\",\"target\":{\"kind\":\"index\",\"index\":2}},\"confidence\":0.99}",
+    "User: 切到 #C9P1 -> {\"kind\":\"control\",\"action\":{\"type\":\"conversation.switch\",\"alias\":\"#C9P1\"},\"confidence\":1,\"risk\":\"low\"}",
+    "User: 当前我在跟哪个线程说话？ -> {\"kind\":\"control\",\"action\":{\"type\":\"conversation.current\"},\"confidence\":1,\"risk\":\"read\"}",
+    "User: 切到 PageMind 那个任务 -> select the matching alias from Candidate conversations and return conversation.switch.",
     "User: 现在哪个线程，使用什么模型 -> {\"kind\":\"control\",\"actions\":[{\"type\":\"thread.current\"},{\"type\":\"model.current\"}],\"confidence\":0.99}",
-    "User: 这个 TypeScript 报错怎么修 -> {\"kind\":\"chat\",\"confidence\":0.99}",
-    "For one control include action; for multiple controls include actions. For clarify, include clarification. Never invent an action outside the allowed list.",
+    "User: 重启微信 -> {\"kind\":\"control\",\"action\":{\"type\":\"channel.restart\",\"channel\":\"weixin\"},\"confidence\":0.98,\"risk\":\"medium\"}",
+    "User: 重新登录微信 -> {\"kind\":\"setup\",\"action\":{\"type\":\"setup.channel.login\",\"channel\":\"weixin\"},\"confidence\":0.98,\"risk\":\"medium\"}",
+    "User: 允许刚才的命令 -> {\"kind\":\"approval\",\"action\":{\"type\":\"approval.resolve\",\"resolution\":\"approve\"},\"confidence\":0.98,\"risk\":\"high\"}",
+    "User: 这个微信 TypeScript 报错怎么修 -> {\"kind\":\"conversation\",\"confidence\":0.99,\"risk\":\"read\"}",
+    "Every result must include risk. Never invent an action outside the allowed list.",
     `Allowed action types: ${JSON.stringify(input.allowedActionTypes)}`,
     `Space: ${JSON.stringify(input.spaceDisplayName)}`,
     `Current thread: ${JSON.stringify(input.currentThreadTitle)}`,
     `Candidate threads: ${JSON.stringify(input.candidateThreads)}`,
+    `Candidate conversations: ${JSON.stringify(input.candidateConversations ?? [])}`,
     `Recent control messages: ${JSON.stringify(input.recentControlMessages)}`,
     `User message: ${JSON.stringify(input.message)}`,
-    "JSON shape: {\"kind\":\"chat|control|clarify\",\"action\":{\"type\":\"...\"},\"actions\":[{\"type\":\"...\"}],\"confidence\":0.0,\"clarification\":\"...\"}"
+    "JSON shape: {\"kind\":\"conversation|control|setup|approval|unknown\",\"action\":{\"type\":\"...\"},\"actions\":[{\"type\":\"...\"}],\"confidence\":0.0,\"risk\":\"read|low|medium|high\",\"clarification\":\"...\"}"
   ].join("\n");
 }
 
 function deterministicDecision(
-  input: Pick<IntentRouterInput, "message" | "allowedActionTypes">
+  input: Pick<IntentRouterInput, "message" | "allowedActionTypes">,
+  mode: RoutingDecision["mode"],
+  _fastOnly: boolean
 ): RoutingDecision | null {
   const raw = input.message.trim().toLowerCase();
-  const slash = slashCommandDecision(raw, input.allowedActionTypes);
+  const slash = slashCommandDecision(raw, input.allowedActionTypes, mode);
   if (slash) return slash;
+  if (mode === "off") return null;
 
   const segments = raw.split(/[，,；;。、]|以及|并且|和/)
     .map(normalizeIntentText)
     .filter(Boolean);
   const actions = segments.map(deterministicAction);
   if (actions.length === 0 || actions.some((action) => action === null)) return null;
-  const unique = [...new Map((actions as ControlAction[]).map((action) => [
+  const unique = [...new Map((actions as RouterAction[]).map((action) => [
     JSON.stringify(action),
     action
   ])).values()];
   if (unique.some((action) => !input.allowedActionTypes.includes(action.type))) return null;
   return unique.length === 1
-    ? { kind: "control", action: unique[0], confidence: 1 }
-    : { kind: "control", actions: unique, confidence: 1 };
+    ? routerActionDecision(unique[0]!, mode)
+    : { kind: "control", actions: unique, confidence: 1, risk: actionRisk(unique), mode };
 }
 
-function deterministicAction(text: string): ControlAction | null {
+function routerActionDecision(action: RouterAction, mode: RoutingDecision["mode"]): RoutingDecision {
+  if (action.type === "approval.resolve") return approvalDecision(action.resolution, mode);
+  return { kind: "control", action, confidence: 1, risk: actionRisk([action]), mode };
+}
+
+function deterministicAction(text: string): RouterAction | null {
+  const aliasSwitch = /^(?:切到|切换到|回到|使用|用)(?:会话|对话|线程|任务)?\s*(#[a-z][a-z0-9]{2,4})$/.exec(text);
+  if (aliasSwitch) {
+    return {
+      type: "conversation.switch",
+      alias: aliasSwitch[1]!.toUpperCase()
+    };
+  }
+  if (/^(?:当前我在跟|我现在在跟|当前正在跟)(?:哪个|哪一个|什么)(?:线程|任务|对话|会话)(?:说话|沟通)?$/.test(text)) {
+    return { type: "conversation.current" };
+  }
+  if (/^(?:列出|显示|查看|看看)?(?:所有|全部|可用|最近)?(?:的)?(?:会话|对话)(?:列表)?$/.test(text)) {
+    return { type: "conversation.list" };
+  }
   if (/^(?:我)?(?:现在|当前|目前)?(?:是)?(?:在|位于|所在|用的)?(?:哪个|哪一个|什么)(?:线程|任务|对话|会话)(?:中|里)?$/.test(text)
     || /^(?:现在|当前|目前)(?:的)?(?:线程|任务|对话|会话)(?:是|为)?(?:哪个|哪一个|什么)?(?:中|里)?$/.test(text)) {
     return { type: "thread.current" };
@@ -282,12 +334,16 @@ function deterministicAction(text: string): ControlAction | null {
   return null;
 }
 
-function slashCommandDecision(raw: string, allowed: string[]): RoutingDecision | null {
+function slashCommandDecision(raw: string, allowed: string[], mode: RoutingDecision["mode"]): RoutingDecision | null {
   if (!raw.startsWith("/")) return null;
   const single = (action: ControlAction): RoutingDecision => allowed.includes(action.type)
-    ? { kind: "control", action, confidence: 1 }
-    : { kind: "clarify", confidence: 1, clarification: `当前渠道不支持指令 ${raw}` };
+    ? controlDecision(action, mode)
+    : unknownDecision(mode, `当前渠道不支持指令 ${raw}`);
+  if (raw === "/approve") return approvalDecision("approve", mode);
+  if (raw === "/decline") return approvalDecision("decline", mode);
   if (raw === "/h" || raw === "/help") return single({ type: "help" });
+  if (raw === "/sessions") return singleConversation({ type: "conversation.list" }, allowed, mode);
+  if (raw === "/current") return singleConversation({ type: "conversation.current" }, allowed, mode);
   if (raw === "/t" || raw === "/threads" || raw === "/thread list") return single({ type: "thread.list" });
   if (raw === "/tc" || raw === "/thread current") return single({ type: "thread.current" });
   if (raw === "/m" || raw === "/model") return single({ type: "model.current" });
@@ -300,24 +356,86 @@ function slashCommandDecision(raw: string, allowed: string[]): RoutingDecision |
       { type: "system.status" }
     ];
     const actions = statusActions.filter((action) => allowed.includes(action.type));
-    return { kind: "control", actions, confidence: 1 };
+    return { kind: "control", actions, confidence: 1, risk: actionRisk(actions), mode };
   }
   const create = raw.match(/^(?:\/tn|\/thread\s+new)\s+(.+)$/);
   if (create) return single({ type: "thread.create", title: create[1]!.trim() });
   if (raw === "/tn" || raw === "/thread new") {
-    return { kind: "clarify", confidence: 1, clarification: "用法：`/tn <新线程标题>`" };
+    return unknownDecision(mode, "用法：`/tn <新线程标题>`");
   }
   const use = raw.match(/^(?:\/tu|\/thread\s+use)\s+(\d+)$/);
   if (use) return single({ type: "thread.switch", target: { kind: "index", index: Number(use[1]) } });
+  const conversationUse = raw.match(/^\/use\s+(#?[a-z][a-z0-9]{2,4})$/i);
+  if (conversationUse) {
+    const rawAlias = conversationUse[1]!.toUpperCase();
+    const alias = rawAlias.startsWith("#") ? rawAlias : `#${rawAlias}`;
+    return singleConversation({ type: "conversation.switch", alias }, allowed, mode);
+  }
   const fork = raw.match(/^(?:\/tf|\/thread\s+fork)\s+(.+)$/);
   if (fork) return single({ type: "thread.fork", title: fork[1]!.trim() });
   const model = raw.match(/^(?:\/mu|\/model\s+use)\s+(.+)$/);
   if (model) return single({ type: "model.switch", model: model[1]!.trim() });
   return {
-    kind: "clarify",
+    kind: "unknown",
     confidence: 1,
+    risk: "read",
+    mode,
     clarification: `未识别的桥接指令：\`${raw}\`。发送 \`/h\` 查看可用命令。`
   };
+}
+
+function singleConversation(
+  action: ConversationAction,
+  allowed: string[],
+  mode: RoutingDecision["mode"]
+): RoutingDecision {
+  return allowed.includes(action.type)
+    ? { kind: "control", action, confidence: 1, risk: action.type === "conversation.switch" ? "low" : "read", mode }
+    : unknownDecision(mode, `当前渠道不支持指令 ${action.type}`);
+}
+
+function applyConfidencePolicy(
+  decision: z.infer<typeof decisionSchema>,
+  config: VNextConfig["router"]
+): Omit<RoutingDecision, "mode"> {
+  if (["control", "setup", "approval"].includes(decision.kind)) {
+    if (decision.confidence < config.clarifyThreshold) {
+      return { kind: "conversation", confidence: decision.confidence, risk: "read", fallbackReason: "low_confidence" };
+    }
+    if (decision.confidence < config.highConfidenceThreshold) {
+      return {
+        kind: "unknown",
+        confidence: decision.confidence,
+        risk: decision.risk,
+        clarification: decision.clarification ?? "请再具体说明你想执行的操作。"
+      };
+    }
+  }
+  return decision;
+}
+
+function controlDecision(action: ControlAction, mode: RoutingDecision["mode"]): RoutingDecision {
+  return { kind: "control", action, confidence: 1, risk: actionRisk([action]), mode };
+}
+
+function approvalDecision(resolution: "approve" | "decline", mode: RoutingDecision["mode"]): RoutingDecision {
+  return { kind: "approval", action: { type: "approval.resolve", resolution }, confidence: 1, risk: "high", mode };
+}
+
+function unknownDecision(mode: RoutingDecision["mode"], clarification: string): RoutingDecision {
+  return { kind: "unknown", confidence: 1, risk: "read", mode, clarification };
+}
+
+function conversationDecision(mode: RoutingDecision["mode"], fallbackReason?: string): RoutingDecision {
+  return { kind: "conversation", confidence: 1, risk: "read", mode, ...(fallbackReason ? { fallbackReason } : {}) };
+}
+
+function actionRisk(actions: readonly RouterAction[]): RoutingDecision["risk"] {
+  if (actions.some((action) => action.type === "approval.resolve")) return "high";
+  if (actions.some((action) => action.type === "channel.restart" || action.type.startsWith("setup."))) return "medium";
+  if (actions.some((action) => action.type === "model.switch" || action.type === "turn.interrupt")) return "medium";
+  if (actions.some((action) => action.type === "thread.switch" || action.type === "thread.create" || action.type === "thread.rename" || action.type === "thread.fork" || action.type === "conversation.switch")) return "low";
+  return "read";
 }
 
 function normalizeIntentText(value: string): string {

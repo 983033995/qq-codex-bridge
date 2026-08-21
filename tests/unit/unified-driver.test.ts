@@ -58,7 +58,34 @@ describe("unified desktop driver", () => {
     expect(cdp.sendUserMessage).toHaveBeenCalledOnce();
     expect(cdp.collectAssistantReply).toHaveBeenCalledOnce();
     expect(binding.codexThreadRef).toBe("cdp-target:fallback");
-    expect(driver.getTransportStatus().active).toBe("cdp");
+    expect(driver.getTransportStatus().active).toBe("app-server");
+    driver.dispose();
+  });
+
+  it("keeps the AppServer preference for other Sessions after one Session falls back", async () => {
+    const appServer = createDriver("codex-app-thread:primary");
+    appServer.sendUserMessage = vi.fn()
+      .mockRejectedValueOnce(new DesktopDriverError("app-server unavailable", "app_not_ready"))
+      .mockResolvedValueOnce(undefined);
+    const cdp = createDriver("cdp-target:fallback");
+    const driver = new UnifiedDesktopDriver({
+      appServer,
+      cdp,
+      transport: "auto",
+      probeIntervalMs: 0
+    });
+
+    const firstBinding = await driver.openOrBindSession(message.sessionKey, null);
+    await driver.sendUserMessage(firstBinding, message);
+    await driver.collectAssistantReply(firstBinding);
+
+    const secondMessage = { ...message, messageId: "message-2", sessionKey: "session-2" };
+    const secondBinding = await driver.openOrBindSession(secondMessage.sessionKey, null);
+    await driver.sendUserMessage(secondBinding, secondMessage);
+
+    expect(appServer.sendUserMessage).toHaveBeenCalledTimes(2);
+    expect(cdp.sendUserMessage).toHaveBeenCalledOnce();
+    expect(driver.getTransportStatus().active).toBe("app-server");
     driver.dispose();
   });
 

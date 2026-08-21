@@ -19,14 +19,21 @@ import {
   type Attachment,
   type InboundEnvelope,
   type MessageContent,
-  type StableErrorCode
+  type StableErrorCode,
+  type SourceIdentity
 } from "../../../packages/domain/src/vnext/index.js";
 import type {
   Clock,
   ConversationSpaceRepository,
   DeliveryRepository,
-  IdGenerator
+  IdGenerator,
+  MessageLedger,
+  TurnRepository
 } from "../../../packages/ports/src/vnext/index.js";
+import {
+  stripConversationAlias,
+  type ConversationResolver
+} from "../../../packages/application/src/index.js";
 
 export type WeixinMessageRuntimeResult = {
   duplicate: boolean;
@@ -41,13 +48,14 @@ export type ChannelInboundTextMessage = {
   chatType: "c2c" | "group";
   senderId: string;
   text: string;
+  replyToMessageId?: string;
   attachments: Attachment[];
   sequence: number;
   receivedAt: string;
 };
 
 export class WeixinMessageRuntime {
-  private readonly channel: "weixin" | "feishu";
+  private readonly channel: "weixin" | "feishu" | "qq";
   private readonly maxDeliveryAttempts: number;
   private readonly retryBaseDelayMs: number;
   private readonly retryMaxDelayMs: number;
@@ -60,11 +68,14 @@ export class WeixinMessageRuntime {
 
   constructor(private readonly deps: {
     spaces: ConversationSpaceRepository;
+    messages: MessageLedger;
+    turns: TurnRepository;
     deliveries: DeliveryRepository;
     receive: Pick<ReceiveInboundMessage, "execute">;
     bind: Pick<BindConversationSpace, "execute">;
     startTurn: Pick<StartConversationTurn, "execute">;
     route?: Pick<RouteInboundMessage, "execute">;
+    conversationResolver?: ConversationResolver;
     worker: { deliver(input: {
       deliveryKey: string;
       accountId: string;
@@ -73,6 +84,7 @@ export class WeixinMessageRuntime {
       text: string;
       format?: "plain" | "markdown";
       attachments?: Attachment[];
+      replyToProviderMessageId?: string;
     }): Promise<string | null> };
     ids: IdGenerator;
     clock: Clock;
@@ -88,7 +100,7 @@ export class WeixinMessageRuntime {
       heartbeatIntervalMs?: number;
       maxUpdates?: number;
     };
-    channel?: "weixin" | "feishu";
+    channel?: "weixin" | "feishu" | "qq";
   }) {
     this.channel = deps.channel ?? "weixin";
     this.maxDeliveryAttempts = positiveInteger(deps.retry?.maxAttempts ?? 3, "retry.maxAttempts");
@@ -100,6 +112,7 @@ export class WeixinMessageRuntime {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    await this.recoverCompletedTurns();
     await this.recoverDeliveries();
   }
 
@@ -131,6 +144,30 @@ export class WeixinMessageRuntime {
     void this.processInbound(received.space, received.message).catch((error) => {
       this.deps.onProcessingError?.(normalizeError(error), received.message);
     });
+  }
+
+  async deliverNotice(input: {
+    spaceId: ConversationSpace["spaceId"];
+    deliveryKey: string;
+    text: string;
+    format?: "plain" | "markdown";
+    source?: SourceIdentity;
+  }): Promise<Delivery> {
+    const space = await this.deps.spaces.get(input.spaceId);
+    if (!space || space.channel !== this.channel) {
+      throw new Error(`${this.channel} conversation space '${input.spaceId}' is unavailable`);
+    }
+    return this.deliverPersistentContent(
+      space,
+      input.deliveryKey,
+      {
+        text: input.text,
+        mentions: [],
+        attachments: [],
+        format: input.format ?? "plain",
+        ...(input.source ? { source: input.source } : {})
+      }
+    );
   }
 
   private async persistInbound(input: WeixinInboundTextMessage | ChannelInboundTextMessage): Promise<{
@@ -166,6 +203,33 @@ export class WeixinMessageRuntime {
       receivedAt: input.receivedAt,
       content: { text: input.text, mentions: [], attachments: input.attachments }
     };
+    const replyToMessageId = "replyToMessageId" in input ? input.replyToMessageId : undefined;
+    if (replyToMessageId) {
+      message.content.replyToProviderMessageId = replyToMessageId;
+    }
+    const registry = this.deps.conversationResolver;
+    if (registry && !(await registry.getMessageByChannelMessage({
+      channel: this.channel,
+      channelAccountId: accountId,
+      peerId: input.peerId,
+      channelMessageId: input.providerMessageId
+    }))) {
+      await registry.recordMessage({
+        registryId: this.deps.ids.next(),
+        channel: this.channel,
+        channelAccountId: accountId,
+        peerId: input.peerId,
+        channelMessageId: input.providerMessageId,
+        gatewayMessageId: message.messageId,
+        provider: "user",
+        sourceConversationId: null,
+        sourceAlias: null,
+        taskId: null,
+        capability: "system",
+        direction: "inbound",
+        createdAt: input.receivedAt
+      });
+    }
     const received = await this.deps.receive.execute({ space, message });
     const deliveryKey = `${received.message.messageId}:assistant-final`;
     if (!received.accepted) {
@@ -193,15 +257,47 @@ export class WeixinMessageRuntime {
     message: InboundEnvelope
   ): Promise<WeixinMessageRuntimeResult> {
     const { spaceId } = space;
-    const route = await this.deps.route?.execute(space, message) ?? { kind: "chat" as const };
+    const route = await this.deps.route?.execute(space, message) ?? { kind: "conversation" as const };
     if (route.kind === "reply") {
-      return this.deliverFinalReply(space, message, route.text, [], route.format);
+      return this.deliverFinalReply(
+        space,
+        message,
+        route.text,
+        [],
+        route.format,
+        route.source
+      );
     }
 
-    const progress = await this.startProgress(space, message);
+    const routeTarget = route.target?.binding;
+    const binding = routeTarget ?? await this.deps.bind.execute({ spaceId });
+    if (!routeTarget) {
+      await this.deps.conversationResolver?.setActiveForBinding({
+        space,
+        binding,
+        updatedBy: "explicit_switch"
+      });
+    }
+    const source = route.target?.source ?? await this.deps.conversationResolver?.sourceForBinding(binding);
+    const progress = await this.startProgress(space, message, source);
     try {
-      await this.deps.bind.execute({ spaceId });
-      const turn = await this.deps.startTurn.execute(message);
+      const explicitAlias = route.target?.matchedBy === "explicit_alias"
+        ? route.target.alias
+        : undefined;
+      const strippedText = explicitAlias
+        ? stripConversationAlias(message.content.text, explicitAlias)
+        : message.content.text;
+      const turnMessage = strippedText !== message.content.text
+        ? {
+            ...message,
+            content: {
+              ...message.content,
+              text: strippedText
+            }
+          }
+        : message;
+      const turn = await this.deps.startTurn.execute(turnMessage, binding, source);
+      const turnSource = source ?? await this.deps.conversationResolver?.sourceForBinding(turn.binding);
       const outboundMedia = await resolveOutboundAttachments(turn.result.mediaReferences);
       const text = [
         turn.result.finalText.trim(),
@@ -212,7 +308,7 @@ export class WeixinMessageRuntime {
       if (!text && outboundMedia.attachments.length === 0) {
         throw new Error("Codex turn completed without a deliverable reply");
       }
-      return this.deliverFinalReply(space, message, text, outboundMedia.attachments);
+      return this.deliverFinalReply(space, message, text, outboundMedia.attachments, undefined, turnSource);
     } finally {
       progress.stop();
     }
@@ -223,9 +319,32 @@ export class WeixinMessageRuntime {
     message: InboundEnvelope,
     text: string,
     attachments: Attachment[],
-    format: "plain" | "markdown" = "plain"
+    format: "plain" | "markdown" = "plain",
+    source?: import("../../../packages/domain/src/vnext/index.js").SourceIdentity
   ): Promise<WeixinMessageRuntimeResult> {
     const deliveryKey = `${message.messageId}:assistant-final`;
+    const content: MessageContent = {
+      text,
+      mentions: [],
+      attachments,
+      format,
+      replyToProviderMessageId: message.providerMessageId,
+      ...(source ? { source } : {})
+    };
+    const delivery = await this.deliverPersistentContent(space, deliveryKey, content);
+    return { duplicate: false, message, delivery };
+  }
+
+  private async deliverPersistentContent(
+    space: ConversationSpace,
+    deliveryKey: string,
+    content: MessageContent
+  ): Promise<Delivery> {
+    const existing = await this.deps.deliveries.findByKey(deliveryKey);
+    if (existing) {
+      if (existing.status === "delivered" || existing.status === "failed") return existing;
+      return this.attemptDelivery(existing, content, space);
+    }
     const createdAt = this.deps.clock.now().toISOString();
     let delivery: Delivery = {
       deliveryId: this.deps.ids.next(),
@@ -239,15 +358,51 @@ export class WeixinMessageRuntime {
       createdAt,
       updatedAt: createdAt
     };
-    const content: MessageContent = { text, mentions: [], attachments, format };
     await this.deps.deliveries.save(delivery, content);
     delivery = await this.attemptDelivery(delivery, content, space);
-    return { duplicate: false, message, delivery };
+    return delivery;
+  }
+
+  private async recoverCompletedTurns(): Promise<void> {
+    const turns = await this.deps.turns.listCompleted();
+    for (const turn of turns) {
+      if (!turn.result) continue;
+      const space = await this.deps.spaces.get(turn.spaceId);
+      if (!space || space.channel !== this.channel) continue;
+      const message = await this.deps.messages.getById(turn.inboundMessageId);
+      if (!message) continue;
+
+      const deliveryKey = `${message.messageId}:assistant-final`;
+      if (await this.deps.deliveries.findByKey(deliveryKey)) continue;
+
+      const outboundMedia = await resolveOutboundAttachments(turn.result.mediaReferences);
+      const text = [
+        turn.result.finalText.trim(),
+        outboundMedia.rejected > 0
+          ? `[有 ${outboundMedia.rejected} 个媒体附件未发送：仅支持本机 25 MiB 以内的有效文件]`
+          : ""
+      ].filter(Boolean).join("\n");
+      if (!text && outboundMedia.attachments.length === 0) continue;
+
+      try {
+        await this.deliverPersistentContent(space, deliveryKey, {
+          text,
+          mentions: [],
+          attachments: outboundMedia.attachments,
+          format: "plain",
+          replyToProviderMessageId: message.providerMessageId,
+          ...(turn.result.source ? { source: turn.result.source } : {})
+        });
+      } catch (error) {
+        this.deps.onProcessingError?.(normalizeError(error), message);
+      }
+    }
   }
 
   private async startProgress(
     space: ConversationSpace,
-    message: InboundEnvelope
+    message: InboundEnvelope,
+    source?: SourceIdentity
   ): Promise<{ stop(): void }> {
     if (!this.deps.progress) return { stop() {} };
     const heartbeatIntervalMs = positiveInteger(
@@ -257,7 +412,7 @@ export class WeixinMessageRuntime {
     const maxUpdates = positiveInteger(this.deps.progress.maxUpdates ?? 60, "progress.maxUpdates");
     const startedAt = Date.now();
     let update = 1;
-    await this.sendProgress(space, message, update, "已收到任务，正在交给 Codex 处理。");
+    await this.sendProgress(space, message, update, "已收到任务，正在交给 Codex 处理。", source);
     const timer = setInterval(() => {
       if (update >= maxUpdates) {
         clearInterval(timer);
@@ -269,7 +424,8 @@ export class WeixinMessageRuntime {
         space,
         message,
         update,
-        `任务仍在处理中，已运行约 ${elapsedMinutes} 分钟。完成后会自动发送最终结果。`
+        `任务仍在处理中，已运行约 ${elapsedMinutes} 分钟。完成后会自动发送最终结果。`,
+        source
       );
     }, heartbeatIntervalMs);
     timer.unref();
@@ -280,15 +436,25 @@ export class WeixinMessageRuntime {
     space: ConversationSpace,
     message: InboundEnvelope,
     update: number,
-    text: string
+    text: string,
+    source?: SourceIdentity
   ): Promise<void> {
     try {
+      const outboundContent = formatSourceContent({
+        text,
+        mentions: [],
+        attachments: [],
+        format: "plain",
+        replyToProviderMessageId: message.providerMessageId,
+        ...(source ? { source } : {})
+      });
       await this.deps.worker.deliver({
         deliveryKey: `${message.messageId}:progress:${update}`,
         accountId: space.accountId,
         peerId: space.providerConversationId,
         chatType: space.scope,
-        text
+        text: outboundContent.text,
+        replyToProviderMessageId: message.providerMessageId
       });
     } catch (error) {
       this.deps.onProgressError?.(normalizeError(error), message);
@@ -346,17 +512,38 @@ export class WeixinMessageRuntime {
       await this.deps.deliveries.save(delivery);
     }
     try {
+      const outboundContent = formatSourceContent(content);
       const providerMessageId = await this.deps.worker.deliver({
         deliveryKey: delivery.deliveryKey,
         accountId: space.accountId,
         peerId: space.providerConversationId,
         chatType: space.scope,
-        text: content.text,
-        ...(this.channel === "feishu" && content.format ? { format: content.format } : {}),
-        ...(content.attachments.length > 0
-          ? { attachments: content.attachments }
+        text: outboundContent.text,
+        ...(content.replyToProviderMessageId
+          ? { replyToProviderMessageId: content.replyToProviderMessageId }
+          : {}),
+        ...(this.channel === "feishu" && outboundContent.format ? { format: outboundContent.format } : {}),
+        ...(outboundContent.attachments.length > 0
+          ? { attachments: outboundContent.attachments }
           : {})
       });
+      if (providerMessageId && content.source && this.deps.conversationResolver) {
+        await this.deps.conversationResolver.recordMessage({
+          registryId: this.deps.ids.next(),
+          channel: this.channel,
+          channelAccountId: space.accountId,
+          peerId: space.providerConversationId,
+          channelMessageId: providerMessageId,
+          gatewayMessageId: delivery.deliveryId,
+          provider: content.source.provider,
+          sourceConversationId: content.source.conversationId ?? null,
+          sourceAlias: content.source.conversationAlias ?? null,
+          taskId: content.source.taskId ?? null,
+          capability: content.source.capability,
+          direction: "outbound",
+          createdAt: delivery.updatedAt
+        });
+      }
       delivery = transitionDelivery(delivery, "delivered", {
         at: this.deps.clock.now().toISOString(),
         providerMessageId: providerMessageId ?? delivery.deliveryKey
@@ -417,7 +604,50 @@ export class WeixinMessageRuntime {
   }
 }
 
-function stableMessageId(channel: "weixin" | "feishu", accountId: string, providerMessageId: string): string {
+export function formatSourceContent(content: MessageContent): MessageContent {
+  const source = content.source;
+  if (!source) return content;
+
+  const title = source.taskTitle ?? source.projectName ?? null;
+  const provider = source.provider === "codex"
+    ? "Codex"
+    : source.provider === "claude"
+      ? "Claude"
+      : source.provider === "opencode"
+        ? "OpenCode"
+        : source.provider === "system"
+          ? "OmniAgent"
+          : source.provider;
+  const alias = source.conversationAlias ?? null;
+  const body = content.text.trim();
+
+  if (source.provider === "system" && body.startsWith("【OmniAgent ·")) {
+    return content;
+  }
+
+  if (body.startsWith("【OmniAgent · Approval】")) {
+    const context = [
+      source.provider === "system" ? null : `${provider}${title ? ` · ${title}` : ""}`,
+      alias ? `(${alias})` : null
+    ].filter(Boolean).join(" ");
+    if (!context || body.includes(context)) return content;
+    const lines = body.split("\n");
+    lines.splice(1, 0, context);
+    return { ...content, text: lines.join("\n") };
+  }
+
+  const header = `【${provider}${title ? ` · ${title}` : ""}】`;
+  return {
+    ...content,
+    text: [header, body, alias].filter(Boolean).join("\n\n")
+  };
+}
+
+function systemSource(): SourceIdentity {
+  return { provider: "system", capability: "system" };
+}
+
+function stableMessageId(channel: "weixin" | "feishu" | "qq", accountId: string, providerMessageId: string): string {
   return `${channel}-${createHash("sha256").update(accountId).update("\0").update(providerMessageId).digest("hex")}`;
 }
 

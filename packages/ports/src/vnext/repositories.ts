@@ -1,4 +1,7 @@
 import type {
+  ActiveConversation,
+  ChannelMessageRegistryEntry,
+  ConversationAlias,
   ConversationSpace,
   ConversationSpaceId,
   Delivery,
@@ -27,7 +30,47 @@ export interface ThreadBindingRepository {
   detach(bindingId: string, updatedAt: string): Promise<boolean>;
 }
 
+export type ConversationAliasSourceInput = {
+  provider: string;
+  instanceId?: string | null;
+  sourceConversationId: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  taskId?: string | null;
+  taskTitle?: string | null;
+  capability: ConversationAlias["capability"];
+};
+
+export interface ConversationAliasRepository {
+  get(alias: string): Promise<ConversationAlias | null>;
+  findBySource(input: {
+    provider: string;
+    sourceConversationId: string;
+  }): Promise<ConversationAlias | null>;
+  save(alias: ConversationAlias): Promise<void>;
+}
+
+export type ChannelMessageScope = {
+  channel: ConversationSpace["channel"];
+  channelAccountId: ConversationSpace["accountId"];
+  peerId: string;
+};
+
+export interface ChannelMessageRegistryRepository {
+  getByChannelMessage(input: ChannelMessageScope & {
+    channelMessageId: string;
+  }): Promise<ChannelMessageRegistryEntry | null>;
+  listByScope(input: ChannelMessageScope & { limit: number }): Promise<ChannelMessageRegistryEntry[]>;
+  save(entry: ChannelMessageRegistryEntry): Promise<void>;
+}
+
+export interface ActiveConversationRepository {
+  get(input: ChannelMessageScope): Promise<ActiveConversation | null>;
+  save(active: ActiveConversation): Promise<void>;
+}
+
 export interface MessageLedger {
+  getById(messageId: string): Promise<InboundEnvelope | null>;
   findByDedupeKey(dedupeKey: string): Promise<InboundEnvelope | null>;
   appendInbound(message: InboundEnvelope, dedupeKey: string): Promise<boolean>;
   listBySpace(input: {
@@ -42,6 +85,7 @@ export interface TurnRepository {
   save(turn: Turn): Promise<void>;
   listActiveByThread(threadId: string): Promise<Turn[]>;
   listRecoverable(): Promise<Turn[]>;
+  listCompleted(): Promise<Turn[]>;
 }
 
 export type RoutingDecisionRecord = {

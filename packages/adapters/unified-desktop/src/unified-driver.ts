@@ -126,7 +126,7 @@ implements DesktopDriverPort, DesktopTransportStatusPort {
     } catch (error) {
       this.releaseCdpTurn(sessionKey);
       if (transport === "app-server" && this.configured === "auto") {
-        return this.openWithCdpFallback(sessionKey, binding, error);
+        return this.openWithCdpFallback(sessionKey, binding);
       }
       throw error;
     }
@@ -197,8 +197,7 @@ implements DesktopDriverPort, DesktopTransportStatusPort {
 
       const fallbackBinding = await this.openWithCdpFallback(
         binding.sessionKey,
-        binding,
-        error
+        binding
       );
       const fallbackState = this.sessionState.get(binding.sessionKey)!;
       binding.codexThreadRef = fallbackBinding.codexThreadRef;
@@ -276,8 +275,7 @@ implements DesktopDriverPort, DesktopTransportStatusPort {
 
   private async openWithCdpFallback(
     sessionKey: string,
-    binding: DriverBinding | null,
-    primaryError: unknown
+    binding: DriverBinding | null
   ): Promise<DriverBinding> {
     await this.acquireCdpTurn(sessionKey);
     try {
@@ -291,10 +289,6 @@ implements DesktopDriverPort, DesktopTransportStatusPort {
         binding: fallbackBinding,
         messageAccepted: false
       });
-      await this.setActive(
-        "cdp",
-        primaryError instanceof Error ? primaryError.message : String(primaryError)
-      );
       return fallbackBinding;
     } catch (fallbackError) {
       this.releaseCdpTurn(sessionKey);

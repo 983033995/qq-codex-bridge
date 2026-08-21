@@ -14,6 +14,20 @@ export type PushMediaInput = {
   path: string;
 };
 
+export type PushSourceMetadata = {
+  provider: string;
+  instanceId?: string;
+  conversationId?: string;
+  conversationAlias?: string;
+  projectId?: string;
+  projectName?: string;
+  taskId?: string;
+  taskTitle?: string;
+  capability?: "interactive" | "push_only" | "system";
+};
+
+export type PushSource = string | PushSourceMetadata;
+
 export type PushPayload = {
   message: {
     text: string;
@@ -21,7 +35,7 @@ export type PushPayload = {
     media: PushMediaInput[];
   };
   metadata: {
-    source?: string;
+    source?: PushSource;
     taskId?: string;
     priority?: "normal" | "urgent";
     [key: string]: unknown;
@@ -71,6 +85,22 @@ export interface PushEgressPort {
     resolvedMediaPaths: string[];
   }): Promise<PushEgressResult>;
 }
+
+export type PushSourceRoutingPort = {
+  resolve(input: {
+    source: import("../../domain/src/vnext/models.js").SourceIdentity;
+    sourceConversationId: string;
+    pushId: string;
+    target: PushTarget;
+  }): Promise<import("../../domain/src/vnext/models.js").SourceIdentity>;
+  record(input: {
+    source: import("../../domain/src/vnext/models.js").SourceIdentity;
+    pushId: string;
+    target: PushTarget;
+    providerMessageId: string;
+    createdAt: string;
+  }): Promise<void>;
+};
 
 export interface PushRepositoryPort {
   enqueue(input: {

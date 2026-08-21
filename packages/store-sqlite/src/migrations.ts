@@ -198,5 +198,165 @@ export const schemaMigrations: readonly SchemaMigration[] = [
       CREATE INDEX idx_deliveries_recovery
         ON deliveries(status, next_attempt_at, updated_at, delivery_id);
     `
+  },
+  {
+    version: 4,
+    name: "persistent_channel_setup",
+    sql: `
+      CREATE TABLE setup_sessions (
+        setup_id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL CHECK (channel IN ('qq', 'weixin', 'feishu')),
+        account_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN (
+          'awaiting_input', 'requesting_qr', 'awaiting_scan', 'awaiting_confirmation',
+          'restart_required', 'connected', 'action_required', 'failed', 'cancelled'
+        )),
+        message TEXT NOT NULL,
+        artifact_json TEXT CHECK (artifact_json IS NULL OR json_valid(artifact_json)),
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX idx_setup_sessions_account
+        ON setup_sessions(channel, account_id, updated_at DESC, setup_id DESC);
+    `
+  },
+  {
+    version: 5,
+    name: "v03_inbound_router_decisions",
+    sql: `
+      ALTER TABLE router_decisions RENAME TO router_decisions_v2;
+      CREATE TABLE router_decisions (
+        decision_id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL REFERENCES conversation_spaces(space_id),
+        message_id TEXT NOT NULL REFERENCES messages(message_id),
+        kind TEXT NOT NULL CHECK (kind IN ('conversation', 'control', 'setup', 'approval', 'unknown')),
+        action_json TEXT CHECK (action_json IS NULL OR json_valid(action_json)),
+        confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+        risk TEXT NOT NULL CHECK (risk IN ('read', 'low', 'medium', 'high')),
+        mode TEXT NOT NULL CHECK (mode IN ('off', 'assist', 'auto')),
+        clarification TEXT,
+        provider_request_id TEXT,
+        fallback_reason TEXT,
+        confirmation_status TEXT NOT NULL,
+        latency_ms INTEGER NOT NULL CHECK (latency_ms >= 0),
+        result TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO router_decisions (
+        decision_id, space_id, message_id, kind, action_json, confidence,
+        risk, mode, clarification, provider_request_id, fallback_reason,
+        confirmation_status, latency_ms, result, created_at
+      )
+      SELECT
+        decision_id, space_id, message_id,
+        CASE kind WHEN 'chat' THEN 'conversation' WHEN 'clarify' THEN 'unknown' ELSE kind END,
+        action_json, confidence,
+        CASE WHEN kind = 'control' THEN 'low' ELSE 'read' END,
+        'assist', clarification, provider_request_id, NULL,
+        confirmation_status, latency_ms, result, created_at
+      FROM router_decisions_v2;
+      DROP TABLE router_decisions_v2;
+      CREATE INDEX idx_router_decisions_cursor
+        ON router_decisions(created_at, decision_id);
+    `
+  },
+  {
+    version: 6,
+    name: "persistent_appserver_approvals",
+    sql: `
+      CREATE TABLE approval_requests (
+        approval_id TEXT PRIMARY KEY,
+        request_key TEXT NOT NULL UNIQUE,
+        appserver_request_id_json TEXT NOT NULL CHECK (json_valid(appserver_request_id_json)),
+        kind TEXT NOT NULL CHECK (kind IN ('command_execution', 'file_change')),
+        method TEXT NOT NULL CHECK (method IN (
+          'item/commandExecution/requestApproval',
+          'item/fileChange/requestApproval'
+        )),
+        thread_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        reason TEXT,
+        command TEXT,
+        cwd TEXT,
+        grant_root TEXT,
+        params_json TEXT NOT NULL CHECK (json_valid(params_json)),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'approved', 'declined', 'cancelled')),
+        resolution TEXT CHECK (resolution IS NULL OR resolution IN ('approve', 'decline')),
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resolved_at TEXT
+      ) STRICT;
+      CREATE INDEX idx_approval_requests_pending
+        ON approval_requests(status, created_at, approval_id);
+      CREATE INDEX idx_approval_requests_thread
+        ON approval_requests(thread_id, status, created_at, approval_id);
+    `
+  },
+  {
+    version: 7,
+    name: "source_reply_routing_p0",
+    sql: `
+      CREATE TABLE conversation_aliases (
+        alias TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        instance_id TEXT,
+        source_conversation_id TEXT NOT NULL,
+        project_id TEXT,
+        project_name TEXT,
+        task_id TEXT,
+        task_title TEXT,
+        capability TEXT NOT NULL CHECK (capability IN ('interactive', 'push_only', 'system')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(provider, source_conversation_id)
+      ) STRICT;
+      CREATE INDEX idx_conversation_aliases_updated
+        ON conversation_aliases(updated_at DESC, alias);
+
+      CREATE TABLE channel_message_registry (
+        registry_id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL CHECK (channel IN ('weixin', 'feishu', 'qq')),
+        channel_account_id TEXT NOT NULL,
+        peer_id TEXT NOT NULL,
+        channel_message_id TEXT NOT NULL,
+        gateway_message_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        source_conversation_id TEXT,
+        source_alias TEXT REFERENCES conversation_aliases(alias),
+        task_id TEXT,
+        capability TEXT NOT NULL CHECK (capability IN ('interactive', 'push_only', 'system')),
+        direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound', 'system')),
+        created_at TEXT NOT NULL,
+        UNIQUE(channel, channel_account_id, peer_id, channel_message_id)
+      ) STRICT;
+      CREATE INDEX idx_channel_message_registry_scope
+        ON channel_message_registry(channel, channel_account_id, peer_id, created_at DESC);
+      CREATE INDEX idx_channel_message_registry_alias
+        ON channel_message_registry(channel, channel_account_id, peer_id, source_alias, created_at DESC);
+
+      CREATE TABLE active_conversations (
+        channel TEXT NOT NULL CHECK (channel IN ('weixin', 'feishu', 'qq')),
+        channel_account_id TEXT NOT NULL,
+        peer_id TEXT NOT NULL,
+        conversation_alias TEXT NOT NULL REFERENCES conversation_aliases(alias),
+        source_conversation_id TEXT NOT NULL,
+        updated_by TEXT NOT NULL CHECK (updated_by IN ('explicit_switch', 'reply_reference', 'admin')),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(channel, channel_account_id, peer_id)
+      ) STRICT;
+      CREATE INDEX idx_active_conversations_updated
+        ON active_conversations(updated_at DESC);
+    `
+  },
+  {
+    version: 8,
+    name: "turn_result_checkpoint",
+    sql: `
+      ALTER TABLE turns ADD COLUMN result_json TEXT
+        CHECK (result_json IS NULL OR json_valid(result_json));
+    `
   }
 ];

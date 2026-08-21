@@ -132,8 +132,17 @@ export function normalizeFeishuInbound(
     chatType,
     senderId,
     text,
+    ...replyToMessageId(event.message),
     receivedAt: normalizeFeishuTime(event.message.create_time)
   };
+}
+
+function replyToMessageId(message: {
+  parent_id?: string;
+  root_id?: string;
+}): { replyToMessageId: string } | Record<string, never> {
+  const id = message.parent_id?.trim() || message.root_id?.trim();
+  return id ? { replyToMessageId: id } : {};
 }
 
 function extractFeishuText(messageType: string, content: string): string {

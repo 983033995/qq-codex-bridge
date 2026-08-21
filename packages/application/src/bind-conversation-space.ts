@@ -22,9 +22,17 @@ export class BindConversationSpace {
     codex: CodexPort;
     ids: IdGenerator;
     clock: Clock;
+    conversationResolver?: {
+      ensureForBinding(input: { binding: ThreadBinding }): Promise<unknown>;
+    };
   }) {
     this.coordinator = new ThreadCoordinator(deps);
+    this.conversationResolver = deps.conversationResolver;
   }
+
+  private readonly conversationResolver?: {
+    ensureForBinding(input: { binding: ThreadBinding }): Promise<unknown>;
+  };
 
   async execute(input: {
     spaceId: ConversationSpaceId;
@@ -37,22 +45,28 @@ export class BindConversationSpace {
     const createRequested = !input.thread
       && (input.replaceActive === true || normalizedTitle(input.title) !== null);
     if (active && !input.thread && !createRequested) {
-      return this.coordinator.ensureDefaultBinding(input.spaceId);
+      const binding = await this.coordinator.ensureDefaultBinding(input.spaceId);
+      await this.conversationResolver?.ensureForBinding({ binding });
+      return binding;
     }
     if (input.thread) {
-      return this.coordinator.bindThread({
+      const binding = await this.coordinator.bindThread({
         spaceId: input.spaceId,
         thread: input.thread,
         mode: input.mode,
         replaceActive: input.replaceActive
       });
+      await this.conversationResolver?.ensureForBinding({ binding });
+      return binding;
     }
-    return this.coordinator.createAndBind({
+    const binding = await this.coordinator.createAndBind({
       spaceId: input.spaceId,
       title: input.title,
       mode: input.mode,
       replaceActive: input.replaceActive
     });
+    await this.conversationResolver?.ensureForBinding({ binding });
+    return binding;
   }
 
   renameBoundThread(spaceId: ConversationSpaceId, title: string): Promise<ThreadBinding> {

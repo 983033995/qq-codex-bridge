@@ -11,6 +11,8 @@ export type FeishuMessageEvent = {
     chat_type: string;
     message_type: string;
     content: string;
+    parent_id?: string;
+    root_id?: string;
   };
 };
 

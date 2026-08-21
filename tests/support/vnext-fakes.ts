@@ -125,6 +125,10 @@ export class MemoryMessageLedger implements MessageLedger {
   private readonly byDedupe = new Map<string, InboundEnvelope>();
   private readonly byId = new Map<string, InboundEnvelope>();
 
+  async getById(messageId: string): Promise<InboundEnvelope | null> {
+    return this.byId.get(messageId) ?? null;
+  }
+
   async findByDedupeKey(dedupeKey: string): Promise<InboundEnvelope | null> {
     return this.byDedupe.get(dedupeKey) ?? null;
   }
@@ -197,6 +201,10 @@ export class MemoryTurnRepository implements TurnRepository {
     );
   }
 
+  async listCompleted(): Promise<Turn[]> {
+    return [...this.values.values()].filter((turn) => turn.status === "completed");
+  }
+
   waitForStatus(turnId: string, status: Turn["status"]): Promise<Turn> {
     const current = this.values.get(turnId);
     if (current?.status === status) {
@@ -239,7 +247,7 @@ export class MemoryDeliveryRepository implements DeliveryRepository {
 
   async listRecoverable(input: { limit: number }) {
     return [...this.values.values()]
-      .filter((delivery) => delivery.status === "sending" || delivery.status === "retry_wait")
+      .filter((delivery) => ["pending", "sending", "retry_wait"].includes(delivery.status))
       .sort((left, right) => (left.nextAttemptAt ?? left.updatedAt).localeCompare(right.nextAttemptAt ?? right.updatedAt))
       .slice(0, input.limit)
       .map((delivery) => ({

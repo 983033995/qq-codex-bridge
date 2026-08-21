@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BindConversationSpace,
   ReceiveInboundMessage,
@@ -51,6 +51,37 @@ describe("vNext Weixin message runtime", () => {
       message: { spaceId: "feishu:default::c2c:peer-1" },
       delivery: { status: "delivered", providerMessageId: "sent:peer-1" }
     });
+  });
+
+  it("uses the same routed pipeline for QQ and preserves provider reply context", async () => {
+    const fixture = createFixture();
+    const deliveries: Array<{ replyToProviderMessageId?: string; text: string }> = [];
+    const runtime = fixture.runtime({
+      async deliver(input) {
+        deliveries.push(input);
+        return `qq-sent:${input.peerId}`;
+      }
+    }, undefined, "qq", {
+      route: {
+        async execute() {
+          return { kind: "reply" as const, text: "QQ 控制回复" };
+        }
+      }
+    });
+
+    await expect(runtime.handle({
+      ...inbound("qq-provider-1"),
+      accountId: "qq:default",
+      attachments: []
+    })).resolves.toMatchObject({
+      message: { spaceId: "qq:default::c2c:peer-1" },
+      delivery: { status: "delivered", providerMessageId: "qq-sent:peer-1" }
+    });
+    expect(fixture.codex.starts).toHaveLength(0);
+    expect(deliveries).toEqual([expect.objectContaining({
+      text: "QQ 控制回复",
+      replyToProviderMessageId: "qq-provider-1"
+    })]);
   });
 
   it("persists, deduplicates, binds, runs Codex, and delivers one stable reply", async () => {
@@ -111,6 +142,56 @@ describe("vNext Weixin message runtime", () => {
     });
     expect(fixture.codex.starts).toHaveLength(1);
     expect(deliveries).toHaveLength(1);
+  });
+
+  it("rebuilds a missing final Delivery from the completed Turn checkpoint after restart", async () => {
+    const fixture = createFixture();
+    const sent: string[] = [];
+    const runtime = fixture.runtime({
+      async deliver(input) {
+        sent.push(input.deliveryKey);
+        return input.deliveryKey;
+      }
+    });
+    const originalSave = fixture.deliveries.save.bind(fixture.deliveries);
+    const save = vi.spyOn(fixture.deliveries, "save").mockImplementation(async (delivery, content) => {
+      if (delivery.status === "pending" && delivery.deliveryKey.endsWith(":assistant-final")) {
+        throw new Error("simulated runtime crash before final Delivery checkpoint");
+      }
+      return originalSave(delivery, content);
+    });
+
+    const execution = runtime.handle(inbound("provider-checkpoint-crash"));
+    await fixture.codex.waitForStartCount(1);
+    fixture.codex.complete(fixture.codex.starts[0]!.handle.turnId, "checkpointed reply");
+    await expect(execution).rejects.toThrow("simulated runtime crash");
+    save.mockRestore();
+
+    const message = (await fixture.messages.listBySpace({
+      spaceId: "weixin:personal::c2c:peer-1" as never,
+      limit: 10
+    })).items[0]!;
+    const turn = await fixture.turns.get(fixture.codex.starts[0]!.handle.turnId);
+    expect(turn).toMatchObject({
+      status: "completed",
+      result: { finalText: "checkpointed reply", mediaReferences: [] }
+    });
+    expect(await fixture.deliveries.findByKey(`${message.messageId}:assistant-final`)).toBeNull();
+
+    const restarted = fixture.runtime({
+      async deliver(input) {
+        sent.push(input.deliveryKey);
+        return input.deliveryKey;
+      }
+    });
+    await restarted.start();
+    expect(await fixture.deliveries.findByKey(`${message.messageId}:assistant-final`)).toMatchObject({
+      status: "delivered",
+      providerMessageId: expect.stringContaining(":assistant-final")
+    });
+    await restarted.recoverDeliveries();
+    expect(sent).toEqual([`${message.messageId}:assistant-final`]);
+    await restarted.stop();
   });
 
   it("delivers a routed control reply without starting a Codex turn", async () => {
@@ -340,6 +421,7 @@ function createFixture() {
     spaces,
     bindings,
     messages,
+    turns,
     deliveries,
     clock,
     codex,
@@ -357,13 +439,14 @@ function createFixture() {
         size: number;
         name?: string;
       }>;
+      replyToProviderMessageId?: string;
     }): Promise<string | null> }, retry?: {
       maxAttempts?: number;
       baseDelayMs?: number;
       maxDelayMs?: number;
-    }, channel: "weixin" | "feishu" = "weixin", options?: {
+    }, channel: "weixin" | "feishu" | "qq" = "weixin", options?: {
       route?: { execute(space: unknown, message: unknown): Promise<
-        { kind: "chat" } | { kind: "reply"; text: string }
+        { kind: "conversation" } | { kind: "reply"; text: string }
       > };
       progress?: { heartbeatIntervalMs?: number; maxUpdates?: number };
       onProgressError?(error: Error): void;
@@ -371,6 +454,8 @@ function createFixture() {
       return new WeixinMessageRuntime({
         channel,
         spaces,
+        messages,
+        turns,
         deliveries,
         receive,
         bind,

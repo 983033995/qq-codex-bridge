@@ -1,8 +1,11 @@
 import type {
   ControlAction,
+  ConversationAction,
   ConversationSpace,
   InboundEnvelope,
   RoutingDecision,
+  RouterAction,
+  SourceIdentity,
   ThreadBinding,
   Turn
 } from "../../domain/src/vnext/index.js";
@@ -18,12 +21,21 @@ import type {
   ControlActionExecution,
   ExecuteControlAction
 } from "./execute-control-action.js";
+import type { ConversationResolver, ConversationResolution } from "./conversation-resolver.js";
 
 export type RouteInboundMessageResult =
-  | { kind: "chat" }
-  | { kind: "reply"; text: string; format?: "plain" | "markdown" };
+  | {
+      kind: "conversation";
+      target?: {
+        binding: ThreadBinding;
+        alias: string;
+        source: SourceIdentity;
+        matchedBy: "reply_reference" | "explicit_alias" | "active_conversation";
+      };
+    }
+  | { kind: "reply"; text: string; format?: "plain" | "markdown"; source?: SourceIdentity };
 
-export const channelControlActionTypes = [
+export const channelRouterActionTypes = [
   "thread.list",
   "thread.current",
   "thread.switch",
@@ -36,8 +48,15 @@ export const channelControlActionTypes = [
   "model.switch",
   "quota.read",
   "system.status",
-  "help"
-] as const satisfies readonly ControlAction["type"][];
+  "help",
+  "channel.restart",
+  "setup.channel.connect",
+  "setup.channel.login",
+  "approval.resolve",
+  "conversation.list",
+  "conversation.current",
+  "conversation.switch"
+] as const satisfies readonly RouterAction["type"][];
 
 export class RouteInboundMessage {
   constructor(private readonly deps: {
@@ -46,6 +65,15 @@ export class RouteInboundMessage {
     bindings: ThreadBindingRepository;
     codex: Pick<CodexPort, "listThreads">;
     controlActions: Pick<ExecuteControlAction, "execute">;
+    conversationResolver?: ConversationResolver;
+    systemActions?: {
+      restartChannel(input: { channel: "qq" | "weixin" | "feishu"; accountId?: string }): Promise<unknown>;
+      startSetup(input: { channel: "qq" | "weixin" | "feishu"; accountId?: string; force: boolean }): Promise<unknown>;
+      resolveApproval(input: {
+        resolution: "approve" | "decline";
+        spaceId: ConversationSpace["spaceId"];
+      }): Promise<unknown>;
+    };
     ids: IdGenerator;
     clock: Clock;
     onRoutingError?(error: Error, message: InboundEnvelope): void;
@@ -60,14 +88,15 @@ export class RouteInboundMessage {
     try {
       const fastDecision = await this.deps.router.routeFast?.({
         message: message.content.text,
-        allowedActionTypes: [...channelControlActionTypes]
+        allowedActionTypes: [...channelRouterActionTypes]
       }) ?? null;
       if (fastDecision) {
         decision = fastDecision;
       } else {
-        const [binding, threads] = await Promise.all([
+        const [binding, threads, conversations] = await Promise.all([
           this.deps.bindings.getActiveBySpace(space.spaceId),
-          this.deps.codex.listThreads({ limit: 20 })
+          this.deps.codex.listThreads({ limit: 20 }),
+          this.deps.conversationResolver?.listRecentConversations({ space, limit: 20 }) ?? Promise.resolve([])
         ]);
         decision = await this.deps.router.route({
           message: message.content.text,
@@ -78,21 +107,35 @@ export class RouteInboundMessage {
             projectName: thread.projectName,
             relativeTime: thread.updatedAt
           })),
+          candidateConversations: conversations,
           recentControlMessages: [],
-          allowedActionTypes: [...channelControlActionTypes]
+          allowedActionTypes: [...channelRouterActionTypes]
         });
       }
 
     } catch (error) {
-      this.deps.onRoutingError?.(normalizeError(error), message);
-      return { kind: "chat" };
+      const normalized = normalizeError(error);
+      this.deps.onRoutingError?.(normalized, message);
+      const fallback: RoutingDecision = {
+        kind: "conversation",
+        confidence: 0,
+        risk: "read",
+        mode: "assist",
+        fallbackReason: normalized.message
+      };
+      await this.saveDecisionBestEffort(message, fallback, startedAt, "conversation:fallback");
+      return this.resolveConversation(space, message);
     }
 
-    if (decision.kind === "chat") {
-      await this.saveDecisionBestEffort(message, decision, startedAt, "chat");
-      return { kind: "chat" };
+    if (decision.fallbackReason && decision.fallbackReason !== "router_off") {
+      this.deps.onRoutingError?.(new Error(decision.fallbackReason), message);
     }
-    if (decision.kind === "clarify") {
+
+    if (decision.kind === "conversation") {
+      await this.saveDecisionBestEffort(message, decision, startedAt, "conversation");
+      return this.resolveConversation(space, message);
+    }
+    if (decision.kind === "unknown") {
       await this.saveDecisionBestEffort(message, decision, startedAt, "clarification_sent");
       return {
         kind: "reply",
@@ -103,10 +146,10 @@ export class RouteInboundMessage {
     const actions = decision.actions ?? (decision.action ? [decision.action] : []);
     if (actions.length === 0) {
       this.deps.onRoutingError?.(
-        new Error("Router returned a control decision without actions"),
+        new Error(`Router returned ${decision.kind} without actions`),
         message
       );
-      return { kind: "chat" };
+      return { kind: "conversation" };
     }
 
     const replies: Array<{ text: string; format?: "plain" | "markdown" }> = [];
@@ -114,13 +157,12 @@ export class RouteInboundMessage {
     let failed = 0;
     for (const action of actions) {
       try {
-        const execution = await this.deps.controlActions.execute({
-          spaceId: space.spaceId,
-          action,
-          requestId: message.messageId
+        const reply = await this.dispatchAction(action, space, message);
+        confirmationRequired ||= reply.confirmationRequired;
+        replies.push({
+          text: reply.text,
+          ...(reply.format ? { format: reply.format } : {})
         });
-        confirmationRequired ||= execution.status === "confirmation_required";
-        replies.push(formatControlExecution(execution, space.channel));
       } catch (error) {
         failed += 1;
         this.deps.onRoutingError?.(normalizeError(error), message);
@@ -131,10 +173,136 @@ export class RouteInboundMessage {
       message,
       decision,
       startedAt,
-      failed === 0 ? `control:completed:${actions.length}` : `control:partial:${failed}/${actions.length}`,
+      failed === 0 ? `${decision.kind}:completed:${actions.length}` : `${decision.kind}:partial:${failed}/${actions.length}`,
       confirmationRequired ? "pending" : "not_required"
     );
     return { kind: "reply", ...mergeControlReplies(replies) };
+  }
+
+  private async dispatchAction(
+    action: RouterAction,
+    space: ConversationSpace,
+    message: InboundEnvelope
+  ): Promise<{ text: string; format?: "plain" | "markdown"; confirmationRequired: boolean }> {
+    if (isConversationAction(action)) {
+      return this.dispatchConversationAction(action, space);
+    }
+    if (isControlAction(action)) {
+      const execution = await this.deps.controlActions.execute({
+        spaceId: space.spaceId,
+        action,
+        requestId: message.messageId
+      });
+      return {
+        ...formatControlExecution(execution, space.channel),
+        confirmationRequired: execution.status === "confirmation_required"
+      };
+    }
+    if (!this.deps.systemActions) throw new Error(`Router action '${action.type}' is unavailable`);
+    if (action.type === "channel.restart") {
+      await this.deps.systemActions.restartChannel({ channel: action.channel });
+      return { text: `已重启${channelName(action.channel)}渠道。`, confirmationRequired: false };
+    }
+    if (action.type === "setup.channel.connect" || action.type === "setup.channel.login") {
+      const result = await this.deps.systemActions.startSetup({
+        channel: action.channel,
+        ...(action.accountId ? { accountId: action.accountId } : {}),
+        force: action.type === "setup.channel.login"
+      });
+      return { text: setupReply(result), confirmationRequired: false };
+    }
+    const result = await this.deps.systemActions.resolveApproval({
+      resolution: action.resolution,
+      spaceId: space.spaceId
+    });
+    return { text: approvalReply(result, action.resolution), confirmationRequired: false };
+  }
+
+  private async resolveConversation(
+    space: ConversationSpace,
+    message: InboundEnvelope
+  ): Promise<RouteInboundMessageResult> {
+    if (!this.deps.conversationResolver) return { kind: "conversation" };
+    const resolution = await this.deps.conversationResolver.resolveInboundTarget({ space, message });
+    if (!resolution) {
+      const binding = await this.deps.bindings.getActiveBySpace(space.spaceId);
+      if (!binding) return { kind: "conversation" };
+      const source = await this.deps.conversationResolver.ensureActiveForBinding({ space, binding });
+      return {
+        kind: "conversation",
+        target: {
+          binding,
+          alias: source.alias,
+          source: await this.deps.conversationResolver.sourceForBinding(binding),
+          matchedBy: "active_conversation"
+        }
+      };
+    }
+    if (resolution.kind === "clarify" || resolution.kind === "push_only") {
+      return {
+        kind: "reply",
+        text: resolution.kind === "clarify" ? resolution.text : resolution.message,
+        source: systemSource()
+      };
+    }
+    if (resolution.matchedBy === "reply_reference" || resolution.matchedBy === "explicit_alias") {
+      await this.deps.conversationResolver.setActiveForBinding({
+        space,
+        binding: resolution.binding,
+        updatedBy: resolution.matchedBy === "reply_reference" ? "reply_reference" : "explicit_switch"
+      });
+    }
+    return {
+      kind: "conversation",
+      target: {
+        binding: resolution.binding,
+        alias: resolution.alias.alias,
+        source: resolution.source,
+        matchedBy: resolution.matchedBy
+      }
+    };
+  }
+
+  private async dispatchConversationAction(
+    action: ConversationAction,
+    space: ConversationSpace
+  ): Promise<{ text: string; format?: "plain" | "markdown"; confirmationRequired: boolean }> {
+    if (!this.deps.conversationResolver) {
+      throw new Error("Conversation Resolver is unavailable");
+    }
+    if (action.type === "conversation.list") {
+      const sessions = await this.deps.conversationResolver.listRecentConversations({ space });
+      if (sessions.length === 0) {
+        return { text: "当前没有可用会话。", confirmationRequired: false };
+      }
+      const text = [
+        "当前可用会话",
+        ...sessions.map((session) => [
+          `${session.active ? "●" : "○"} ${session.alias}`,
+          `  ${session.provider} · ${session.title}`,
+          `  ${session.capability === "push_only" ? "仅推送" : "可继续"}`
+        ].join("\n"))
+      ].join("\n\n");
+      return { text, confirmationRequired: false };
+    }
+    if (action.type === "conversation.current") {
+      const active = await this.deps.conversationResolver.getActiveConversation({ space });
+      const sessions = await this.deps.conversationResolver.listRecentConversations({ space });
+      const current = sessions.find((session) => session.active);
+      if (!active || !current) {
+        return { text: "当前尚未选择会话。发送 /sessions 查看可用会话。", confirmationRequired: false };
+      }
+      return { text: `当前会话：${current.provider} · ${current.title}\n${current.alias}`, confirmationRequired: false };
+    }
+    const alias = await this.deps.conversationResolver.setActiveConversation({
+      space,
+      alias: action.alias,
+      updatedBy: "explicit_switch"
+    });
+    return {
+      text: `已切换到：\n${alias.provider} · ${alias.taskTitle ?? alias.projectName ?? "未命名任务"}\n${alias.alias}`,
+      confirmationRequired: false
+    };
   }
 
   private async saveDecisionBestEffort(
@@ -312,8 +480,57 @@ function bindingTitle(value: unknown): string | null {
   return typeof title === "string" && title.trim() ? title : null;
 }
 
-function actionLabel(action: ControlAction): string {
+function actionLabel(action: RouterAction): string {
   return action.type;
+}
+
+function isControlAction(action: RouterAction): action is ControlAction {
+  switch (action.type) {
+    case "conversation.list":
+    case "conversation.current":
+    case "conversation.switch":
+    case "channel.restart":
+    case "setup.channel.connect":
+    case "setup.channel.login":
+    case "approval.resolve":
+      return false;
+    default:
+      return true;
+  }
+}
+
+function isConversationAction(action: RouterAction): action is ConversationAction {
+  return action.type === "conversation.list"
+    || action.type === "conversation.current"
+    || action.type === "conversation.switch";
+}
+
+function systemSource(): SourceIdentity {
+  return { provider: "system", capability: "system" };
+}
+
+function channelName(channel: "qq" | "weixin" | "feishu"): string {
+  return { qq: "QQ", weixin: "微信", feishu: "飞书" }[channel];
+}
+
+function setupReply(result: unknown): string {
+  if (!result || typeof result !== "object") return "Setup 已启动。";
+  const session = result as { message?: unknown; artifact?: unknown };
+  const message = typeof session.message === "string" ? session.message : "Setup 已启动。";
+  const artifact = session.artifact;
+  if (artifact && typeof artifact === "object"
+    && (artifact as { type?: unknown }).type === "qr_code"
+    && typeof (artifact as { content?: unknown }).content === "string") {
+    return `${message}\n\n二维码内容：${(artifact as { content: string }).content}`;
+  }
+  return message;
+}
+
+function approvalReply(result: unknown, resolution: "approve" | "decline"): string {
+  if (result && typeof result === "object" && typeof (result as { message?: unknown }).message === "string") {
+    return (result as { message: string }).message;
+  }
+  return resolution === "approve" ? "已批准待处理请求。" : "已拒绝待处理请求。";
 }
 
 function jsonSummary(value: unknown): string {

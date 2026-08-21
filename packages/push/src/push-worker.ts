@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { PushRepositoryPort, PushTargetRegistryPort } from "../../ports/src/push.js";
+import type {
+  PushRepositoryPort,
+  PushSourceRoutingPort,
+  PushTargetRegistryPort
+} from "../../ports/src/push.js";
 import { PushMediaGuard } from "./media-guard.js";
 import type { PushChannelRegistry } from "./channel-registry.js";
+import {
+  formatPushPayload,
+  normalizePushSource,
+  withFallbackConversationAlias
+} from "./source.js";
 
 const RETRY_DELAYS_MS = [5_000, 30_000, 120_000] as const;
 
@@ -15,6 +24,7 @@ export class PushWorker {
     targets: PushTargetRegistryPort;
     channels: PushChannelRegistry;
     mediaGuard: PushMediaGuard;
+    sourceRouting?: PushSourceRoutingPort;
     pollIntervalMs?: number;
     staleSendingAfterMs?: number;
     now?: () => number;
@@ -57,6 +67,26 @@ export class PushWorker {
         await this.fail(job.pushId, job.attemptCount, false, "channel_unsupported", "push channel is unavailable");
         return;
       }
+      const sourceConversationId = pushSourceConversationId(
+        job.payload.metadata.source,
+        job.payload.metadata.taskId,
+        job.pushId
+      );
+      const normalizedSource = normalizePushSource(job.payload.metadata.source, sourceConversationId);
+      const source = typeof job.payload.metadata.taskId === "string"
+        && job.payload.metadata.taskId.trim()
+        && !normalizedSource.taskId
+        ? { ...normalizedSource, taskId: job.payload.metadata.taskId.trim() }
+        : normalizedSource;
+      const resolvedSource = this.deps.sourceRouting
+        ? await this.deps.sourceRouting.resolve({
+            source,
+            sourceConversationId,
+            pushId: job.pushId,
+            target
+          })
+        : withFallbackConversationAlias(source, sourceConversationId);
+      const payload = formatPushPayload(job.payload, resolvedSource);
       let mediaPaths: string[];
       try {
         mediaPaths = job.payload.message.media.map((media) => this.deps.mediaGuard.resolve(media.path));
@@ -68,10 +98,19 @@ export class PushWorker {
         const result = await egress.send({
           pushId: job.pushId,
           target,
-          payload: job.payload,
+          payload,
           resolvedMediaPaths: mediaPaths
         });
         if (result.ok) {
+          if (result.providerMessageId && this.deps.sourceRouting) {
+            await this.deps.sourceRouting.record({
+              source: resolvedSource,
+              pushId: job.pushId,
+              target,
+              providerMessageId: result.providerMessageId,
+              createdAt: this.nowIso()
+            });
+          }
           await this.deps.repository.markDelivered({
             pushId: job.pushId,
             workerId: this.workerId,
@@ -127,4 +166,20 @@ export class PushWorker {
   private nowIso(): string {
     return new Date(this.nowMs()).toISOString();
   }
+}
+
+function pushSourceConversationId(source: unknown, taskId: unknown, pushId: string): string {
+  if (source && typeof source === "object") {
+    const value = source as { conversationId?: unknown; taskId?: unknown };
+    if (typeof value.conversationId === "string" && value.conversationId.trim()) {
+      return value.conversationId.trim();
+    }
+    if (typeof value.taskId === "string" && value.taskId.trim()) {
+      return `task:${value.taskId.trim()}`;
+    }
+  }
+  if (typeof taskId === "string" && taskId.trim()) {
+    return `task:${taskId.trim()}`;
+  }
+  return `push:${pushId}`;
 }

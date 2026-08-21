@@ -1,10 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { RouteInboundMessage } from "../../packages/application/src/index.js";
+import { ConversationResolver, RouteInboundMessage } from "../../packages/application/src/index.js";
+import { createDefaultConfig, MemorySecretStore } from "../../packages/config/src/index.js";
 import type {
   ConversationSpace,
   InboundEnvelope,
   ThreadBinding
 } from "../../packages/domain/src/vnext/index.js";
+import {
+  SqliteActiveConversationRepository,
+  SqliteChannelMessageRegistryRepository,
+  SqliteConversationAliasRepository,
+  openVNextDatabase
+} from "../../packages/store-sqlite/src/index.js";
+import { OpenAiCompatibleIntentRouter } from "../../packages/router-openai-compatible/src/index.js";
 import {
   ControllableCodexPort,
   FixedClock,
@@ -20,7 +28,9 @@ describe("RouteInboundMessage", () => {
     const routeFast = vi.fn(async () => ({
       kind: "control" as const,
       action: { type: "thread.current" as const },
-      confidence: 1
+      confidence: 1,
+      risk: "read" as const,
+      mode: "auto" as const
     }));
     const service = new RouteInboundMessage({
       router: { route, routeFast },
@@ -58,7 +68,9 @@ describe("RouteInboundMessage", () => {
           return {
             kind: "control",
             action: { type: "thread.list" },
-            confidence: 1
+            confidence: 1,
+            risk: "read",
+            mode: "auto"
           };
         }
       },
@@ -128,7 +140,9 @@ describe("RouteInboundMessage", () => {
           return {
             kind: "control",
             actions: [{ type: "thread.current" }, { type: "model.current" }],
-            confidence: 1
+            confidence: 1,
+            risk: "read",
+            mode: "auto"
           };
         }
       },
@@ -159,7 +173,7 @@ describe("RouteInboundMessage", () => {
       router: {
         async route() { throw new Error("must not use model routing"); },
         async routeFast() {
-          return { kind: "control", action: { type: "help" }, confidence: 1 };
+          return { kind: "control", action: { type: "help" }, confidence: 1, risk: "read", mode: "auto" };
         }
       },
       decisions: new MemoryRoutingDecisionRepository(),
@@ -207,7 +221,9 @@ describe("RouteInboundMessage", () => {
       return {
         kind: "control" as const,
         action: { type: "thread.current" as const },
-        confidence: 1
+        confidence: 1,
+        risk: "read" as const,
+        mode: "auto" as const
       };
     });
     const execute = vi.fn(async () => ({
@@ -243,6 +259,97 @@ describe("RouteInboundMessage", () => {
     ]);
   });
 
+  it("dispatches setup and channel control without starting a Codex conversation", async () => {
+    const startSetup = vi.fn(async () => ({
+      status: "awaiting_scan",
+      message: "请使用微信扫码",
+      artifact: { type: "qr_code", content: "qr-content" }
+    }));
+    const restartChannel = vi.fn(async () => ({ restarted: true }));
+    const router = {
+      route: vi.fn(),
+      routeFast: vi.fn()
+        .mockResolvedValueOnce({
+          kind: "setup",
+          action: { type: "setup.channel.login", channel: "weixin" },
+          confidence: 1,
+          risk: "medium",
+          mode: "auto"
+        })
+        .mockResolvedValueOnce({
+          kind: "control",
+          action: { type: "channel.restart", channel: "weixin" },
+          confidence: 1,
+          risk: "medium",
+          mode: "auto"
+        })
+    };
+    const service = new RouteInboundMessage({
+      router,
+      decisions: new MemoryRoutingDecisionRepository(),
+      bindings: new MemoryThreadBindingRepository(),
+      codex: { listThreads: vi.fn(async () => []) },
+      controlActions: { execute: vi.fn() as never },
+      systemActions: {
+        startSetup,
+        restartChannel,
+        resolveApproval: vi.fn()
+      },
+      ids: new SequenceIdGenerator("decision"),
+      clock: new FixedClock()
+    });
+
+    await expect(service.execute(space(), message("重新登录微信"))).resolves.toMatchObject({
+      kind: "reply",
+      text: expect.stringContaining("qr-content")
+    });
+    await expect(service.execute(space(), message("重启微信"))).resolves.toEqual({
+      kind: "reply",
+      text: "已重启微信渠道。"
+    });
+    expect(startSetup).toHaveBeenCalledWith({ channel: "weixin", force: true });
+    expect(restartChannel).toHaveBeenCalledWith({ channel: "weixin" });
+  });
+
+  it("never sends approval intent to Codex when Approval Service is unavailable", async () => {
+    const errors: Error[] = [];
+    const decisions = new MemoryRoutingDecisionRepository();
+    const service = new RouteInboundMessage({
+      router: {
+        async route() { throw new Error("model must not run"); },
+        async routeFast() {
+          return {
+            kind: "approval",
+            action: { type: "approval.resolve", resolution: "approve" },
+            confidence: 1,
+            risk: "high",
+            mode: "off"
+          } as const;
+        }
+      },
+      decisions,
+      bindings: new MemoryThreadBindingRepository(),
+      codex: { listThreads: vi.fn(async () => []) },
+      controlActions: { execute: vi.fn() as never },
+      systemActions: {
+        startSetup: vi.fn(),
+        restartChannel: vi.fn(),
+        async resolveApproval() { throw new Error("Approval Service 尚未启用"); }
+      },
+      ids: new SequenceIdGenerator("decision"),
+      clock: new FixedClock(),
+      onRoutingError(error) { errors.push(error); }
+    });
+
+    const result = await service.execute(space(), message("/approve"));
+    expect(result).toMatchObject({ kind: "reply", text: expect.stringContaining("Approval Service 尚未启用") });
+    expect(errors).toEqual([expect.objectContaining({ message: "Approval Service 尚未启用" })]);
+    expect(decisions.values[0]).toMatchObject({
+      decision: { kind: "approval" },
+      result: "approval:partial:1/1"
+    });
+  });
+
   it("fails open to chat when the auxiliary router is unavailable", async () => {
     const errors: Error[] = [];
     const service = new RouteInboundMessage({
@@ -256,8 +363,98 @@ describe("RouteInboundMessage", () => {
       onRoutingError(error) { errors.push(error); }
     });
 
-    await expect(service.execute(space(), message("帮我修复代码"))).resolves.toEqual({ kind: "chat" });
+    await expect(service.execute(space(), message("帮我修复代码"))).resolves.toEqual({ kind: "conversation" });
     expect(errors).toEqual([expect.objectContaining({ message: "router timeout" })]);
+  });
+
+  it("executes /sessions, /current, and /use through deterministic routing when the provider is unavailable", async () => {
+    const database = openVNextDatabase(":memory:");
+    try {
+      const aliases = new SqliteConversationAliasRepository(database);
+      const registry = new SqliteChannelMessageRegistryRepository(database);
+      const active = new SqliteActiveConversationRepository(database);
+      const resolver = new ConversationResolver({ aliases, registry, active });
+      const current = await resolver.ensureAlias({
+        provider: "codex",
+        sourceConversationId: "thread-current",
+        taskTitle: "当前任务",
+        capability: "interactive"
+      });
+      const other = await resolver.ensureAlias({
+        provider: "codex",
+        sourceConversationId: "thread-other",
+        taskTitle: "另一个任务",
+        capability: "interactive"
+      });
+      await active.save({
+        channel: "feishu",
+        channelAccountId: space().accountId,
+        peerId: "peer-1",
+        conversationAlias: current.alias,
+        sourceConversationId: current.sourceConversationId,
+        updatedBy: "admin",
+        updatedAt: "2026-08-13T00:00:00.000Z"
+      });
+      await registry.save({
+        registryId: "registry-other",
+        channel: "feishu",
+        channelAccountId: space().accountId,
+        peerId: "peer-1",
+        channelMessageId: "provider-other",
+        gatewayMessageId: "gateway-other",
+        provider: "codex",
+        sourceConversationId: other.sourceConversationId,
+        sourceAlias: other.alias,
+        taskId: null,
+        capability: "interactive",
+        direction: "outbound",
+        createdAt: "2026-08-13T00:00:00.000Z"
+      });
+
+      const config = createDefaultConfig();
+      const router = new OpenAiCompatibleIntentRouter({
+        configStore: {
+          async read() { return { value: config, revision: "test" }; },
+          async writeAtomic() {},
+          async delete() {}
+        },
+        secretStore: new MemorySecretStore(),
+        fetchFn: vi.fn()
+      });
+      const service = (text: string) => new RouteInboundMessage({
+        router,
+        decisions: new MemoryRoutingDecisionRepository(),
+        bindings: new MemoryThreadBindingRepository(),
+        codex: { async listThreads() { throw new Error("Codex must not be queried"); } },
+        controlActions: { async execute() { throw new Error("control action must not run"); } },
+        conversationResolver: resolver,
+        ids: new SequenceIdGenerator("conversation-decision"),
+        clock: new FixedClock()
+      }).execute(space(), message(text));
+
+      await expect(service("/sessions")).resolves.toMatchObject({
+        kind: "reply",
+        text: expect.stringContaining(current.alias)
+      });
+      await expect(service("/current")).resolves.toEqual({
+        kind: "reply",
+        text: expect.stringContaining(current.alias)
+      });
+      await expect(service(`/use ${other.alias}`)).resolves.toMatchObject({
+        kind: "reply",
+        text: expect.stringContaining(`已切换到：`)
+      });
+      await expect(active.get({
+        channel: "feishu",
+        channelAccountId: space().accountId,
+        peerId: "peer-1"
+      })).resolves.toMatchObject({
+        conversationAlias: other.alias,
+        updatedBy: "explicit_switch"
+      });
+    } finally {
+      database.close();
+    }
   });
 });
 

@@ -19,7 +19,9 @@ import {
   testRouter,
   unbindSpace,
   updateRouter,
+  resolveApproval,
   type ApplyPlan,
+  type ApprovalItem,
   type DiagnosticEvent,
   type RouterConfig,
   type SpaceItem,
@@ -123,11 +125,70 @@ export function TasksPage() {
       {notice ? <LiveNotice>{notice}</LiveNotice> : null}
       <ResourceBoundary resource={resource}>
         {(data) => <>
+          <PendingApprovals approvals={data.approvals} reload={resource.reload} />
           <section className="section" aria-labelledby="active-turns-title"><h2 id="active-turns-title">Turn</h2>{data.turns.length === 0 ? <Empty title="暂无 Turn" detail="新任务开始后会显示排队、运行和终态。" /> : <DataTable headers={["状态", "线程", "传输", "时间", "操作"]}>{data.turns.map((turn) => <tr key={turn.turnId}><td><span className="state-badge">{turn.status}</span></td><td><code translate="no">{shortId(turn.threadId)}</code></td><td>{turn.transport}</td><td><time dateTime={turn.queuedAt}>{formatDateTime(turn.queuedAt)}</time></td><td>{["queued", "starting", "running", "unknown"].includes(turn.status) ? <button className="danger-link" type="button" disabled={pending !== null} onClick={() => { setPending(turn.turnId); void interruptTurn(turn.turnId).then(resource.reload).then(() => setNotice("Turn 已中断"), (error) => setNotice(errorMessage(error))).finally(() => setPending(null)); }}>{pending === turn.turnId ? "中断中…" : "中断"}</button> : "—"}</td></tr>)}</DataTable>}</section>
           <section className="section" aria-labelledby="threads-title"><h2 id="threads-title">Codex 线程</h2>{data.threads.length === 0 ? <Empty title="暂无线程" detail="可在上方创建第一个线程。" /> : <DataTable headers={["标题", "项目", "更新时间", "Thread ID"]}>{data.threads.map((thread) => <tr key={thread.threadId}><td><strong>{thread.title}</strong></td><td>{thread.projectName ?? "—"}</td><td>{thread.updatedAt ? formatDateTime(thread.updatedAt) : "—"}</td><td><code translate="no">{shortId(thread.threadId)}</code></td></tr>)}</DataTable>}</section>
         </>}
       </ResourceBoundary>
     </OperationPage>
+  );
+}
+
+function PendingApprovals({ approvals, reload }: { approvals: ApprovalItem[]; reload(): Promise<void> }) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const resolve = async (approval: ApprovalItem, resolution: "approve" | "decline") => {
+    setPending(approval.approvalId);
+    setNotice(null);
+    try {
+      await resolveApproval(approval.approvalId, resolution);
+      await reload();
+      setNotice(resolution === "approve" ? "审批已提交，等待 Codex 确认。" : "审批拒绝已提交，等待 Codex 确认。");
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <section className="section" aria-labelledby="pending-approvals-title">
+      <div className="section-header">
+        <div>
+          <h2 id="pending-approvals-title">待审批</h2>
+          <p className="section-description" aria-live="polite" aria-atomic="true">{approvals.length === 0 ? "当前没有等待确认的 Codex 请求。" : `${approvals.length} 个请求等待确认`}</p>
+        </div>
+      </div>
+      {notice ? <LiveNotice>{notice}</LiveNotice> : null}
+      {approvals.length === 0
+        ? <Empty title="暂无待审批" detail="Codex 请求执行命令或修改文件时，会在这里等待你的明确决定。" />
+        : <div className="record-list" aria-label="待审批列表">
+            {approvals.map((approval) => <ApprovalCard key={approval.approvalId} approval={approval} pending={pending === approval.approvalId} disabled={pending !== null} onResolve={(resolution) => void resolve(approval, resolution)} />)}
+          </div>}
+    </section>
+  );
+}
+
+function ApprovalCard({ approval, pending, disabled, onResolve }: { approval: ApprovalItem; pending: boolean; disabled: boolean; onResolve(resolution: "approve" | "decline"): void }) {
+  const subject = approval.kind === "command_execution"
+    ? `执行命令：${approval.command ?? "未提供命令"}`
+    : `修改文件${approval.grantRoot ? `：${approval.grantRoot}` : ""}`;
+  return (
+    <article className="record-card approval-card">
+      <div className="record-card-heading">
+        <div><h3>{subject}</h3><p>审批 ID：<code translate="no">{approval.approvalId}</code></p></div>
+        <span className="state-badge state-badge-warning">等待确认</span>
+      </div>
+      <dl className="detail-grid">
+        <div><dt>原因</dt><dd>{approval.reason ?? "Codex 未提供原因"}</dd></div>
+        <div><dt>工作目录</dt><dd><code translate="no">{approval.cwd ?? "—"}</code></dd></div>
+      </dl>
+      <div className="row-actions">
+        <button className="button button-primary" type="button" disabled={disabled} onClick={() => onResolve("approve")}>{pending ? "提交中…" : "批准"}</button>
+        <button className="button button-secondary" type="button" disabled={disabled} onClick={() => onResolve("decline")}>拒绝</button>
+      </div>
+    </article>
   );
 }
 

@@ -11,6 +11,13 @@ export type FakeJsonRpcMessage =
   | { jsonrpc: "2.0"; id: string | number; result?: unknown; error?: unknown }
   | { jsonrpc: "2.0"; method: string; params?: unknown };
 
+export type FakeJsonRpcClientResponse = {
+  jsonrpc: "2.0";
+  id: string | number;
+  result?: unknown;
+  error?: unknown;
+};
+
 type RequestHandler = (request: FakeJsonRpcRequest) => void | Promise<void>;
 
 /**
@@ -21,6 +28,7 @@ type RequestHandler = (request: FakeJsonRpcRequest) => void | Promise<void>;
 export class FakeAppServerSocket extends EventEmitter {
   readyState = 0;
   readonly sent: FakeJsonRpcRequest[] = [];
+  readonly responses: FakeJsonRpcClientResponse[] = [];
   private readonly handlers = new Map<string, RequestHandler>();
   private readonly droppedRequests = new Map<string, number>();
   private openScheduled = false;
@@ -41,7 +49,12 @@ export class FakeAppServerSocket extends EventEmitter {
   }
 
   send(data: string): void {
-    const request = JSON.parse(data) as FakeJsonRpcRequest;
+    const message = JSON.parse(data) as FakeJsonRpcRequest | FakeJsonRpcClientResponse;
+    if (!("method" in message)) {
+      this.responses.push(message);
+      return;
+    }
+    const request = message;
     this.sent.push(request);
     queueMicrotask(() => {
       if (this.readyState !== 1 || this.consumeDroppedRequest(request.method)) {
@@ -97,6 +110,10 @@ export class FakeAppServerSocket extends EventEmitter {
 
   notify(method: string, params?: unknown): void {
     this.emitMessage({ jsonrpc: "2.0", method, params });
+  }
+
+  request(id: string | number, method: string, params?: unknown): void {
+    this.emitMessage({ jsonrpc: "2.0", id, method, params } as FakeJsonRpcMessage);
   }
 
   private emitMessage(message: FakeJsonRpcMessage): void {

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { QqApiClient } from "../../../packages/adapters/qq/src/qq-api-client.js";
 import { createQqChannelAdapter } from "../../../packages/adapters/qq/src/qq-channel-adapter.js";
 import { FileQqGatewaySessionStore } from "../../../packages/adapters/qq/src/qq-gateway-session-store.js";
@@ -45,6 +46,18 @@ import { PushMediaGuard } from "../../../packages/push/src/media-guard.js";
 import { PushOrchestrator } from "../../../packages/push/src/push-orchestrator.js";
 import { PushRateLimiter } from "../../../packages/push/src/push-rate-limiter.js";
 import { PushWorker } from "../../../packages/push/src/push-worker.js";
+import { PersistentPushSourceRouting } from "../../../packages/push/src/source-routing.js";
+import {
+  ConversationResolver
+} from "../../../packages/application/src/conversation-resolver.js";
+import {
+  SqliteChannelMessageRegistryRepository,
+  SqliteConversationAliasRepository,
+  openVNextDatabase,
+  schemaMigrations,
+  migrateSourceRoutingData
+} from "../../../packages/store-sqlite/src/index.js";
+import { resolveGatewayPaths } from "../../../packages/runtime-manager/src/index.js";
 import { loadConfigFromEnv } from "./config.js";
 
 const INTERNAL_TURN_EVENT_PATH = "/internal/codex-turn-events";
@@ -357,6 +370,24 @@ function createPushRuntime(input: {
     egress: FeishuChannelAdapter["pushEgress"];
   };
 }) {
+  const routingDatabase = openVNextDatabase(resolveSharedRoutingDatabasePath(), {
+    migrations: schemaMigrations.filter((migration) => migration.version >= 7)
+  });
+  migrateSourceRoutingData(input.db, routingDatabase);
+  const aliases = new SqliteConversationAliasRepository(routingDatabase);
+  const registry = new SqliteChannelMessageRegistryRepository(routingDatabase);
+  const sourceRouting = new PersistentPushSourceRouting({
+    resolver: new ConversationResolver({
+      aliases,
+      registry,
+      active: {
+        async get() { return null; },
+        async save() {}
+      }
+    }),
+    registry,
+    nextId: () => randomUUID()
+  });
   const repository = new SqlitePushRepository(input.db);
   const mediaGuard = new PushMediaGuard(path.resolve(input.config.push.outboxRoot));
   const channels = new PushChannelRegistry();
@@ -392,10 +423,19 @@ function createPushRuntime(input: {
       targets: repository,
       channels,
       mediaGuard,
+      sourceRouting,
       pollIntervalMs: input.config.push.workerPollIntervalMs,
       staleSendingAfterMs: input.config.push.staleSendingAfterMs
-    })
+    }),
+    close: () => routingDatabase.close()
   };
+}
+
+function resolveSharedRoutingDatabasePath(): string {
+  const explicit = process.env.OMNIAGENT_SOURCE_ROUTING_DATABASE?.trim();
+  if (explicit) return path.resolve(explicit);
+  const gatewayRoot = process.env.OMNIAGENT_GATEWAY_HOME;
+  return resolveGatewayPaths(gatewayRoot ? { root: gatewayRoot } : {}).sourceRoutingDatabasePath;
 }
 
 async function resolveStableBinding(

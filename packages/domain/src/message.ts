@@ -26,6 +26,7 @@ export type InboundMessage = {
   senderId: string;
   text: string;
   mediaArtifacts?: MediaArtifact[];
+  replyToMessageId?: string;
   receivedAt: string;
 };
 
@@ -38,6 +39,7 @@ export type OutboundDraft = {
   mediaArtifacts?: MediaArtifact[];
   createdAt: string;
   replyToMessageId?: string;
+  source?: import("./vnext/models.js").SourceIdentity;
 };
 
 export enum TurnEventType {

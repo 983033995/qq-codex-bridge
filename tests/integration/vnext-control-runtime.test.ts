@@ -1,15 +1,25 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocketServer } from "ws";
 import { createProductionControlDaemon } from "../../apps/control-daemon/src/index.js";
 import {
   AtomicConfigStore,
   calculateConfigRevision,
   createDefaultConfig
 } from "../../packages/config/src/index.js";
+import {
+  openVNextDatabase,
+  SqliteMessageLedger,
+  SqliteRuntimeEventRepository,
+  SqliteConversationSpaceRepository,
+  SqliteTurnRepository
+} from "../../packages/store-sqlite/src/index.js";
+import type { ConversationSpace, InboundEnvelope } from "../../packages/domain/src/vnext/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -49,7 +59,7 @@ describe("vNext production control runtime", () => {
         data: {
           state: "running",
           activeRevision: calculateConfigRevision(config),
-          version: "0.2.0"
+          version: "0.3.0"
         }
       });
 
@@ -221,7 +231,123 @@ describe("vNext production control runtime", () => {
       await fakeLogin.close();
     }
   }, 15_000);
+
+  it("reconciles a persisted running Turn before accepting new Runtime work", async () => {
+    const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "qqcb-vnext-reconcile-runtime-"));
+    temporaryDirectories.push(dataDirectory);
+    const config = createDefaultConfig();
+    config.runtime.listenPort = await freePort();
+    await new AtomicConfigStore(path.join(dataDirectory, "config.json")).writeAtomic({
+      value: config,
+      revision: calculateConfigRevision(config)
+    });
+
+    const threadId = "thread-recovery";
+    const turnId = "turn-recovery";
+    const space: ConversationSpace = {
+      spaceId: "weixin:personal::c2c:recovery" as ConversationSpace["spaceId"],
+      channel: "weixin" as const,
+      accountId: "weixin:personal" as ConversationSpace["accountId"],
+      providerConversationId: "recovery",
+      scope: "c2c" as const,
+      displayName: "recovery",
+      status: "active" as const,
+      lastInboundAt: null,
+      lastOutboundAt: null
+    };
+    const message: InboundEnvelope = {
+      messageId: "message-recovery",
+      providerMessageId: "provider-recovery",
+      spaceId: space.spaceId,
+      senderId: "sender-recovery",
+      receivedSequence: 1,
+      receivedAt: "2026-08-13T09:00:00.000Z",
+      content: { text: "recover me", mentions: [], attachments: [] }
+    };
+    const seedDatabase = openVNextDatabase(path.join(dataDirectory, "runtime-vnext.db"));
+    try {
+      await new SqliteConversationSpaceRepository(seedDatabase).save(space);
+      await new SqliteMessageLedger(seedDatabase).appendInbound(message, "dedupe-recovery");
+      await new SqliteTurnRepository(seedDatabase).save({
+        turnId,
+        threadId,
+        spaceId: space.spaceId,
+        inboundMessageId: message.messageId,
+        status: "running",
+        transport: "app-server",
+        errorCode: null,
+        queuedAt: message.receivedAt,
+        startedAt: message.receivedAt,
+        completedAt: null
+      });
+    } finally {
+      seedDatabase.close();
+    }
+
+    const appServer = await startRecoveryAppServer(threadId, turnId);
+    const runtime = await createProductionControlDaemon({
+      dataDirectory,
+      appServerUrl: appServer.url
+    });
+    try {
+      await runtime.start();
+    } finally {
+      await runtime.stop();
+      await appServer.close();
+    }
+
+    const database = openVNextDatabase(path.join(dataDirectory, "runtime-vnext.db"));
+    try {
+      const turn = await new SqliteTurnRepository(database).get(turnId);
+      expect(turn).toMatchObject({ status: "completed", completedAt: expect.any(String) });
+      const events = await new SqliteRuntimeEventRepository(database).list({ limit: 20 });
+      expect(events.items.map((event) => event.type)).toEqual(expect.arrayContaining([
+        "turn.recovery.unknown",
+        "turn.recovery.resolved"
+      ]));
+    } finally {
+      database.close();
+    }
+  });
 });
+
+async function startRecoveryAppServer(threadId: string, turnId: string): Promise<{
+  url: string;
+  close(): Promise<void>;
+}> {
+  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const request = JSON.parse(payload.toString()) as {
+        id: string | number;
+        method: string;
+      };
+      const result = request.method === "initialize"
+        ? {
+            userAgent: "recovery-test-app-server",
+            codexHome: "/tmp/recovery-test-codex",
+            platformFamily: "unix",
+            platformOs: "macos"
+          }
+        : request.method === "thread/read"
+          ? { thread: { id: threadId, turns: [{ id: turnId, status: "completed" }] } }
+          : {};
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+    });
+  });
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("expected a recovery AppServer address");
+  }
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    })
+  };
+}
 
 async function freePort(): Promise<number> {
   const server = createServer();

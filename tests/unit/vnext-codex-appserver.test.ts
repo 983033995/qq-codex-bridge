@@ -279,6 +279,54 @@ describe("vNext Codex AppServer adapter", () => {
     await adapter.dispose();
     await disposedCompletion;
   });
+
+  it("classifies approval server requests, responds with decisions, and observes resolved notifications", async () => {
+    const server = new FakeCodexAppServer();
+    const onApprovalRequest = vi.fn(async () => undefined);
+    const onServerRequestResolved = vi.fn(async () => undefined);
+    const adapter = new CodexAppServerAdapter({
+      endpointProvider: staticEndpointProvider(),
+      createWebSocket: () => server.connect() as never,
+      requestTimeoutMs: 1_000,
+      onApprovalRequest,
+      onServerRequestResolved
+    });
+    await adapter.health();
+
+    server.socket.request(71, "item/commandExecution/requestApproval", {
+      threadId: "thread-approval",
+      turnId: "turn-approval",
+      itemId: "item-approval",
+      reason: "verify the change",
+      command: "pnpm test",
+      cwd: "/workspace"
+    });
+    await flushAsyncEvents();
+    expect(onApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({
+      appServerRequestId: 71,
+      method: "item/commandExecution/requestApproval",
+      threadId: "thread-approval",
+      command: "pnpm test"
+    }));
+
+    await adapter.resolveApprovalRequest({ requestId: 71, resolution: "approve" });
+    expect(server.socket.responses).toContainEqual({
+      jsonrpc: "2.0",
+      id: 71,
+      result: { decision: "accept" }
+    });
+
+    server.socket.notify("serverRequest/resolved", {
+      threadId: "thread-approval",
+      requestId: 71
+    });
+    await flushAsyncEvents();
+    expect(onServerRequestResolved).toHaveBeenCalledWith({
+      threadId: "thread-approval",
+      requestId: 71
+    });
+    await adapter.dispose();
+  });
 });
 
 describe("vNext AppServer endpoint discovery", () => {

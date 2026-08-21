@@ -110,6 +110,21 @@ describe("vNext apply planning and rollback", () => {
     ]);
   });
 
+  it("requires a daemon restart when a non-Weixin account component is added", () => {
+    const current = createDefaultConfig();
+    const next = {
+      ...current,
+      channels: [{
+        channel: "feishu" as const,
+        accountId: "team",
+        enabled: true,
+        appId: "cli_app",
+        secretRef: "feishu/team/client-secret"
+      }]
+    };
+    expect(planConfigApply(current, next).effects).toEqual([{ type: "daemon_restart" }]);
+  });
+
   it("restores the previous config and secrets when apply fails", async () => {
     const configStore = new AtomicConfigStore(await tempConfigPath());
     const secretStore = new MemorySecretStore();

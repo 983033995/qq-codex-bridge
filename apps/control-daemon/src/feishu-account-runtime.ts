@@ -17,6 +17,7 @@ export type FeishuRuntimeInbound = {
   chatType: "c2c" | "group";
   senderId: string;
   text: string;
+  replyToMessageId?: string;
   attachments: Attachment[];
   sequence: number;
   receivedAt: string;
@@ -171,6 +172,7 @@ export class FeishuAccountRuntime implements ControlDaemonComponent {
       chatType: message.chatType,
       senderId: message.senderId,
       text: message.text,
+      ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}),
       attachments: [],
       sequence: this.sequence,
       receivedAt: message.receivedAt

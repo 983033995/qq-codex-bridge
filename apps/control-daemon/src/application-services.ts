@@ -1,4 +1,5 @@
 import { BindConversationSpace } from "../../../packages/application/src/index.js";
+import type { ApprovalService, ApprovalStatus } from "../../../packages/approval/src/index.js";
 import {
   applyConfiguration,
   planConfigApply,
@@ -23,6 +24,8 @@ import type {
   ThreadBindingRepository,
   TurnRepository
 } from "../../../packages/ports/src/vnext/index.js";
+import type { SetupService } from "../../../packages/setup/src/index.js";
+import type { ConfigureChannelInput } from "../../../packages/setup/src/index.js";
 import type { ControlDaemonCompositionRoot } from "./composition-root.js";
 import type {
   ControlApiInvocation,
@@ -56,6 +59,8 @@ export type ControlApiApplicationServicesOptions = {
   router?: IntentRouterPort;
   channels?: ChannelRuntime;
   exportDiagnostics?(includeLogs: boolean): Promise<unknown>;
+  setup?: Pick<SetupService, "list" | "get" | "start" | "submit" | "cancel">;
+  approvals?: Pick<ApprovalService, "list" | "get" | "resolve">;
   version?: string;
   now?: () => Date;
 };
@@ -64,6 +69,40 @@ export class ControlApiApplicationServices implements ControlApiServices {
   private readonly now: () => Date;
   constructor(private readonly options: ControlApiApplicationServicesOptions) {
     this.now = options.now ?? (() => new Date());
+  }
+
+  async configureChannelForSetup(input: ConfigureChannelInput): Promise<{ restartRequired: boolean }> {
+    const current = await this.currentConfig();
+    const id = `${input.channel}:${input.accountId}`;
+    const existing = current.channels.find((channel) => channelId(channel) === id);
+    const channel: ChannelConfig = input.channel === "weixin"
+      ? { channel: "weixin", accountId: input.accountId, enabled: true }
+      : {
+          channel: input.channel,
+          accountId: input.accountId,
+          enabled: true,
+          appId: requiredValue(input.appId, "appId"),
+          secretRef: requiredValue(input.secretRef, "secretRef")
+        };
+    const channels = existing
+      ? current.channels.map((candidate) => channelId(candidate) === id ? channel : candidate)
+      : [...current.channels, channel];
+    const next = { ...current, channels };
+    const plan = planConfigApply(current, next);
+    const restartRequired = plan.effects.some((effect) => effect.type === "daemon_restart");
+    await applyConfiguration({
+      configStore: this.options.configStore,
+      secretStore: this.options.secretStore,
+      nextConfig: next,
+      secretChanges: input.channel === "weixin" ? [] : [{
+        ref: requiredValue(input.secretRef, "secretRef"),
+        value: requiredValue(input.clientSecret, "clientSecret")
+      }],
+      applyPlan: async (prepared) => {
+        if (!restartRequired) await this.options.daemon.applyPlan(prepared);
+      }
+    });
+    return { restartRequired };
   }
 
   async execute(invocation: ControlApiInvocation): Promise<unknown> {
@@ -95,6 +134,36 @@ export class ControlApiApplicationServices implements ControlApiServices {
         return this.channelAction("logout", requiredParam(invocation, "id"));
       case "channels.delete":
         return this.deleteChannel(requiredParam(invocation, "id"));
+      case "setup.list":
+        return this.requireSetup().list(invocation.query as { channel?: "qq" | "weixin" | "feishu"; accountId?: string });
+      case "setup.get":
+        return this.requireSetup().get(requiredParam(invocation, "id"));
+      case "setup.start":
+        return this.requireSetup().start(invocation.body as {
+          channel: "qq" | "weixin" | "feishu";
+          accountId: string;
+          force?: boolean;
+        });
+      case "setup.submit":
+        return this.requireSetup().submit(requiredParam(invocation, "id"), invocation.body as {
+          appId?: string;
+          clientSecret?: string;
+        });
+      case "setup.cancel":
+        return this.requireSetup().cancel(requiredParam(invocation, "id"));
+      case "approvals.list":
+        return this.requireApprovals().list(invocation.query as {
+          status?: ApprovalStatus;
+          threadId?: string;
+          limit?: number;
+        });
+      case "approvals.get":
+        return this.requireApprovals().get(requiredParam(invocation, "id"));
+      case "approvals.resolve":
+        return this.requireApprovals().resolve({
+          approvalId: requiredParam(invocation, "id"),
+          resolution: (invocation.body as { resolution: "approve" | "decline" }).resolution
+        });
       case "spaces.list":
         return this.listSpaces(invocation.query as PageQuery);
       case "spaces.get":
@@ -187,6 +256,16 @@ export class ControlApiApplicationServices implements ControlApiServices {
       secretChanges,
       applyPlan: (plan) => this.options.daemon.applyPlan(plan)
     });
+  }
+
+  private requireSetup(): NonNullable<ControlApiApplicationServicesOptions["setup"]> {
+    if (!this.options.setup) throw new Error("Setup service is not configured");
+    return this.options.setup;
+  }
+
+  private requireApprovals(): NonNullable<ControlApiApplicationServicesOptions["approvals"]> {
+    if (!this.options.approvals) throw new Error("Approval service is not configured");
+    return this.options.approvals;
   }
 
   private async listChannels(): Promise<unknown[]> {
@@ -405,4 +484,10 @@ function parsePayload(value: string): unknown {
   } catch {
     return { invalidPayload: true };
   }
+}
+
+function requiredValue(value: string | undefined, field: string): string {
+  const normalized = value?.trim();
+  if (!normalized) throw new Error(`${field} is required`);
+  return normalized;
 }

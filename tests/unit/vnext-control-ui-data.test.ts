@@ -10,6 +10,11 @@ import {
   testChannel,
   type ControlClient
 } from "../../apps/control-ui/src/control-data.js";
+import {
+  loadTasks,
+  resolveApproval,
+  type ControlClient as OperationsControlClient
+} from "../../apps/control-ui/src/operations-data.js";
 
 describe("vNext control UI data", () => {
   it("loads dashboard resources in parallel and normalizes real API records", async () => {
@@ -108,7 +113,7 @@ describe("vNext control UI data", () => {
       })
     };
 
-    const controlClient = client as unknown as ControlClient;
+    const controlClient = client as unknown as OperationsControlClient;
     await createChannel({ channel: "qq", accountId: "bot", enabled: true, appId: "app", secretRef: "qq/bot" }, controlClient);
     await testChannel("qq:bot/primary", controlClient);
     await restartChannel("qq:bot/primary", controlClient);
@@ -124,5 +129,48 @@ describe("vNext control UI data", () => {
       { method: "DELETE", path: "/channels/weixin%3Apersonal%2Fprimary/login" },
       { method: "DELETE", path: "/channels/qq%3Abot%2Fprimary" }
     ]);
+  });
+
+  it("loads pending approvals with tasks and posts an encoded resolution", async () => {
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      get: vi.fn(async <T>(path: string): Promise<T> => {
+        if (path === "/threads?limit=100") return { items: [], nextCursor: null } as T;
+        if (path === "/turns?limit=100") return { items: [], nextCursor: null } as T;
+        if (path === "/approvals?status=pending&limit=50") return [{
+          approvalId: "approval/1",
+          kind: "command_execution",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+          reason: "run tests",
+          command: "pnpm test",
+          cwd: "/workspace",
+          grantRoot: null,
+          status: "pending",
+          resolution: null,
+          error: null,
+          createdAt: "2026-08-13T12:00:00.000Z",
+          updatedAt: "2026-08-13T12:00:00.000Z",
+          resolvedAt: null
+        }] as T;
+        throw new Error(`unexpected path ${path}`);
+      }),
+      post: vi.fn(async <T>(path: string, body: unknown): Promise<T> => {
+        calls.push({ method: "POST", path, body });
+        return undefined as T;
+      }),
+      delete: vi.fn(async <T>(): Promise<T> => undefined as T)
+    };
+
+    const controlClient = client as unknown as ControlClient;
+    const result = await loadTasks(controlClient);
+    expect(result.approvals).toHaveLength(1);
+    await resolveApproval("approval/1", "decline", controlClient);
+    expect(calls).toEqual([{
+      method: "POST",
+      path: "/approvals/approval%2F1/resolve",
+      body: { resolution: "decline" }
+    }]);
   });
 });

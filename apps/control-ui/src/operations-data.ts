@@ -1,5 +1,7 @@
 import { controlApi } from "./api-client.js";
 
+export type ControlClient = Pick<typeof controlApi, "get" | "post" | "delete">;
+
 export type Page<T> = { items: T[]; nextCursor: string | null };
 
 export type SpaceItem = {
@@ -34,6 +36,24 @@ export type TurnItem = {
   errorCode: string | null;
   queuedAt: string;
   completedAt: string | null;
+};
+
+export type ApprovalItem = {
+  approvalId: string;
+  kind: "command_execution" | "file_change";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  reason: string | null;
+  command: string | null;
+  cwd: string | null;
+  grantRoot: string | null;
+  status: "pending" | "resolving" | "approved" | "declined" | "cancelled";
+  resolution: "approve" | "decline" | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
 };
 
 export type RouterConfig = {
@@ -100,14 +120,16 @@ export function unbindSpace(spaceId: string): Promise<unknown> {
   return controlApi.delete(`/spaces/${encodeURIComponent(spaceId)}/bindings/current`);
 }
 
-export async function loadTasks(): Promise<{ threads: ThreadItem[]; turns: TurnItem[] }> {
-  const [threads, turns] = await Promise.all([
-    controlApi.get<unknown>("/threads?limit=100"),
-    controlApi.get<unknown>("/turns?limit=100")
+export async function loadTasks(client: ControlClient = controlApi): Promise<{ threads: ThreadItem[]; turns: TurnItem[]; approvals: ApprovalItem[] }> {
+  const [threads, turns, approvals] = await Promise.all([
+    client.get<unknown>("/threads?limit=100"),
+    client.get<unknown>("/turns?limit=100"),
+    client.get<unknown>("/approvals?status=pending&limit=50")
   ]);
   return {
     threads: pageItems(threads, "threads") as ThreadItem[],
-    turns: pageItems(turns, "turns") as TurnItem[]
+    turns: pageItems(turns, "turns") as TurnItem[],
+    approvals: listItems(approvals, "approvals") as ApprovalItem[]
   };
 }
 
@@ -117,6 +139,12 @@ export function createThread(input: { title?: string; cwd?: string }): Promise<T
 
 export function interruptTurn(turnId: string): Promise<unknown> {
   return controlApi.post(`/turns/${encodeURIComponent(turnId)}/interrupt`, {});
+}
+
+export function resolveApproval(approvalId: string, resolution: "approve" | "decline", client: ControlClient = controlApi): Promise<ApprovalItem> {
+  const normalized = approvalId.trim();
+  if (!normalized) throw new Error("approval id is required");
+  return client.post(`/approvals/${encodeURIComponent(normalized)}/resolve`, { resolution });
 }
 
 export async function loadRouter(): Promise<{ config: RouterConfig; decisions: RouterDecision[] }> {
@@ -173,6 +201,11 @@ function pageItems(value: unknown, field: string): unknown[] {
     throw new Error(`${field}.items must be an array`);
   }
   return record.items;
+}
+
+function listItems(value: unknown, field: string): unknown[] {
+  if (Array.isArray(value)) return value;
+  return pageItems(value, field);
 }
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {

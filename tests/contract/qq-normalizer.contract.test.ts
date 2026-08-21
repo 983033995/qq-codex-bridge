@@ -18,4 +18,18 @@ describe("qq normalizer", () => {
     expect(inbound.peerKey).toBe("qq:c2c:ABC123");
     expect(inbound.sessionKey).toBe("qqbot:default::qq:c2c:ABC123");
   });
+
+  it.each([
+    [{ reply_to_message_id: " reply-primary " }, "reply-primary"],
+    [{ message_reference: { message_id: "reference-message" } }, "reference-message"]
+  ])("normalizes QQ reply reference fields", (fields, expected) => {
+    const inbound = normalizeC2CMessage({
+      id: "msg-reply",
+      content: "继续",
+      timestamp: "2026-08-13T00:00:00.000Z",
+      author: { user_openid: "ABC123" },
+      ...fields
+    }, "qqbot:default");
+    expect(inbound.replyToMessageId).toBe(expected);
+  });
 });

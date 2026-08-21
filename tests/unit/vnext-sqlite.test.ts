@@ -42,11 +42,17 @@ describe("vNext SQLite database", () => {
     expect(db.prepare("SELECT version, name FROM schema_migrations").all()).toEqual([
       { version: 1, name: "vnext_core" },
       { version: 2, name: "turn_unknown_recovery_status" },
-      { version: 3, name: "delivery_retry_recovery" }
+      { version: 3, name: "delivery_retry_recovery" },
+      { version: 4, name: "persistent_channel_setup" },
+      { version: 5, name: "v03_inbound_router_decisions" },
+      { version: 6, name: "persistent_appserver_approvals" },
+      { version: 7, name: "source_reply_routing_p0" },
+      { version: 8, name: "turn_result_checkpoint" }
     ]);
 
     applyMigrations(db, schemaMigrations);
-    expect(db.prepare("SELECT count(*) AS count FROM schema_migrations").get()).toEqual({ count: 3 });
+    expect(db.prepare("SELECT count(*) AS count FROM schema_migrations").get())
+      .toEqual({ count: schemaMigrations.length });
   });
 
   it("migrates v1 Turn rows without loss and accepts the unknown recovery status", () => {
@@ -108,7 +114,7 @@ describe("vNext SQLite database", () => {
   it("rolls back every statement and version record from a failed migration", () => {
     const db = openFileDatabase();
     const broken: SchemaMigration = {
-      version: 4,
+      version: Math.max(...schemaMigrations.map((migration) => migration.version)) + 1,
       name: "broken_migration",
       sql: `
         CREATE TABLE must_rollback (id TEXT PRIMARY KEY) STRICT;
@@ -120,7 +126,7 @@ describe("vNext SQLite database", () => {
     expect(db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'must_rollback'"
     ).get()).toBeUndefined();
-    expect(db.prepare("SELECT version FROM schema_migrations WHERE version = 4").get()).toBeUndefined();
+    expect(db.prepare("SELECT version FROM schema_migrations WHERE name = 'broken_migration'").get()).toBeUndefined();
   });
 
   it("rolls back application writes when an IMMEDIATE transaction fails", () => {

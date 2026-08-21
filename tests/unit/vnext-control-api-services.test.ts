@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ControlApiApplicationServices,
   ControlDaemonCompositionRoot
@@ -170,6 +170,29 @@ describe("vNext control API application services", () => {
     expect(interrupted).toMatchObject({ interrupted: true });
     expect(await fixture.turns.get(turn.turnId)).toMatchObject({ status: "interrupted" });
   });
+
+  it("exposes approval queries and resolution through the shared application service", async () => {
+    const approvals = {
+      list: vi.fn(async () => [{ approvalId: "approval-1", status: "pending" }]),
+      get: vi.fn(async () => ({ approvalId: "approval-1", status: "pending" })),
+      resolve: vi.fn(async () => ({ approvalId: "approval-1", status: "resolving", resolution: "decline" }))
+    };
+    const fixture = await createFixture({ approvals });
+
+    await expect(fixture.services.execute(invocation("approvals.list", {
+      query: { status: "pending", threadId: "thread-1", limit: 25 }
+    }))).resolves.toEqual([{ approvalId: "approval-1", status: "pending" }]);
+    await expect(fixture.services.execute(invocation("approvals.get", {
+      params: { id: "approval-1" }
+    }))).resolves.toMatchObject({ approvalId: "approval-1" });
+    await expect(fixture.services.execute(invocation("approvals.resolve", {
+      params: { id: "approval-1" },
+      body: { resolution: "decline" }
+    }))).resolves.toMatchObject({ status: "resolving", resolution: "decline" });
+
+    expect(approvals.list).toHaveBeenCalledWith({ status: "pending", threadId: "thread-1", limit: 25 });
+    expect(approvals.resolve).toHaveBeenCalledWith({ approvalId: "approval-1", resolution: "decline" });
+  });
 });
 
 async function createFixture(options: {
@@ -181,6 +204,11 @@ async function createFixture(options: {
     loginStatus?(channelId: string): Promise<unknown>;
     startLogin?(channelId: string, force: boolean): Promise<unknown>;
     logout?(channelId: string): Promise<unknown>;
+  };
+  approvals?: {
+    list(input?: { status?: "pending" | "resolving" | "approved" | "declined" | "cancelled"; threadId?: string; limit?: number }): Promise<unknown[]>;
+    get(approvalId: string): Promise<unknown>;
+    resolve(input: { approvalId?: string; threadId?: string; resolution: "approve" | "decline" }): Promise<unknown>;
   };
 } = {}) {
   const configStore = new MemoryConfigStore(options.config ?? createDefaultConfig());
@@ -227,6 +255,7 @@ async function createFixture(options: {
     push,
     bindConversationSpace,
     ...(options.channels ? { channels: options.channels } : {}),
+    ...(options.approvals ? { approvals: options.approvals as never } : {}),
     version: "0.2.0",
     now: () => clock.now()
   });

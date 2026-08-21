@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ReconcileRecoverableTurns,
   ThreadScheduler
@@ -229,6 +229,35 @@ describe("vNext recoverable Turn reconciliation", () => {
       .toHaveLength(4);
     expect((await turns.listActiveByThread(thread.threadId)).map((turn) => turn.turnId))
       .toEqual([runningHandle.turnId]);
+  });
+
+  it("keeps a Turn unknown when AppServer state is unavailable", async () => {
+    const turns = new MemoryTurnRepository();
+    const events = new MemoryRuntimeEventRepository();
+    const codex = new ControllableCodexPort(false);
+    const getTurnStatus = vi.spyOn(codex, "getTurnStatus")
+      .mockRejectedValue(new Error("AppServer disconnected"));
+    await turns.save(sampleRecoverableTurn("turn-unavailable", "thread-unavailable", "running"));
+
+    const reconciler = new ReconcileRecoverableTurns({
+      turns,
+      codex,
+      events,
+      ids: new SequenceIdGenerator("recovery-event"),
+      clock: new FixedClock("2026-08-10T07:00:00.000Z")
+    });
+    const resolutions = await reconciler.execute();
+
+    expect(getTurnStatus).toHaveBeenCalledWith("thread-unavailable", "turn-unavailable");
+    expect(resolutions).toEqual([{
+      turn: expect.objectContaining({ status: "unknown" }),
+      remoteStatus: "unavailable"
+    }]);
+    expect(await turns.get("turn-unavailable")).toMatchObject({ status: "unknown" });
+    expect(events.values.map((event) => event.type)).toEqual([
+      "turn.recovery.unknown",
+      "turn.recovery.unresolved"
+    ]);
   });
 });
 

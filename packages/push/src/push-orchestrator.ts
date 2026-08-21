@@ -24,7 +24,20 @@ const pushBodySchema = z.object({
     message: "message must contain text or media"
   }),
   metadata: z.object({
-    source: z.string().max(128).optional(),
+    source: z.union([
+      z.string().trim().min(1).max(128),
+      z.object({
+        provider: z.string().trim().min(1).max(64),
+        instanceId: z.string().trim().min(1).max(256).optional(),
+        conversationId: z.string().trim().min(1).max(256).optional(),
+        conversationAlias: z.string().trim().min(1).max(16).optional(),
+        projectId: z.string().trim().min(1).max(256).optional(),
+        projectName: z.string().trim().min(1).max(256).optional(),
+        taskId: z.string().trim().min(1).max(256).optional(),
+        taskTitle: z.string().trim().min(1).max(256).optional(),
+        capability: z.enum(["interactive", "push_only", "system"]).optional()
+      }).strict()
+    ]).optional(),
     taskId: z.string().max(256).optional(),
     priority: z.enum(["normal", "urgent"]).optional()
   }).passthrough().default({})

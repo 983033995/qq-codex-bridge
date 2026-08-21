@@ -33,6 +33,11 @@ export function planConfigApply(
   }
 
   const changedAccounts = changedChannelAccounts(current?.channels ?? [], next.channels);
+  if (changedAccounts.some((accountKey) => !accountKey.startsWith("weixin:")
+    && accountMembershipChanged(current?.channels ?? [], next.channels, accountKey))) {
+    effects.push({ type: "daemon_restart" });
+    return { revision: calculateConfigRevision(next), effects: dedupeEffects(effects) };
+  }
   if (changedAccounts.some((accountKey) => accountKey.startsWith("weixin:"))) {
     effects.push({ type: "component_restart", component: "weixin-worker" });
   }
@@ -40,7 +45,20 @@ export function planConfigApply(
     effects.push({ type: "component_restart", component: `channel:${accountKey}` });
   }
 
-  return { revision: calculateConfigRevision(next), effects };
+  return { revision: calculateConfigRevision(next), effects: dedupeEffects(effects) };
+}
+
+function accountMembershipChanged(
+  current: VNextConfig["channels"],
+  next: VNextConfig["channels"],
+  accountKey: string
+): boolean {
+  return current.some((channel) => key(channel) === accountKey)
+    !== next.some((channel) => key(channel) === accountKey);
+}
+
+function dedupeEffects(effects: ApplyEffect[]): ApplyEffect[] {
+  return [...new Map(effects.map((effect) => [JSON.stringify(effect), effect])).values()];
 }
 
 function changed(left: unknown, right: unknown): boolean {

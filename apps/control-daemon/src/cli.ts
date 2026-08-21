@@ -8,7 +8,7 @@ export async function runCliFromProcess(): Promise<void> {
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   runCliFromProcess().catch((error) => {
-    process.stderr.write(`[qq-codex-bridge-vnext] fatal: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.stderr.write(`[OmniAgent Gateway] fatal: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
 }

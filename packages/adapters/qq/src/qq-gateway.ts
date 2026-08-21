@@ -15,6 +15,8 @@ type QqC2CEvent = {
     content: string;
     timestamp: string;
     author: { user_openid: string };
+    reply_to_message_id?: string;
+    message_reference?: { message_id?: string };
     attachments?: Array<{
       content_type: string;
       filename?: string;
@@ -34,6 +36,8 @@ type QqGroupEvent = {
     timestamp: string;
     group_openid: string;
     author: { member_openid: string };
+    reply_to_message_id?: string;
+    message_reference?: { message_id?: string };
     attachments?: Array<{
       content_type: string;
       filename?: string;

@@ -37,6 +37,14 @@ describe("vNext control API contract", () => {
       { method: "POST", path: "/channels/weixin%3Amain/login", operation: "channels.login.start", body: { force: true } },
       { method: "DELETE", path: "/channels/weixin%3Amain/login", operation: "channels.login.logout" },
       { method: "DELETE", path: "/channels/weixin%3Amain", operation: "channels.delete" },
+      { method: "GET", path: "/setup?channel=weixin&accountId=main", operation: "setup.list" },
+      { method: "GET", path: "/setup/setup-1", operation: "setup.get" },
+      { method: "POST", path: "/setup", operation: "setup.start", body: { channel: "weixin", accountId: "main", force: true } },
+      { method: "POST", path: "/setup/setup-1/submit", operation: "setup.submit", body: { appId: "app", clientSecret: "secret" } },
+      { method: "POST", path: "/setup/setup-1/cancel", operation: "setup.cancel", body: {} },
+      { method: "GET", path: "/approvals?status=pending&threadId=thread-1&limit=25", operation: "approvals.list" },
+      { method: "GET", path: "/approvals/approval-1", operation: "approvals.get" },
+      { method: "POST", path: "/approvals/approval-1/resolve", operation: "approvals.resolve", body: { resolution: "approve" } },
       { method: "GET", path: "/spaces?limit=25&cursor=next", operation: "spaces.list" },
       { method: "GET", path: "/spaces/space-1", operation: "spaces.get" },
       { method: "GET", path: "/spaces/space-1/messages?limit=10", operation: "spaces.messages.list" },
@@ -79,6 +87,14 @@ describe("vNext control API contract", () => {
         .toEqual({ id: "weixin:main" });
       expect(invocations.find((item) => item.operation === "channels.login.start")?.body)
         .toEqual({ force: true });
+      expect(invocations.find((item) => item.operation === "setup.list")?.query)
+        .toEqual({ channel: "weixin", accountId: "main" });
+      expect(invocations.find((item) => item.operation === "setup.submit")?.body)
+        .toEqual({ appId: "app", clientSecret: "secret" });
+      expect(invocations.find((item) => item.operation === "approvals.list")?.query)
+        .toEqual({ status: "pending", threadId: "thread-1", limit: 25 });
+      expect(invocations.find((item) => item.operation === "approvals.resolve")?.body)
+        .toEqual({ resolution: "approve" });
       expect(invocations.find((item) => item.operation === "spaces.list")?.query)
         .toEqual({ limit: 25, cursor: "next" });
     } finally {

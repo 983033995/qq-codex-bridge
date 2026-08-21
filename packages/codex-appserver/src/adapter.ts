@@ -2,6 +2,11 @@ import path from "node:path";
 import WebSocket from "ws";
 import type { CodexThread, MessageContent } from "../../domain/src/vnext/index.js";
 import type {
+  ApprovalResolution,
+  AppServerRequestId,
+  CapturedApprovalRequest
+} from "../../approval/src/index.js";
+import type {
   CodexCapabilities,
   CodexControlState,
   CodexHealth,
@@ -93,6 +98,11 @@ export type CodexAppServerAdapterOptions = {
   requestTimeoutMs?: number;
   reconnectDelaysMs?: readonly number[];
   now?: () => Date;
+  onApprovalRequest?(request: CapturedApprovalRequest): Promise<void> | void;
+  onServerRequestResolved?(input: {
+    threadId: string;
+    requestId: AppServerRequestId;
+  }): Promise<void> | void;
 };
 
 const CAPABILITIES: CodexCapabilities = {
@@ -111,6 +121,8 @@ export class CodexAppServerAdapter implements CodexPort {
   private readonly requestTimeoutMs: number;
   private readonly reconnectDelaysMs: readonly number[];
   private readonly now: () => Date;
+  private readonly onApprovalRequest?: CodexAppServerAdapterOptions["onApprovalRequest"];
+  private readonly onServerRequestResolved?: CodexAppServerAdapterOptions["onServerRequestResolved"];
   private readonly pendingRequests = new Map<string | number, PendingRequest>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly earlyTurnNotifications = new Map<string, JsonRpcNotification[]>();
@@ -135,6 +147,8 @@ export class CodexAppServerAdapter implements CodexPort {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? [250, 1_000, 2_000, 5_000];
     this.now = options.now ?? (() => new Date());
+    this.onApprovalRequest = options.onApprovalRequest;
+    this.onServerRequestResolved = options.onServerRequestResolved;
     this.stateSince = this.now().toISOString();
   }
 
@@ -355,6 +369,22 @@ export class CodexAppServerAdapter implements CodexPort {
     return this.getControlState();
   }
 
+  async resolveApprovalRequest(input: {
+    requestId: AppServerRequestId;
+    resolution: ApprovalResolution;
+  }): Promise<void> {
+    await this.ensureConnected();
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new AppServerError("Codex AppServer is not connected", "connection_closed", false);
+    }
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: input.requestId,
+      result: { decision: input.resolution === "approve" ? "accept" : "decline" }
+    }));
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) {
       return;
@@ -475,8 +505,46 @@ export class CodexAppServerAdapter implements CodexPort {
     }
     const method = readString(record.method);
     if (method) {
+      if (typeof record.id === "number" || typeof record.id === "string") {
+        this.handleServerRequest(record.id, method, record.params);
+        return;
+      }
       this.handleNotification({ method, params: record.params });
     }
+  }
+
+  private handleServerRequest(
+    requestId: AppServerRequestId,
+    method: string,
+    value: unknown
+  ): void {
+    if (method !== "item/commandExecution/requestApproval"
+      && method !== "item/fileChange/requestApproval") {
+      return;
+    }
+    const params = asRecord(value);
+    const threadId = readString(params.threadId);
+    const turnId = readString(params.turnId);
+    const itemId = readString(params.itemId);
+    if (!threadId || !turnId || !itemId) {
+      this.lastError = `Codex AppServer ${method} is missing threadId, turnId, or itemId`;
+      return;
+    }
+    const request: CapturedApprovalRequest = {
+      appServerRequestId: requestId,
+      method,
+      threadId,
+      turnId,
+      itemId,
+      reason: readString(params.reason),
+      command: readString(params.command),
+      cwd: readString(params.cwd),
+      grantRoot: readString(params.grantRoot),
+      params
+    };
+    void Promise.resolve(this.onApprovalRequest?.(request)).catch((error: unknown) => {
+      this.lastError = `Approval request persistence failed: ${errorMessage(error)}`;
+    });
   }
 
   private handleResponse(response: JsonRpcResponse): void {
@@ -499,6 +567,18 @@ export class CodexAppServerAdapter implements CodexPort {
   }
 
   private handleNotification(notification: JsonRpcNotification): void {
+    if (notification.method === "serverRequest/resolved") {
+      const params = asRecord(notification.params);
+      const threadId = readString(params.threadId);
+      const requestId = readRequestId(params.requestId);
+      if (threadId && requestId !== null) {
+        void Promise.resolve(this.onServerRequestResolved?.({ threadId, requestId }))
+          .catch((error: unknown) => {
+            this.lastError = `Approval resolution persistence failed: ${errorMessage(error)}`;
+          });
+      }
+      return;
+    }
     if (!isTurnNotification(notification.method)) {
       return;
     }
@@ -833,6 +913,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function readRequestId(value: unknown): AppServerRequestId | null {
+  return typeof value === "string" || typeof value === "number" ? value : null;
 }
 
 function readTurnFailureMessage(

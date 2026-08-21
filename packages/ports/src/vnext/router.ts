@@ -12,6 +12,14 @@ export type IntentRouterInput = {
     projectName: string | null;
     relativeTime: string | null;
   }>;
+  candidateConversations?: Array<{
+    alias: string;
+    provider: string;
+    title: string;
+    projectName: string | null;
+    capability: "interactive" | "push_only" | "system";
+    active: boolean;
+  }>;
   recentControlMessages: string[];
   allowedActionTypes: string[];
 };

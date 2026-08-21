@@ -63,6 +63,29 @@ const pushTargetSchema = z.object({
 const channelLoginStartSchema = z.object({
   force: z.boolean().default(false)
 }).strict();
+const setupChannelSchema = z.enum(["qq", "weixin", "feishu"]);
+const setupStartSchema = z.object({
+  channel: setupChannelSchema,
+  accountId: z.string().trim().min(1).max(128).regex(/^\S+$/),
+  force: z.boolean().default(false)
+}).strict();
+const setupSubmitSchema = z.object({
+  appId: z.string().trim().min(1).max(256).optional(),
+  clientSecret: z.string().min(1).max(4096).optional()
+}).strict();
+const setupListSchema = z.object({
+  channel: setupChannelSchema.optional(),
+  accountId: z.string().trim().min(1).max(128).optional()
+}).strict();
+const approvalStatusSchema = z.enum(["pending", "resolving", "approved", "declined", "cancelled"]);
+const approvalListSchema = z.object({
+  status: approvalStatusSchema.optional(),
+  threadId: idSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+}).strict();
+const approvalResolveSchema = z.object({
+  resolution: z.enum(["approve", "decline"])
+}).strict();
 
 export const controlApiOperations = [
   "health.get",
@@ -75,6 +98,14 @@ export const controlApiOperations = [
   "channels.login.start",
   "channels.login.logout",
   "channels.delete",
+  "setup.list",
+  "setup.get",
+  "setup.start",
+  "setup.submit",
+  "setup.cancel",
+  "approvals.list",
+  "approvals.get",
+  "approvals.resolve",
   "spaces.list",
   "spaces.get",
   "spaces.messages.list",
@@ -131,6 +162,14 @@ const routes: readonly RouteDefinition[] = [
   route("POST", "/channels/:id/login", "channels.login.start", channelLoginStartSchema),
   route("DELETE", "/channels/:id/login", "channels.login.logout"),
   route("DELETE", "/channels/:id", "channels.delete"),
+  route("GET", "/setup", "setup.list", undefined, setupListSchema),
+  route("GET", "/setup/:id", "setup.get"),
+  route("POST", "/setup", "setup.start", setupStartSchema),
+  route("POST", "/setup/:id/submit", "setup.submit", setupSubmitSchema),
+  route("POST", "/setup/:id/cancel", "setup.cancel", emptySchema),
+  route("GET", "/approvals", "approvals.list", undefined, approvalListSchema),
+  route("GET", "/approvals/:id", "approvals.get"),
+  route("POST", "/approvals/:id/resolve", "approvals.resolve", approvalResolveSchema),
   route("GET", "/spaces", "spaces.list", undefined, paginationSchema),
   route("GET", "/spaces/:id", "spaces.get"),
   route("GET", "/spaces/:id/messages", "spaces.messages.list", undefined, paginationSchema),

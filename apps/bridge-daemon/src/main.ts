@@ -84,6 +84,7 @@ type BridgeRuntimeHandle = {
 
 type RuntimeShutdownDeps = {
   stopWorker(): void;
+  closePushRouting?: () => void;
   ingresses: Array<{ stop?: () => Promise<void> | void }>;
   managedServices: Array<{ shutdown(): Promise<void> }>;
   closeHttpServer(): Promise<void>;
@@ -104,6 +105,7 @@ export function createRuntimeShutdown(deps: RuntimeShutdownDeps): () => Promise<
       try {
         await deps.closeHttpServer();
       } finally {
+        deps.closePushRouting?.();
         await deps.removeStateFile?.();
       }
     })();
@@ -262,6 +264,7 @@ export async function runBridgeDaemon(): Promise<BridgeRuntimeHandle> {
   const startedIngresses: Array<{ stop?: () => Promise<void> | void }> = [];
   const shutdownStartedServices = createRuntimeShutdown({
     stopWorker: () => app.push?.worker.stop(),
+    closePushRouting: () => app.push?.close?.(),
     ingresses: startedIngresses,
     managedServices,
     desktopDriver: app.adapters.codexDesktop,

@@ -1,4 +1,7 @@
 import type {
+  ActiveConversation,
+  ChannelMessageRegistryEntry,
+  ConversationAlias,
   ConversationSpace,
   ConversationSpaceId,
   Delivery,
@@ -24,6 +27,22 @@ import type {
   TurnRepository
 } from "../../ports/src/vnext/index.js";
 import type { SqliteDatabase } from "./database.js";
+import type {
+  ApprovalRepository,
+  ApprovalRequest,
+  ApprovalStatus,
+  AppServerRequestId
+} from "../../approval/src/index.js";
+import type {
+  SetupChannel,
+  SetupRepository,
+  SetupSession
+} from "../../setup/src/index.js";
+import type {
+  ActiveConversationRepository,
+  ChannelMessageRegistryRepository,
+  ConversationAliasRepository
+} from "../../ports/src/vnext/index.js";
 
 export class SqliteConversationSpaceRepository implements ConversationSpaceRepository {
   constructor(private readonly db: SqliteDatabase) {}
@@ -128,8 +147,180 @@ export class SqliteThreadBindingRepository implements ThreadBindingRepository {
   }
 }
 
+export class SqliteConversationAliasRepository implements ConversationAliasRepository {
+  constructor(private readonly db: SqliteDatabase) {}
+
+  async get(alias: string): Promise<ConversationAlias | null> {
+    const row = this.db.prepare(
+      "SELECT * FROM conversation_aliases WHERE alias = ?"
+    ).get(alias) as ConversationAliasRow | undefined;
+    return row ? mapConversationAlias(row) : null;
+  }
+
+  async findBySource(input: {
+    provider: string;
+    sourceConversationId: string;
+  }): Promise<ConversationAlias | null> {
+    const row = this.db.prepare(`
+      SELECT * FROM conversation_aliases
+      WHERE provider = ? AND source_conversation_id = ?
+    `).get(input.provider, input.sourceConversationId) as ConversationAliasRow | undefined;
+    return row ? mapConversationAlias(row) : null;
+  }
+
+  async save(alias: ConversationAlias): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO conversation_aliases (
+        alias, provider, instance_id, source_conversation_id,
+        project_id, project_name, task_id, task_title, capability,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(alias) DO UPDATE SET
+        provider = excluded.provider,
+        instance_id = excluded.instance_id,
+        source_conversation_id = excluded.source_conversation_id,
+        project_id = excluded.project_id,
+        project_name = excluded.project_name,
+        task_id = excluded.task_id,
+        task_title = excluded.task_title,
+        capability = excluded.capability,
+        updated_at = excluded.updated_at
+    `).run(
+      alias.alias,
+      alias.provider,
+      alias.instanceId,
+      alias.sourceConversationId,
+      alias.projectId,
+      alias.projectName,
+      alias.taskId,
+      alias.taskTitle,
+      alias.capability,
+      alias.createdAt,
+      alias.updatedAt
+    );
+  }
+}
+
+export class SqliteChannelMessageRegistryRepository implements ChannelMessageRegistryRepository {
+  constructor(private readonly db: SqliteDatabase) {}
+
+  async getByChannelMessage(input: {
+    channel: ConversationSpace["channel"];
+    channelAccountId: ConversationSpace["accountId"];
+    peerId: string;
+    channelMessageId: string;
+  }): Promise<ChannelMessageRegistryEntry | null> {
+    const row = this.db.prepare(`
+      SELECT * FROM channel_message_registry
+      WHERE channel = ? AND channel_account_id = ? AND peer_id = ? AND channel_message_id = ?
+    `).get(
+      input.channel,
+      input.channelAccountId,
+      input.peerId,
+      input.channelMessageId
+    ) as ChannelMessageRegistryRow | undefined;
+    return row ? mapChannelMessageRegistryEntry(row) : null;
+  }
+
+  async listByScope(input: {
+    channel: ConversationSpace["channel"];
+    channelAccountId: ConversationSpace["accountId"];
+    peerId: string;
+    limit: number;
+  }): Promise<ChannelMessageRegistryEntry[]> {
+    return (this.db.prepare(`
+      SELECT * FROM channel_message_registry
+      WHERE channel = ? AND channel_account_id = ? AND peer_id = ?
+      ORDER BY created_at DESC, registry_id DESC
+      LIMIT ?
+    `).all(
+      input.channel,
+      input.channelAccountId,
+      input.peerId,
+      clampLimit(input.limit)
+    ) as ChannelMessageRegistryRow[]).map(mapChannelMessageRegistryEntry);
+  }
+
+  async save(entry: ChannelMessageRegistryEntry): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO channel_message_registry (
+        registry_id, channel, channel_account_id, peer_id, channel_message_id,
+        gateway_message_id, provider, source_conversation_id, source_alias,
+        task_id, capability, direction, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel, channel_account_id, peer_id, channel_message_id) DO UPDATE SET
+        gateway_message_id = excluded.gateway_message_id,
+        provider = excluded.provider,
+        source_conversation_id = excluded.source_conversation_id,
+        source_alias = excluded.source_alias,
+        task_id = excluded.task_id,
+        capability = excluded.capability,
+        direction = excluded.direction,
+        created_at = excluded.created_at
+    `).run(
+      entry.registryId,
+      entry.channel,
+      entry.channelAccountId,
+      entry.peerId,
+      entry.channelMessageId,
+      entry.gatewayMessageId,
+      entry.provider,
+      entry.sourceConversationId,
+      entry.sourceAlias,
+      entry.taskId,
+      entry.capability,
+      entry.direction,
+      entry.createdAt
+    );
+  }
+}
+
+export class SqliteActiveConversationRepository implements ActiveConversationRepository {
+  constructor(private readonly db: SqliteDatabase) {}
+
+  async get(input: {
+    channel: ConversationSpace["channel"];
+    channelAccountId: ConversationSpace["accountId"];
+    peerId: string;
+  }): Promise<ActiveConversation | null> {
+    const row = this.db.prepare(`
+      SELECT * FROM active_conversations
+      WHERE channel = ? AND channel_account_id = ? AND peer_id = ?
+    `).get(input.channel, input.channelAccountId, input.peerId) as ActiveConversationRow | undefined;
+    return row ? mapActiveConversation(row) : null;
+  }
+
+  async save(active: ActiveConversation): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO active_conversations (
+        channel, channel_account_id, peer_id, conversation_alias,
+        source_conversation_id, updated_by, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel, channel_account_id, peer_id) DO UPDATE SET
+        conversation_alias = excluded.conversation_alias,
+        source_conversation_id = excluded.source_conversation_id,
+        updated_by = excluded.updated_by,
+        updated_at = excluded.updated_at
+    `).run(
+      active.channel,
+      active.channelAccountId,
+      active.peerId,
+      active.conversationAlias,
+      active.sourceConversationId,
+      active.updatedBy,
+      active.updatedAt
+    );
+  }
+}
+
 export class SqliteMessageLedger implements MessageLedger {
   constructor(private readonly db: SqliteDatabase) {}
+
+  async getById(messageId: string): Promise<InboundEnvelope | null> {
+    const row = this.db.prepare("SELECT * FROM messages WHERE message_id = ?")
+      .get(messageId) as MessageRow | undefined;
+    return row ? mapInboundMessage(row) : null;
+  }
 
   async findByDedupeKey(dedupeKey: string): Promise<InboundEnvelope | null> {
     const row = this.db.prepare("SELECT * FROM messages WHERE dedupe_key = ?")
@@ -202,14 +393,15 @@ export class SqliteTurnRepository implements TurnRepository {
     this.db.prepare(`
       INSERT INTO turns (
         turn_id, thread_id, space_id, inbound_message_id, status, transport,
-        error_code, queued_at, started_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        error_code, queued_at, started_at, completed_at, result_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(turn_id) DO UPDATE SET
         status = excluded.status,
         transport = excluded.transport,
         error_code = excluded.error_code,
         started_at = excluded.started_at,
-        completed_at = excluded.completed_at
+        completed_at = excluded.completed_at,
+        result_json = excluded.result_json
     `).run(
       turn.turnId,
       turn.threadId,
@@ -220,7 +412,8 @@ export class SqliteTurnRepository implements TurnRepository {
       turn.errorCode,
       turn.queuedAt,
       turn.startedAt,
-      turn.completedAt
+      turn.completedAt,
+      turn.result ? JSON.stringify(turn.result) : null
     );
   }
 
@@ -234,6 +427,12 @@ export class SqliteTurnRepository implements TurnRepository {
   async listRecoverable(): Promise<Turn[]> {
     return (this.db.prepare(
       "SELECT * FROM turns WHERE status IN ('starting', 'running', 'unknown') ORDER BY queued_at, turn_id"
+    ).all() as TurnRow[]).map(mapTurn);
+  }
+
+  async listCompleted(): Promise<Turn[]> {
+    return (this.db.prepare(
+      "SELECT * FROM turns WHERE status = 'completed' ORDER BY completed_at, turn_id"
     ).all() as TurnRow[]).map(mapTurn);
   }
 
@@ -262,9 +461,10 @@ export class SqliteRoutingDecisionRepository implements RoutingDecisionRepositor
   async save(record: RoutingDecisionRecord): Promise<void> {
     this.db.prepare(`
       INSERT INTO router_decisions (
-        decision_id, space_id, message_id, kind, action_json, confidence, clarification,
-        provider_request_id, confirmation_status, latency_ms, result, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        decision_id, space_id, message_id, kind, action_json, confidence, risk, mode,
+        clarification, provider_request_id, fallback_reason, confirmation_status,
+        latency_ms, result, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.decisionId,
       record.spaceId,
@@ -276,8 +476,11 @@ export class SqliteRoutingDecisionRepository implements RoutingDecisionRepositor
           ? JSON.stringify(record.decision.action)
           : null,
       record.decision.confidence,
+      record.decision.risk,
+      record.decision.mode,
       record.decision.clarification ?? null,
       record.decision.providerRequestId ?? null,
+      record.decision.fallbackReason ?? null,
       record.confirmationStatus,
       record.latencyMs,
       record.result,
@@ -321,7 +524,7 @@ export class SqliteDeliveryRepository implements DeliveryRepository {
   }>> {
     return (this.db.prepare(`
       SELECT * FROM deliveries
-      WHERE status IN ('sending', 'retry_wait')
+      WHERE status IN ('pending', 'sending', 'retry_wait')
       ORDER BY COALESCE(next_attempt_at, updated_at), delivery_id
       LIMIT ?
     `).all(clampLimit(input.limit)) as DeliveryRow[]).map((row) => ({
@@ -457,6 +660,153 @@ export class SqliteRuntimeEventRepository implements RuntimeEventRepository {
   }
 }
 
+export class SqliteSetupRepository implements SetupRepository {
+  constructor(private readonly db: SqliteDatabase) {}
+
+  async get(setupId: string): Promise<SetupSession | null> {
+    const row = this.db.prepare("SELECT * FROM setup_sessions WHERE setup_id = ?")
+      .get(setupId) as SetupSessionRow | undefined;
+    return row ? mapSetupSession(row) : null;
+  }
+
+  async findActive(channel: SetupChannel, accountId: string): Promise<SetupSession | null> {
+    const row = this.db.prepare(`
+      SELECT * FROM setup_sessions
+      WHERE channel = ? AND account_id = ?
+        AND status NOT IN ('connected', 'failed', 'cancelled')
+      ORDER BY updated_at DESC, setup_id DESC
+      LIMIT 1
+    `).get(channel, accountId) as SetupSessionRow | undefined;
+    return row ? mapSetupSession(row) : null;
+  }
+
+  async save(session: SetupSession): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO setup_sessions (
+        setup_id, channel, account_id, status, message, artifact_json,
+        error_code, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(setup_id) DO UPDATE SET
+        status = excluded.status,
+        message = excluded.message,
+        artifact_json = excluded.artifact_json,
+        error_code = excluded.error_code,
+        updated_at = excluded.updated_at
+    `).run(
+      session.setupId,
+      session.channel,
+      session.accountId,
+      session.status,
+      session.message,
+      session.artifact ? JSON.stringify(session.artifact) : null,
+      session.errorCode,
+      session.createdAt,
+      session.updatedAt
+    );
+  }
+
+  async list(input: { channel?: SetupChannel; accountId?: string } = {}): Promise<SetupSession[]> {
+    return (this.db.prepare(`
+      SELECT * FROM setup_sessions
+      WHERE (? IS NULL OR channel = ?)
+        AND (? IS NULL OR account_id = ?)
+      ORDER BY updated_at DESC, setup_id DESC
+      LIMIT 100
+    `).all(
+      input.channel ?? null,
+      input.channel ?? null,
+      input.accountId ?? null,
+      input.accountId ?? null
+    ) as SetupSessionRow[]).map(mapSetupSession);
+  }
+}
+
+export class SqliteApprovalRepository implements ApprovalRepository {
+  constructor(private readonly db: SqliteDatabase) {}
+
+  async get(approvalId: string): Promise<ApprovalRequest | null> {
+    const row = this.db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?")
+      .get(approvalId) as ApprovalRequestRow | undefined;
+    return row ? mapApprovalRequest(row) : null;
+  }
+
+  async findByRequestKey(requestKey: string): Promise<ApprovalRequest | null> {
+    const row = this.db.prepare("SELECT * FROM approval_requests WHERE request_key = ?")
+      .get(requestKey) as ApprovalRequestRow | undefined;
+    return row ? mapApprovalRequest(row) : null;
+  }
+
+  async findUnresolvedByServerRequest(
+    threadId: string,
+    requestId: AppServerRequestId
+  ): Promise<ApprovalRequest | null> {
+    const row = this.db.prepare(`
+      SELECT * FROM approval_requests
+      WHERE thread_id = ? AND appserver_request_id_json = ?
+        AND status IN ('pending', 'resolving')
+      ORDER BY created_at DESC, approval_id DESC
+      LIMIT 1
+    `).get(threadId, JSON.stringify(requestId)) as ApprovalRequestRow | undefined;
+    return row ? mapApprovalRequest(row) : null;
+  }
+
+  async list(input: {
+    status?: ApprovalStatus;
+    threadId?: string;
+    limit?: number;
+  } = {}): Promise<ApprovalRequest[]> {
+    return (this.db.prepare(`
+      SELECT * FROM approval_requests
+      WHERE (? IS NULL OR status = ?)
+        AND (? IS NULL OR thread_id = ?)
+      ORDER BY created_at DESC, approval_id DESC
+      LIMIT ?
+    `).all(
+      input.status ?? null,
+      input.status ?? null,
+      input.threadId ?? null,
+      input.threadId ?? null,
+      clampLimit(input.limit ?? 100)
+    ) as ApprovalRequestRow[]).map(mapApprovalRequest);
+  }
+
+  async save(request: ApprovalRequest): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO approval_requests (
+        approval_id, request_key, appserver_request_id_json, kind, method,
+        thread_id, turn_id, item_id, reason, command, cwd, grant_root,
+        params_json, status, resolution, error, created_at, updated_at, resolved_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(approval_id) DO UPDATE SET
+        status = excluded.status,
+        resolution = excluded.resolution,
+        error = excluded.error,
+        updated_at = excluded.updated_at,
+        resolved_at = excluded.resolved_at
+    `).run(
+      request.approvalId,
+      request.requestKey,
+      JSON.stringify(request.appServerRequestId),
+      request.kind,
+      request.method,
+      request.threadId,
+      request.turnId,
+      request.itemId,
+      request.reason,
+      request.command,
+      request.cwd,
+      request.grantRoot,
+      JSON.stringify(request.params),
+      request.status,
+      request.resolution,
+      request.error,
+      request.createdAt,
+      request.updatedAt,
+      request.resolvedAt
+    );
+  }
+}
+
 type ConversationSpaceRow = {
   space_id: string; channel: ConversationSpace["channel"]; account_id: string;
   provider_conversation_id: string; scope: ConversationSpace["scope"];
@@ -468,6 +818,25 @@ type ThreadBindingRow = {
   mode: ThreadBinding["mode"]; status: ThreadBinding["status"];
   created_at: string; updated_at: string;
 };
+type ConversationAliasRow = {
+  alias: string; provider: string; instance_id: string | null;
+  source_conversation_id: string; project_id: string | null; project_name: string | null;
+  task_id: string | null; task_title: string | null;
+  capability: ConversationAlias["capability"]; created_at: string; updated_at: string;
+};
+type ChannelMessageRegistryRow = {
+  registry_id: string; channel: ConversationSpace["channel"];
+  channel_account_id: string; peer_id: string; channel_message_id: string;
+  gateway_message_id: string; provider: string; source_conversation_id: string | null;
+  source_alias: string | null; task_id: string | null;
+  capability: ChannelMessageRegistryEntry["capability"];
+  direction: ChannelMessageRegistryEntry["direction"]; created_at: string;
+};
+type ActiveConversationRow = {
+  channel: ConversationSpace["channel"]; channel_account_id: string; peer_id: string;
+  conversation_alias: string; source_conversation_id: string;
+  updated_by: ActiveConversation["updatedBy"]; updated_at: string;
+};
 type MessageRow = {
   message_id: string; provider_message_id: string; space_id: string; sender_id: string;
   received_sequence: number; content_json: string; dedupe_key: string; created_at: string;
@@ -476,11 +845,15 @@ type TurnRow = {
   turn_id: string; thread_id: string; space_id: string; inbound_message_id: string;
   status: Turn["status"]; transport: Turn["transport"]; error_code: Turn["errorCode"];
   queued_at: string; started_at: string | null; completed_at: string | null;
+  result_json: string | null;
 };
 type RoutingDecisionRow = {
   decision_id: string; space_id: string; message_id: string;
   kind: RoutingDecisionRecord["decision"]["kind"]; action_json: string | null;
   confidence: number; clarification: string | null; provider_request_id: string | null;
+  risk: RoutingDecisionRecord["decision"]["risk"];
+  mode: RoutingDecisionRecord["decision"]["mode"];
+  fallback_reason: string | null;
   confirmation_status: RoutingDecisionRecord["confirmationStatus"]; latency_ms: number;
   result: string | null; created_at: string;
 };
@@ -497,6 +870,20 @@ type PushJobRow = {
   created_at: string; updated_at: string;
 };
 type RuntimeEventRow = { event_id: string; component: string; type: string; payload_json: string; created_at: string };
+type SetupSessionRow = {
+  setup_id: string; channel: SetupSession["channel"]; account_id: string;
+  status: SetupSession["status"]; message: string; artifact_json: string | null;
+  error_code: string | null; created_at: string; updated_at: string;
+};
+type ApprovalRequestRow = {
+  approval_id: string; request_key: string; appserver_request_id_json: string;
+  kind: ApprovalRequest["kind"]; method: ApprovalRequest["method"];
+  thread_id: string; turn_id: string; item_id: string;
+  reason: string | null; command: string | null; cwd: string | null; grant_root: string | null;
+  params_json: string; status: ApprovalRequest["status"];
+  resolution: ApprovalRequest["resolution"]; error: string | null;
+  created_at: string; updated_at: string; resolved_at: string | null;
+};
 
 function mapConversationSpace(row: ConversationSpaceRow): ConversationSpace {
   return {
@@ -523,6 +910,49 @@ function mapThreadBinding(row: ThreadBindingRow): ThreadBinding {
     updatedAt: row.updated_at
   };
 }
+function mapConversationAlias(row: ConversationAliasRow): ConversationAlias {
+  return {
+    alias: row.alias,
+    provider: row.provider,
+    instanceId: row.instance_id,
+    sourceConversationId: row.source_conversation_id,
+    projectId: row.project_id,
+    projectName: row.project_name,
+    taskId: row.task_id,
+    taskTitle: row.task_title,
+    capability: row.capability,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+function mapChannelMessageRegistryEntry(row: ChannelMessageRegistryRow): ChannelMessageRegistryEntry {
+  return {
+    registryId: row.registry_id,
+    channel: row.channel,
+    channelAccountId: row.channel_account_id as ConversationSpace["accountId"],
+    peerId: row.peer_id,
+    channelMessageId: row.channel_message_id,
+    gatewayMessageId: row.gateway_message_id,
+    provider: row.provider,
+    sourceConversationId: row.source_conversation_id,
+    sourceAlias: row.source_alias,
+    taskId: row.task_id,
+    capability: row.capability,
+    direction: row.direction,
+    createdAt: row.created_at
+  };
+}
+function mapActiveConversation(row: ActiveConversationRow): ActiveConversation {
+  return {
+    channel: row.channel,
+    channelAccountId: row.channel_account_id as ConversationSpace["accountId"],
+    peerId: row.peer_id,
+    conversationAlias: row.conversation_alias,
+    sourceConversationId: row.source_conversation_id,
+    updatedBy: row.updated_by,
+    updatedAt: row.updated_at
+  };
+}
 function mapInboundMessage(row: MessageRow): InboundEnvelope {
   return {
     messageId: row.message_id,
@@ -545,7 +975,8 @@ function mapTurn(row: TurnRow): Turn {
     errorCode: row.error_code,
     queuedAt: row.queued_at,
     startedAt: row.started_at,
-    completedAt: row.completed_at
+    completedAt: row.completed_at,
+    ...(row.result_json ? { result: JSON.parse(row.result_json) as Turn["result"] } : {})
   };
 }
 function mapRoutingDecision(row: RoutingDecisionRow): RoutingDecisionRecord {
@@ -557,13 +988,16 @@ function mapRoutingDecision(row: RoutingDecisionRow): RoutingDecisionRecord {
     decision: {
       kind: row.kind,
       confidence: row.confidence,
+      risk: row.risk,
+      mode: row.mode,
       ...(Array.isArray(storedActions)
         ? { actions: storedActions as NonNullable<RoutingDecisionRecord["decision"]["actions"]> }
         : storedActions
           ? { action: storedActions as NonNullable<RoutingDecisionRecord["decision"]["action"]> }
           : {}),
       ...(row.clarification ? { clarification: row.clarification } : {}),
-      ...(row.provider_request_id ? { providerRequestId: row.provider_request_id } : {})
+      ...(row.provider_request_id ? { providerRequestId: row.provider_request_id } : {}),
+      ...(row.fallback_reason ? { fallbackReason: row.fallback_reason } : {})
     },
     latencyMs: row.latency_ms,
     confirmationStatus: row.confirmation_status,
@@ -603,6 +1037,42 @@ function mapPushJob(row: PushJobRow): PushJobRecord {
 }
 function mapRuntimeEvent(row: RuntimeEventRow): RuntimeEventRecord {
   return { eventId: row.event_id, component: row.component, type: row.type, payloadJson: row.payload_json, createdAt: row.created_at };
+}
+function mapSetupSession(row: SetupSessionRow): SetupSession {
+  return {
+    setupId: row.setup_id,
+    channel: row.channel,
+    accountId: row.account_id,
+    status: row.status,
+    message: row.message,
+    artifact: row.artifact_json ? JSON.parse(row.artifact_json) as SetupSession["artifact"] : null,
+    errorCode: row.error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+function mapApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
+  return {
+    approvalId: row.approval_id,
+    requestKey: row.request_key,
+    appServerRequestId: JSON.parse(row.appserver_request_id_json) as AppServerRequestId,
+    kind: row.kind,
+    method: row.method,
+    threadId: row.thread_id,
+    turnId: row.turn_id,
+    itemId: row.item_id,
+    reason: row.reason,
+    command: row.command,
+    cwd: row.cwd,
+    grantRoot: row.grant_root,
+    params: JSON.parse(row.params_json) as Record<string, unknown>,
+    status: row.status,
+    resolution: row.resolution,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at
+  };
 }
 
 function simplePage<TRow, TItem>(

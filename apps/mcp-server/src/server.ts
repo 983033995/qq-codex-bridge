@@ -50,7 +50,20 @@ export function createPushMcpServer(client: PushApiClient): McpServer {
           "qq: proactive push is currently unsupported regardless of format."
       ),
       media: z.array(mediaSchema).max(16).default([]),
-      source: z.string().max(128).default("agent"),
+      source: z.union([
+        z.string().max(128),
+        z.object({
+          provider: z.string().min(1).max(64),
+          instanceId: z.string().min(1).max(256).optional(),
+          conversationId: z.string().min(1).max(256).optional(),
+          conversationAlias: z.string().min(1).max(16).optional(),
+          projectId: z.string().min(1).max(256).optional(),
+          projectName: z.string().min(1).max(256).optional(),
+          taskId: z.string().min(1).max(256).optional(),
+          taskTitle: z.string().min(1).max(256).optional(),
+          capability: z.enum(["interactive", "push_only", "system"]).optional()
+        }).strict()
+      ]).default("agent"),
       taskId: z.string().max(256).optional(),
       priority: prioritySchema.default("normal"),
       idempotencyKey: z.string().min(1).max(256)
@@ -77,7 +90,20 @@ export function createPushMcpServer(client: PushApiClient): McpServer {
       status: z.enum(["running", "completed", "failed"]),
       summary: z.string().min(1).max(100_000),
       details: z.string().max(100_000).optional(),
-      source: z.string().max(128).default("agent"),
+      source: z.union([
+        z.string().max(128),
+        z.object({
+          provider: z.string().min(1).max(64),
+          instanceId: z.string().min(1).max(256).optional(),
+          conversationId: z.string().min(1).max(256).optional(),
+          conversationAlias: z.string().min(1).max(16).optional(),
+          projectId: z.string().min(1).max(256).optional(),
+          projectName: z.string().min(1).max(256).optional(),
+          taskId: z.string().min(1).max(256).optional(),
+          taskTitle: z.string().min(1).max(256).optional(),
+          capability: z.enum(["interactive", "push_only", "system"]).optional()
+        }).strict()
+      ]).default("agent"),
       priority: prioritySchema.default("normal"),
       idempotencyKey: z.string().min(1).max(256).optional()
     }
@@ -170,10 +196,10 @@ function stableTaskReportKey(input: {
   target: string;
   taskId: string;
   status: string;
-  source: string;
+  source: unknown;
 }): string {
   return `task-report-${createHash("sha256")
-    .update(`${input.source}\0${input.target}\0${input.taskId}\0${input.status}`)
+    .update(`${JSON.stringify(input.source)}\0${input.target}\0${input.taskId}\0${input.status}`)
     .digest("hex")}`;
 }
 

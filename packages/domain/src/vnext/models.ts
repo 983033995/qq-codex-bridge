@@ -46,6 +46,64 @@ export type ThreadBinding = {
   updatedAt: string;
 };
 
+export type SourceCapability = "interactive" | "push_only" | "system";
+
+export type SourceIdentity = {
+  provider: string;
+  instanceId?: string;
+  conversationId?: string;
+  conversationAlias?: string;
+  projectId?: string;
+  projectName?: string;
+  taskId?: string;
+  taskTitle?: string;
+  capability: SourceCapability;
+};
+
+export type ConversationAlias = {
+  alias: string;
+  provider: string;
+  instanceId: string | null;
+  sourceConversationId: string;
+  projectId: string | null;
+  projectName: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  capability: SourceCapability;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChannelMessageDirection = "inbound" | "outbound" | "system";
+
+export type ChannelMessageRegistryEntry = {
+  registryId: string;
+  channel: ChannelName;
+  channelAccountId: ChannelAccountId;
+  peerId: string;
+  channelMessageId: string;
+  gatewayMessageId: string;
+  provider: string;
+  sourceConversationId: string | null;
+  sourceAlias: string | null;
+  taskId: string | null;
+  capability: SourceCapability;
+  direction: ChannelMessageDirection;
+  createdAt: string;
+};
+
+export type ActiveConversationUpdatedBy = "explicit_switch" | "reply_reference" | "admin";
+
+export type ActiveConversation = {
+  channel: ChannelName;
+  channelAccountId: ChannelAccountId;
+  peerId: string;
+  conversationAlias: string;
+  sourceConversationId: string;
+  updatedBy: ActiveConversationUpdatedBy;
+  updatedAt: string;
+};
+
 export type Mention = {
   providerUserId: string;
   displayName?: string;
@@ -68,6 +126,8 @@ export type MessageContent = {
   mentions: Mention[];
   attachments: Attachment[];
   format?: "plain" | "markdown";
+  replyToProviderMessageId?: string;
+  source?: SourceIdentity;
 };
 
 export type InboundEnvelope = {
@@ -91,6 +151,12 @@ export type TurnStatus =
 
 export type TurnTransport = "app-server" | "cdp-recovery";
 
+export type TurnResultCheckpoint = {
+  finalText: string;
+  mediaReferences: string[];
+  source?: SourceIdentity;
+};
+
 export type Turn = {
   turnId: string;
   threadId: string;
@@ -102,6 +168,7 @@ export type Turn = {
   queuedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  result?: TurnResultCheckpoint;
 };
 
 export type DeliveryStatus = "pending" | "sending" | "retry_wait" | "delivered" | "failed";
@@ -141,13 +208,32 @@ export type ControlAction =
   | { type: "system.status" }
   | { type: "help" };
 
+export type ConversationAction =
+  | { type: "conversation.list" }
+  | { type: "conversation.current" }
+  | { type: "conversation.switch"; alias: string };
+
+export type RouterMode = "off" | "assist" | "auto";
+export type RouterRisk = "read" | "low" | "medium" | "high";
+
+export type RouterAction =
+  | ControlAction
+  | ConversationAction
+  | { type: "channel.restart"; channel: "qq" | "weixin" | "feishu" }
+  | { type: "setup.channel.connect"; channel: "qq" | "weixin" | "feishu"; accountId?: string }
+  | { type: "setup.channel.login"; channel: "qq" | "weixin" | "feishu"; accountId?: string }
+  | { type: "approval.resolve"; resolution: "approve" | "decline" };
+
 export type RoutingDecision = {
-  kind: "chat" | "control" | "clarify";
-  action?: ControlAction;
-  actions?: ControlAction[];
+  kind: "conversation" | "control" | "setup" | "approval" | "unknown";
+  action?: RouterAction;
+  actions?: RouterAction[];
   confidence: number;
+  risk: RouterRisk;
+  mode: RouterMode;
   clarification?: string;
   providerRequestId?: string;
+  fallbackReason?: string;
 };
 
 export type ComponentHealth = {
